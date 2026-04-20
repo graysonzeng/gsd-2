@@ -192,6 +192,11 @@ export async function handleStart(
   pi: ExtensionAPI,
 ): Promise<void> {
   const trimmed = args.trim();
+  const isResumeCommand =
+    trimmed === "resume"
+    || trimmed === "--resume"
+    || trimmed.startsWith("resume ")
+    || trimmed.startsWith("--resume ");
 
   // /gsd start --list → same as /gsd templates
   if (trimmed === "--list" || trimmed === "list") {
@@ -221,7 +226,7 @@ export async function handleStart(
 
   // ─── Resume detection ───────────────────────────────────────────────────
   // /gsd start --resume or /gsd start resume → resume in-progress workflow
-  if (trimmed === "--resume" || trimmed === "resume") {
+  if (isResumeCommand) {
     const basePath = process.cwd();
     const runtimeMarker = readRuntimeOwnedStateMarker(basePath);
     if (runtimeMarker?.status === "active") {
@@ -232,13 +237,16 @@ export async function handleStart(
         "info",
       );
 
-      import("./composed-lite/index.js").then(({ runComposedLite }) => {
+      import("./composed-lite/index.js").then(({ runComposedLite, parseComposedLiteDispatchArgs }) => {
+        const parsed = parseComposedLiteDispatchArgs(
+          trimmed.replace(/^--resume\b/, "").replace(/^resume\b/, "").trim(),
+        );
         runComposedLite({
           projectRoot: basePath,
-          requirement: "",
-          mode: "full",
+          requirement: parsed.requirement,
+          mode: parsed.mode,
           source: "resume",
-          admissionAction: null,
+          admissionAction: parsed.admissionAction,
           ctx,
           pi,
         }).catch((err: unknown) => {

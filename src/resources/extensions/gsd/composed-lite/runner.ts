@@ -122,8 +122,9 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
     // ── Initialize or recover state ─────────────────────────────────────
     const existing = loadState(projectRoot);
     const canResumeActiveRun = Boolean(existing && existing.status === "active");
+    const requestedRequirement = req.requirement.trim();
 
-    if (!req.requirement.trim() && !canResumeActiveRun) {
+    if (!requestedRequirement && !canResumeActiveRun) {
       ctx.ui.notify(
         "composed-lite requires a requirement description. Usage: /gsd start composed-lite <description>",
         "error",
@@ -138,6 +139,17 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
         "info",
       );
     } else if (existing && existing.status === "active") {
+      if (requestedRequirement && requestedRequirement !== existing.requirement.trim()) {
+        ctx.ui.notify(
+          `Active composed-lite run ${existing.run_id} already exists for a different requirement.\n` +
+          `Existing: ${existing.requirement}\n` +
+          `Requested: ${requestedRequirement}\n\n` +
+          `Resume the active run with /gsd start resume, or finish/reset it before starting a new one.`,
+          "warning",
+        );
+        return;
+      }
+
       // Existing active run found — resume it
       state = existing;
       ctx.ui.notify(

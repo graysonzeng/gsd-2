@@ -52,10 +52,17 @@ test("Phase 0 admission waits for explicit approval and supports reject", () => 
 
 test("runner pauses cleanly on admission pending and allows active-run resume without a fresh requirement", () => {
   assert.match(RUNNER_SOURCE, /const canResumeActiveRun = Boolean\(existing && existing\.status === "active"\)/);
-  assert.match(RUNNER_SOURCE, /if \(!req\.requirement\.trim\(\) && !canResumeActiveRun\)/);
+  assert.match(RUNNER_SOURCE, /if \(!requestedRequirement && !canResumeActiveRun\)/);
   assert.match(RUNNER_SOURCE, /if \(err instanceof AdmissionPendingSignal\)/);
   assert.match(RUNNER_SOURCE, /outcome: "pending_approval"/);
   assert.match(RUNNER_SOURCE, /Re-run with --approve or --reject/);
+});
+
+test("runner rejects silently reusing an active composed-lite run for a different requirement", () => {
+  assert.match(RUNNER_SOURCE, /const requestedRequirement = req\.requirement\.trim\(\)/);
+  assert.match(RUNNER_SOURCE, /requestedRequirement && requestedRequirement !== existing\.requirement\.trim\(\)/);
+  assert.match(RUNNER_SOURCE, /Active composed-lite run .* already exists for a different requirement/);
+  assert.match(RUNNER_SOURCE, /Resume the active run with \/gsd start resume/);
 });
 
 test("both composed-lite dispatch entrypoints forward parsed admission flags", () => {
@@ -68,8 +75,11 @@ test("both composed-lite dispatch entrypoints forward parsed admission flags", (
 test("/gsd start resume recognizes the runtime-owned composed-lite STATE marker", () => {
   assert.match(START_DISPATCH_SOURCE, /interface RuntimeOwnedStateMarker/);
   assert.match(START_DISPATCH_SOURCE, /function readRuntimeOwnedStateMarker/);
+  assert.match(START_DISPATCH_SOURCE, /const isResumeCommand =/);
   assert.match(START_DISPATCH_SOURCE, /parsed\.type === "runtime-owned" && parsed\.runtime === "composed-lite"/);
   assert.match(START_DISPATCH_SOURCE, /if \(runtimeMarker\?\.status === "active"\)/);
+  assert.match(START_DISPATCH_SOURCE, /parseComposedLiteDispatchArgs\(/);
+  assert.match(START_DISPATCH_SOURCE, /admissionAction: parsed\.admissionAction/);
   assert.match(START_DISPATCH_SOURCE, /source: "resume"/);
 });
 
