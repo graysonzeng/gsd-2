@@ -156,16 +156,15 @@ function dispatchPluginByMode(
   // ── Runtime-owned dispatch ──────────────────────────────────────────────
   if (plugin.meta.executorExtension === "composed-lite") {
     const base = projectRoot();
-    // Parse --plan flag from args
-    const isPlan = /--plan\b/.test(args);
-    const requirement = args.replace(/--plan\s*/, "").trim();
     // Dynamic import to avoid circular deps
-    import("../../composed-lite/index.js").then(({ runComposedLite }) => {
+    import("../../composed-lite/index.js").then(({ runComposedLite, parseComposedLiteDispatchArgs }) => {
+      const parsed = parseComposedLiteDispatchArgs(args);
       runComposedLite({
         projectRoot: base,
-        requirement,
-        mode: isPlan ? "plan" : "full",
+        requirement: parsed.requirement,
+        mode: parsed.mode,
         source: "workflow-run",
+        admissionAction: parsed.admissionAction,
         ctx,
         pi,
       }).catch((err: unknown) => {

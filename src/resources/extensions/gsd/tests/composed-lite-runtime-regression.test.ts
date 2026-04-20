@@ -8,8 +8,13 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUN_LOCK_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "run-lock.ts"), "utf-8");
+const COMPOSED_LITE_INDEX_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "index.ts"), "utf-8");
+const PHASE0_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "phases", "p0-admission.ts"), "utf-8");
 const PHASE4_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "phases", "p4-implementation.ts"), "utf-8");
+const RUNNER_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "runner.ts"), "utf-8");
 const REVIEW_HARNESS_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "review-harness.ts"), "utf-8");
+const START_DISPATCH_SOURCE = readFileSync(join(__dirname, "..", "commands-workflow-templates.ts"), "utf-8");
+const WORKFLOW_DISPATCH_SOURCE = readFileSync(join(__dirname, "..", "commands", "handlers", "workflow.ts"), "utf-8");
 
 function makeRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "gsd-composed-lite-"));
@@ -27,6 +32,45 @@ test("run-lock allows only same-run reacquire or pending-to-real upgrade for the
   assert.match(RUN_LOCK_SOURCE, /const sameRun = existing\.run_id === runId/);
   assert.match(RUN_LOCK_SOURCE, /const pendingUpgrade = existing\.run_id === "pending"/);
   assert.match(RUN_LOCK_SOURCE, /!sameProcess \|\| \(!sameRun && !pendingUpgrade\)/);
+});
+
+test("composed-lite dispatch arg parser strips plan and admission flags consistently", () => {
+  assert.match(COMPOSED_LITE_INDEX_SOURCE, /export function parseComposedLiteDispatchArgs/);
+  assert.match(COMPOSED_LITE_INDEX_SOURCE, /mode: isPlan \? "plan" : "full"/);
+  assert.match(COMPOSED_LITE_INDEX_SOURCE, /admissionAction: hasReject \? "reject" : hasApprove \? "approve" : null/);
+  assert.match(COMPOSED_LITE_INDEX_SOURCE, /replace\(/);
+});
+
+test("Phase 0 admission waits for explicit approval and supports reject", () => {
+  assert.match(PHASE0_SOURCE, /state\.admission\.state = "awaiting_approval"/);
+  assert.match(PHASE0_SOURCE, /if \(admissionAction === "reject"\)/);
+  assert.match(PHASE0_SOURCE, /if \(admissionAction !== "approve"\)/);
+  assert.match(PHASE0_SOURCE, /throw new AdmissionPendingSignal/);
+  assert.match(PHASE0_SOURCE, /approved_by = "explicit-user"/);
+  assert.doesNotMatch(PHASE0_SOURCE, /Auto-approved \(MVP\)/);
+});
+
+test("runner pauses cleanly on admission pending and allows active-run resume without a fresh requirement", () => {
+  assert.match(RUNNER_SOURCE, /const canResumeActiveRun = Boolean\(existing && existing\.status === "active"\)/);
+  assert.match(RUNNER_SOURCE, /if \(!req\.requirement\.trim\(\) && !canResumeActiveRun\)/);
+  assert.match(RUNNER_SOURCE, /if \(err instanceof AdmissionPendingSignal\)/);
+  assert.match(RUNNER_SOURCE, /outcome: "pending_approval"/);
+  assert.match(RUNNER_SOURCE, /Re-run with --approve or --reject/);
+});
+
+test("both composed-lite dispatch entrypoints forward parsed admission flags", () => {
+  assert.match(START_DISPATCH_SOURCE, /parseComposedLiteDispatchArgs\(description\)/);
+  assert.match(START_DISPATCH_SOURCE, /admissionAction: parsed\.admissionAction/);
+  assert.match(WORKFLOW_DISPATCH_SOURCE, /parseComposedLiteDispatchArgs\(args\)/);
+  assert.match(WORKFLOW_DISPATCH_SOURCE, /admissionAction: parsed\.admissionAction/);
+});
+
+test("/gsd start resume recognizes the runtime-owned composed-lite STATE marker", () => {
+  assert.match(START_DISPATCH_SOURCE, /interface RuntimeOwnedStateMarker/);
+  assert.match(START_DISPATCH_SOURCE, /function readRuntimeOwnedStateMarker/);
+  assert.match(START_DISPATCH_SOURCE, /parsed\.type === "runtime-owned" && parsed\.runtime === "composed-lite"/);
+  assert.match(START_DISPATCH_SOURCE, /if \(runtimeMarker\?\.status === "active"\)/);
+  assert.match(START_DISPATCH_SOURCE, /source: "resume"/);
 });
 
 test("Phase 4 reruns implementation round-by-round before each follow-up review", () => {

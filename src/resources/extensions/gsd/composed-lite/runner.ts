@@ -27,6 +27,7 @@ import {
   PHASE_NAMES,
   ComposedLiteFuseError,
   VerifyReentrySignal,
+  AdmissionPendingSignal,
 } from "./types.js";
 import { initState, loadState, saveState, writeStateMarker } from "./state.js";
 import { acquireLock, releaseLock } from "./run-lock.js";
@@ -102,15 +103,6 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
     return;
   }
 
-  // ── Prerequisite: requirement must not be empty ────────────────────────
-  if (!req.requirement.trim()) {
-    ctx.ui.notify(
-      "composed-lite requires a requirement description. Usage: /gsd start composed-lite <description>",
-      "error",
-    );
-    return;
-  }
-
   ensureDirs(projectRoot);
 
   // ── Acquire run lock (run_id not yet known — will update after init) ──
@@ -129,6 +121,16 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
   try {
     // ── Initialize or recover state ─────────────────────────────────────
     const existing = loadState(projectRoot);
+    const canResumeActiveRun = Boolean(existing && existing.status === "active");
+
+    if (!req.requirement.trim() && !canResumeActiveRun) {
+      ctx.ui.notify(
+        "composed-lite requires a requirement description. Usage: /gsd start composed-lite <description>",
+        "error",
+      );
+      return;
+    }
+
     if (existing && req.source === "resume") {
       state = existing;
       ctx.ui.notify(
@@ -294,6 +296,27 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
           });
           saveState(projectRoot, state);
           continue; // runner loop will re-visit Phase 4 (now pending)
+        }
+
+        if (err instanceof AdmissionPendingSignal) {
+          state.phases[phaseNum].status = "pending";
+          state.phases[phaseNum].failure_reason = null;
+          appendAudit(projectRoot, state.run_id, {
+            event: "phase_exit",
+            payload: {
+              phase: phaseNum,
+              attempt: state.phases[phaseNum].attempt,
+              outcome: "pending_approval",
+              failure_reason: reason,
+              output_hash: state.phases[phaseNum].artifact_envelope.output_hash,
+            },
+          });
+          saveState(projectRoot, state);
+          ctx.ui.notify(
+            `Composed-lite run ${state.run_id} is waiting for admission approval. Re-run with --approve or --reject.`,
+            "info",
+          );
+          return;
         }
 
         // Check if this is a fuse-triggering error

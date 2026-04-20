@@ -11,21 +11,24 @@ import type { ComposedLiteState, ComposedLiteRunRequest } from "../types.js";
 import { writeArtifact, sha256 } from "../artifacts.js";
 import { appendAudit } from "../audit-log.js";
 import { saveState } from "../state.js";
+import { AdmissionPendingSignal, ComposedLiteFuseError } from "../types.js";
 
 export async function runPhase0(
   state: ComposedLiteState,
   req: ComposedLiteRunRequest,
 ): Promise<void> {
-  const { projectRoot, ctx, pi } = req;
+  const { projectRoot, ctx, admissionAction } = req;
 
   // ── Evidence collection ─────────────────────────────────────────────────
-  state.admission.state = "evidence_collected";
-  state.admission.evidence_message_ids.push(`req-${Date.now()}`);
+  if (state.admission.state === "pending") {
+    state.admission.state = "evidence_collected";
+    state.admission.evidence_message_ids.push(`req-${Date.now()}`);
 
-  appendAudit(projectRoot, state.run_id, {
-    event: "admission_evidence",
-    payload: { evidence_message_ids: state.admission.evidence_message_ids },
-  });
+    appendAudit(projectRoot, state.run_id, {
+      event: "admission_evidence",
+      payload: { evidence_message_ids: state.admission.evidence_message_ids },
+    });
+  }
 
   // ── Build admission draft ───────────────────────────────────────────────
   const admissionDraft = {
@@ -37,29 +40,38 @@ export async function runPhase0(
   };
 
   const admissionYaml = yamlStringify(admissionDraft);
-
-  // ── Present to user and auto-approve (MVP) ─────────────────────────────
-  // MVP decision: auto-approve with interrupt-to-reject semantic.
-  // The user sees the admission draft and can say "reject" to cancel.
-  // Full interactive approval gate is a post-MVP enhancement.
-  state.admission.state = "awaiting_approval";
-  saveState(projectRoot, state);
-
-  ctx.ui.notify(
-    `Composed-Lite Admission (${state.run_id})\n` +
-    `Mode: ${state.mode}\n\n` +
-    `${admissionYaml}\n` +
-    `Auto-approved (MVP). Say "reject" in conversation to cancel.`,
-    "info",
-  );
-
-  state.admission.state = "approved";
-  state.admission.approved_by = "auto-mvp";
-  state.admission.approved_at = new Date().toISOString();
-
-  // Compute admission hash
   const admissionHash = sha256(yamlStringify(admissionDraft));
-  state.admission.admission_hash = admissionHash;
+
+  if (state.admission.state !== "approved") {
+    state.admission.state = "awaiting_approval";
+    state.admission.admission_hash = admissionHash;
+    saveState(projectRoot, state);
+
+    if (admissionAction === "reject") {
+      state.admission.state = "rejected";
+      throw new ComposedLiteFuseError(
+        "admission_rejected",
+        `Admission rejected for run ${state.run_id}`,
+      );
+    }
+
+    if (admissionAction !== "approve") {
+      ctx.ui.notify(
+        `Composed-Lite Admission (${state.run_id})\n` +
+        `Mode: ${state.mode}\n\n` +
+        `${admissionYaml}\n` +
+        `Run the same command again with --approve to continue, or --reject to cancel.`,
+        "info",
+      );
+      throw new AdmissionPendingSignal(
+        `Admission for run ${state.run_id} is awaiting explicit approval`,
+      );
+    }
+
+    state.admission.state = "approved";
+    state.admission.approved_by = "explicit-user";
+    state.admission.approved_at = new Date().toISOString();
+  }
 
   appendAudit(projectRoot, state.run_id, {
     event: "admission_approved",

@@ -92,6 +92,15 @@ interface WorkflowState {
   artifactDir: string;
 }
 
+interface RuntimeOwnedStateMarker {
+  type: "runtime-owned";
+  runtime: "composed-lite";
+  run_id: string;
+  state_path: string;
+  status: "active" | "fused" | "completed" | "abandoned";
+  updated_at: string;
+}
+
 /**
  * Write a STATE.json file to track workflow execution state.
  */
@@ -158,6 +167,23 @@ function findInProgressWorkflows(basePath: string): WorkflowState[] {
   return results;
 }
 
+function readRuntimeOwnedStateMarker(basePath: string): RuntimeOwnedStateMarker | null {
+  const stateMarkerPath = join(basePath, ".gsd", "STATE.json");
+  if (!existsSync(stateMarkerPath)) return null;
+
+  try {
+    const raw = readFileSync(stateMarkerPath, "utf-8");
+    const parsed = JSON.parse(raw) as Partial<RuntimeOwnedStateMarker>;
+    if (parsed.type === "runtime-owned" && parsed.runtime === "composed-lite") {
+      return parsed as RuntimeOwnedStateMarker;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 // ─── /gsd start ──────────────────────────────────────────────────────────────
 
 export async function handleStart(
@@ -197,6 +223,35 @@ export async function handleStart(
   // /gsd start --resume or /gsd start resume → resume in-progress workflow
   if (trimmed === "--resume" || trimmed === "resume") {
     const basePath = process.cwd();
+    const runtimeMarker = readRuntimeOwnedStateMarker(basePath);
+    if (runtimeMarker?.status === "active") {
+      ctx.ui.notify(
+        `Resuming runtime-owned workflow: ${runtimeMarker.runtime}\n` +
+        `Run ID: ${runtimeMarker.run_id}\n` +
+        `State: ${runtimeMarker.state_path}`,
+        "info",
+      );
+
+      import("./composed-lite/index.js").then(({ runComposedLite }) => {
+        runComposedLite({
+          projectRoot: basePath,
+          requirement: "",
+          mode: "full",
+          source: "resume",
+          admissionAction: null,
+          ctx,
+          pi,
+        }).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          ctx.ui.notify(`Composed-lite runtime error: ${msg}`, "error");
+        });
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`Failed to load composed-lite runtime: ${msg}`, "error");
+      });
+      return;
+    }
+
     const inProgress = findInProgressWorkflows(basePath);
     if (inProgress.length === 0) {
       ctx.ui.notify("No in-progress workflows found.", "info");
@@ -597,14 +652,14 @@ export function dispatchMarkdownPhasePlugin(
   // ─── Runtime-owned dispatch (composed-lite) ─────────────────────────────
   if (plugin.meta.executorExtension === "composed-lite") {
     const basePath = process.cwd();
-    const isPlan = /--plan\b/.test(description);
-    const requirement = description.replace(/--plan\s*/, "").trim();
-    import("./composed-lite/index.js").then(({ runComposedLite }) => {
+    import("./composed-lite/index.js").then(({ runComposedLite, parseComposedLiteDispatchArgs }) => {
+      const parsed = parseComposedLiteDispatchArgs(description);
       runComposedLite({
         projectRoot: basePath,
-        requirement,
-        mode: isPlan ? "plan" : "full",
+        requirement: parsed.requirement,
+        mode: parsed.mode,
         source: "workflow-start",
+        admissionAction: parsed.admissionAction,
         ctx,
         pi,
       }).catch((err: unknown) => {

@@ -11,6 +11,7 @@ export interface ComposedLiteRunRequest {
   requirement: string;
   mode: "full" | "plan";
   source: "workflow-start" | "workflow-run" | "resume";
+  admissionAction?: "approve" | "reject" | null;
   ctx: ExtensionCommandContext;
   pi: ExtensionAPI;
 }
@@ -85,6 +86,17 @@ export class VerifyReentrySignal extends Error {
   constructor(message: string) {
     super(message);
     this.name = "VerifyReentrySignal";
+  }
+}
+
+/**
+ * Thrown by Phase 0 when admission is awaiting an explicit user decision.
+ * The runner should persist state and exit cleanly without treating this as a failure.
+ */
+export class AdmissionPendingSignal extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdmissionPendingSignal";
   }
 }
 
