@@ -38,7 +38,13 @@ export function acquireLock(projectRoot: string, runId: string): void {
   if (existsSync(lp)) {
     try {
       const existing: LockData = JSON.parse(readFileSync(lp, "utf-8"));
-      if (existing.host === hostname() && isPidAlive(existing.pid)) {
+      const sameHost = existing.host === hostname();
+      const alive = isPidAlive(existing.pid);
+      const sameProcess = existing.pid === process.pid;
+      const sameRun = existing.run_id === runId;
+      const pendingUpgrade = existing.run_id === "pending";
+
+      if (sameHost && alive && (!sameProcess || (!sameRun && !pendingUpgrade))) {
         throw new Error(
           `Another composed-lite runtime (PID ${existing.pid}, run ${existing.run_id}) is already active. ` +
           `Kill it first or wait for it to finish.`

@@ -210,6 +210,7 @@ Do not claim to have executed commands.`;
 
   let result: ReviewResult | null = null;
   let rawLogHash = "";
+  let rawLogRelPath = "";
   const maxRetries = 2;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -226,10 +227,13 @@ Do not claim to have executed commands.`;
       RAW_LOGS_DIR,
       `${phase}-${state.phases[phase].attempt}-reviewer-${attempt}.jsonl`,
     );
+    rawLogRelPath = `logs/raw/${phase}-${state.phases[phase].attempt}-reviewer-${attempt}.jsonl`;
     const rawLogDir = dirname(rawLogPath);
     if (!existsSync(rawLogDir)) mkdirSync(rawLogDir, { recursive: true });
     writeFileSync(rawLogPath, spawnResult.rawOutput);
     rawLogHash = sha256(spawnResult.rawOutput);
+
+    result = parseReviewerOutput(spawnResult.output);
 
     // Audit: subagent result
     appendAudit(projectRoot, state.run_id, {
@@ -238,12 +242,10 @@ Do not claim to have executed commands.`;
         phase,
         agent: "composed-lite-reviewer",
         raw_log_hash: rawLogHash,
-        parsed_ok: false, // will update below
+        parsed_ok: Boolean(result),
       },
     });
 
-    // Parse output
-    result = parseReviewerOutput(spawnResult.output);
     if (result) {
       appendAudit(projectRoot, state.run_id, {
         event: "reviewer_verdict",
@@ -279,8 +281,6 @@ minor:
 ${result.minor.map(c => `  - id: ${c.id}\n    target: "${c.target}"\n    rationale: "${c.rationale}"`).join("\n") || "  []"}
 rationale: "${result.rationale}"
 `;
-
-  const rawLogRelPath = `logs/raw/${phase}-${state.phases[phase].attempt}-reviewer-final.jsonl`;
 
   const envelope = writeArtifact(projectRoot, artifactKind, body, {
     schema_version: 1,
