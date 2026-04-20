@@ -145,6 +145,7 @@ export function parseWorkflowOverridesOnly(args: string): Record<string, string>
 
 /**
  * Dispatch a resolved plugin according to its declared mode.
+ * If the plugin has an executor_extension, delegate to the runtime instead.
  */
 function dispatchPluginByMode(
   plugin: WorkflowPlugin,
@@ -152,6 +153,32 @@ function dispatchPluginByMode(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
 ): void {
+  // ── Runtime-owned dispatch ──────────────────────────────────────────────
+  if (plugin.meta.executorExtension === "composed-lite") {
+    const base = projectRoot();
+    // Parse --plan flag from args
+    const isPlan = /--plan\b/.test(args);
+    const requirement = args.replace(/--plan\s*/, "").trim();
+    // Dynamic import to avoid circular deps
+    import("../../composed-lite/index.js").then(({ runComposedLite }) => {
+      runComposedLite({
+        projectRoot: base,
+        requirement,
+        mode: isPlan ? "plan" : "full",
+        source: "workflow-run",
+        ctx,
+        pi,
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`Composed-lite runtime error: ${msg}`, "error");
+      });
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`Failed to load composed-lite runtime: ${msg}`, "error");
+    });
+    return;
+  }
+
   switch (plugin.meta.mode) {
     case "oneshot": {
       dispatchOneshot(plugin, pi, args.trim());

@@ -349,6 +349,29 @@ export async function handleStart(
   const basePath = process.cwd();
   const date = new Date().toISOString().split("T")[0];
 
+  // ─── Runtime-owned dispatch (composed-lite) ─────────────────────────────
+  if (template.executor_extension === "composed-lite") {
+    const isPlan = description.includes("--plan") || args.includes("--plan");
+    const requirement = description.replace(/--plan\s*/, "").trim();
+    import("./composed-lite/index.js").then(({ runComposedLite }) => {
+      runComposedLite({
+        projectRoot: basePath,
+        requirement,
+        mode: isPlan ? "plan" : "full",
+        source: "workflow-start",
+        ctx,
+        pi,
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`Composed-lite runtime error: ${msg}`, "error");
+      });
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`Failed to load composed-lite runtime: ${msg}`, "error");
+    });
+    return;
+  }
+
   // Load the workflow template content — prefer a project/global plugin
   // override if one exists (same name, .md format).
   let workflowContent: string | null = null;
@@ -570,6 +593,30 @@ export function dispatchMarkdownPhasePlugin(
   pi: ExtensionAPI,
 ): void {
   if (plugin.meta.mode !== "markdown-phase") return;
+
+  // ─── Runtime-owned dispatch (composed-lite) ─────────────────────────────
+  if (plugin.meta.executorExtension === "composed-lite") {
+    const basePath = process.cwd();
+    const isPlan = /--plan\b/.test(description);
+    const requirement = description.replace(/--plan\s*/, "").trim();
+    import("./composed-lite/index.js").then(({ runComposedLite }) => {
+      runComposedLite({
+        projectRoot: basePath,
+        requirement,
+        mode: isPlan ? "plan" : "full",
+        source: "workflow-start",
+        ctx,
+        pi,
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`Composed-lite runtime error: ${msg}`, "error");
+      });
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`Failed to load composed-lite runtime: ${msg}`, "error");
+    });
+    return;
+  }
 
   if (isAutoActive()) {
     ctx.ui.notify(

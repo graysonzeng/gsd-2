@@ -264,6 +264,18 @@
       "artifact_dir": ".gsd/workflows/ci/",
       "estimated_complexity": "medium",
       "requires_project": false
+    },
+    "composed-lite": {
+      "name": "Composed Lite",
+      "description": "Design-to-delivery pipeline with independent review, verification, and anti-drift contracts",
+      "file": "composed-lite.md",
+      "mode": "markdown-phase",
+      "executor_extension": "composed-lite",
+      "phases": ["admission", "research", "design", "split", "implementation", "verification", "delivery", "postmortem"],
+      "triggers": ["composed-lite", "design-and-ship", "full design", "设计方案", "composed lite"],
+      "artifact_dir": null,
+      "estimated_complexity": "high",
+      "requires_project": true
     }
   }
 }

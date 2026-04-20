@@ -41,6 +41,7 @@ export interface TemplateEntry {
   artifact_dir: string | null;
   estimated_complexity: string;
   requires_project: boolean;
+  executor_extension?: string;
 }
 
 export interface TemplateRegistry {

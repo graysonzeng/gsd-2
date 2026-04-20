@@ -40,6 +40,7 @@ export interface WorkflowPluginMeta {
   complexity?: string;
   artifactDir?: string | null;
   requiresProject?: boolean;
+  executorExtension?: string;
 }
 
 export interface WorkflowPlugin {
@@ -157,6 +158,7 @@ function loadMarkdownPlugin(filePath: string, source: PluginSource): WorkflowPlu
       complexity: meta.complexity,
       artifactDir: artifactDirValue ?? undefined,
       requiresProject: meta.requires_project === "true",
+      executorExtension: meta.executor_extension || undefined,
     },
   };
 }
@@ -280,6 +282,7 @@ function loadBundledPlugins(out: Map<string, WorkflowPlugin>): void {
         complexity: entry.estimated_complexity,
         artifactDir: entry.artifact_dir,
         requiresProject: entry.requires_project,
+        executorExtension: (entry as any).executor_extension || undefined,
       },
     });
   }
