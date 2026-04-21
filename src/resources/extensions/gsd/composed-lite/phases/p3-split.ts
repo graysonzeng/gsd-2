@@ -5,15 +5,17 @@
  * Contract C14: impl-plan.acceptance must be strong schema.
  */
 
-import { spawn } from "node:child_process";
 import { writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
+import { join, dirname } from "node:path";
 import { parse as yamlParse } from "yaml";
 
 import type { ComposedLiteState, ComposedLiteRunRequest } from "../types.js";
-import { RAW_LOGS_DIR } from "../types.js";
+import { RAW_LOGS_DIR, buildRunScopedRawLogFileName } from "../types.js";
 import { writeArtifact, readArtifact, sha256 } from "../artifacts.js";
-import { resolveGsdBin } from "../resolve-bin.js";
+import { appendAudit } from "../audit-log.js";
+import { resolveMainModelArg } from "../model-arg.js";
+import { formatCarryForwardReviewContext } from "../pending-review-findings.js";
+import { spawnGsdSubagent } from "../subagent-spawn.js";
 
 // ─── Acceptance assertion schema ─────────────────────────────────────────────
 
@@ -84,6 +86,18 @@ function validateImplPlan(parsed: unknown): { valid: true; steps: ImplStep[] } |
   return { valid: true, steps: validatedSteps };
 }
 
+async function spawnSplitPlanner(
+  projectRoot: string,
+  task: string,
+  modelArg: string | null,
+): Promise<Awaited<ReturnType<typeof spawnGsdSubagent>>> {
+  return spawnGsdSubagent({
+    projectRoot,
+    task,
+    modelArg,
+  });
+}
+
 // ─── Phase handler ───────────────────────────────────────────────────────────
 
 export async function runPhase3(
@@ -96,10 +110,13 @@ export async function runPhase3(
 
   const designDoc = readArtifact(projectRoot, "design-doc");
   const designContent = designDoc ? designDoc.body : "(no design)";
+  const carryForwardContext = formatCarryForwardReviewContext(state.carry_forward_review.entries);
 
   const task = `Based on this design document, create an implementation plan with ordered steps.
 
-Design:
+${carryForwardContext ? `${carryForwardContext}
+
+` : ""}Design:
 ${designContent}
 
 Output EXACTLY one YAML document with this structure:
@@ -121,59 +138,68 @@ Valid acceptance kinds: file_exists, file_contains, grep, ast_match, test_pass
 Each step MUST have at least 1 acceptance assertion.
 Maximum 8 steps. Order them by dependency.`;
 
-  const args: string[] = [
-    "--mode", "json", "-p", "--no-session",
-    `Task: ${task}`,
-  ];
+  const modelArg = resolveMainModelArg(state);
+  const envelopeModel = modelArg ? state.review.main_model : null;
+  const envelopeProvider = state.review.main_model_provider ?? null;
+  const auditModel = envelopeModel ?? "default";
+  const auditProvider = envelopeProvider ?? "default";
 
-  const bundledPaths = (process.env.GSD_BUNDLED_EXTENSION_PATHS ?? "")
-    .split(delimiter).map(s => s.trim()).filter(Boolean);
-  const extensionArgs = bundledPaths.flatMap(p => ["--extension", p]);
-
-  const result = await new Promise<{ output: string; rawOutput: string }>((resolve) => {
-    const gsdBin = resolveGsdBin();
-    if (!gsdBin) {
-      resolve({ output: "", rawOutput: "" });
-      return;
-    }
-    const proc = spawn(
-      process.execPath,
-      [gsdBin, ...extensionArgs, ...args],
-      { cwd: projectRoot, shell: false, stdio: ["ignore", "pipe", "pipe"] },
-    );
-
-    let stdout = "";
-    proc.stdout.on("data", (data) => { stdout += data.toString(); });
-    proc.stderr.on("data", () => {});
-
-    proc.on("close", () => {
-      let output = "";
-      for (const line of stdout.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-          if (event.type === "message_end" && event.message?.role === "assistant") {
-            for (const part of event.message.content) {
-              if (part.type === "text") output = part.text;
-            }
-          }
-        } catch { /* skip */ }
-      }
-      resolve({ output, rawOutput: stdout });
-    });
-
-    proc.on("error", () => resolve({ output: "", rawOutput: "" }));
+  // Audit: main-agent subagent_call (parity with P1/P2/P4 so split is
+  // traceable in the audit log).
+  appendAudit(projectRoot, state.run_id, {
+    event: "subagent_call",
+    payload: {
+      phase: 3,
+      agent: `split-agent-${state.phases[3].attempt}`,
+      model: auditModel,
+      provider: auditProvider,
+      input_hash: sha256(task),
+    },
   });
 
+  const result = await spawnSplitPlanner(projectRoot, task, modelArg);
+
   // Write raw log
-  const rawLogPath = join(projectRoot, RAW_LOGS_DIR, `3-${state.phases[3].attempt}-split.jsonl`);
+  const rawLogFileName = buildRunScopedRawLogFileName(state.run_id, `3-${state.phases[3].attempt}-split.jsonl`);
+  const rawLogRelPath = `logs/raw/${rawLogFileName}`;
+  const rawLogPath = join(projectRoot, RAW_LOGS_DIR, rawLogFileName);
   const rawLogDir = dirname(rawLogPath);
   if (!existsSync(rawLogDir)) mkdirSync(rawLogDir, { recursive: true });
   writeFileSync(rawLogPath, result.rawOutput);
+  const rawLogHash = sha256(result.rawOutput);
 
-  // Parse YAML from output
-  let yamlContent = result.output;
-  const fenceMatch = result.output.match(/```(?:yaml)?\s*\n([\s\S]*?)```/);
+  const terminalResult = result.terminalResult;
+
+  // Audit: main-agent subagent_result. `parsed_ok` here reflects terminal
+  // health only; strong-schema validation happens below and is treated as
+  // a separate validation error (not a subagent failure).
+  appendAudit(projectRoot, state.run_id, {
+    event: "subagent_result",
+    payload: {
+      phase: 3,
+      agent: `split-agent-${state.phases[3].attempt}`,
+      raw_log_hash: rawLogHash,
+      raw_log_path: rawLogRelPath,
+      stop_reason: terminalResult.stopReason,
+      error_message: terminalResult.errorMessage,
+      parsed_ok: !terminalResult.terminalError,
+    },
+  });
+
+  if (terminalResult.terminalError) {
+    throw new Error([
+      `Split generation failed`,
+      terminalResult.provider ? `provider=${terminalResult.provider}` : null,
+      terminalResult.model ? `model=${terminalResult.model}` : null,
+      terminalResult.errorMessage ?? terminalResult.terminalError,
+    ].filter(Boolean).join(" | "));
+  }
+
+  // Parse YAML from output (prefer terminal-parser's extracted text for parity
+  // with P1/P2; fall back to the legacy direct output for older subagent logs).
+  const sourceOutput = terminalResult.outputText;
+  let yamlContent = sourceOutput;
+  const fenceMatch = sourceOutput.match(/```(?:yaml)?\s*\n([\s\S]*?)```/);
   if (fenceMatch) yamlContent = fenceMatch[1];
 
   let parsed: unknown;
@@ -199,13 +225,13 @@ Maximum 8 steps. Order them by dependency.`;
     artifact_kind: "impl-plan",
     producer_kind: "main_agent",
     producer_id: `split-agent-${state.phases[3].attempt}`,
-    provider: null,
-    model: null,
+    provider: envelopeProvider,
+    model: envelopeModel,
     admission_hash: state.admission.admission_hash || "",
     prev_phase_output_hash: state.phases[2].artifact_envelope.output_hash,
     input_hash: sha256(task),
-    raw_log_hash: sha256(result.rawOutput),
-    raw_log_path: `logs/raw/3-${state.phases[3].attempt}-split.jsonl`,
+    raw_log_hash: rawLogHash,
+    raw_log_path: rawLogRelPath,
   });
 
   state.phases[3].artifact_envelope = {
@@ -213,8 +239,8 @@ Maximum 8 steps. Order them by dependency.`;
     output_hash: envelope.output_hash,
     producer_kind: "main_agent",
     producer_id: `split-agent-${state.phases[3].attempt}`,
-    provider: null,
-    model: null,
+    provider: envelopeProvider,
+    model: envelopeModel,
   };
 
   ctx.ui.notify(

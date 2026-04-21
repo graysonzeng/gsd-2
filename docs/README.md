@@ -12,6 +12,7 @@ Simplified Chinese translation: [`zh-CN/`](./zh-CN/).
 |-------|-------------|
 | [Getting Started](./user-docs/getting-started.md) | Installation, first run, and basic usage |
 | [Auto Mode](./user-docs/auto-mode.md) | How autonomous execution works — the state machine, crash recovery, and steering |
+| [Composed-lite Workflow](./user-docs/composed-lite.md) | Phase-driven runtime with cross-provider review. Model selection envs, Windsurf integration, artifact layout |
 | [Commands Reference](./user-docs/commands.md) | All commands, keyboard shortcuts, and CLI flags |
 | [Remote Questions](./user-docs/remote-questions.md) | Discord and Slack integration for headless auto-mode |
 | [Configuration](./user-docs/configuration.md) | Preferences, model selection, git settings, and token profiles |

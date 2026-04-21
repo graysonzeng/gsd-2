@@ -5,19 +5,21 @@
  * Contract C5: git diff is truth source (empty diff → fuse).
  */
 
-import { spawn, execSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
+import { join, dirname } from "node:path";
 import { parse as yamlParse } from "yaml";
 
 import type { ArtifactEnvelope, ComposedLiteState, ComposedLiteRunRequest } from "../types.js";
-import { RAW_LOGS_DIR } from "../types.js";
+import { RAW_LOGS_DIR, buildRunScopedRawLogFileName } from "../types.js";
 import { writeArtifact, readArtifact, sha256 } from "../artifacts.js";
 import { appendAudit } from "../audit-log.js";
 import { saveState } from "../state.js";
 import { runReview, type ReviewResult } from "../review-harness.js";
 import { ComposedLiteFuseError } from "../types.js";
-import { resolveGsdBin } from "../resolve-bin.js";
+import { resolveMainModelArg } from "../model-arg.js";
+import { formatCarryForwardReviewContext, markPendingReviewFindingsResolved, recordPendingReviewFindings } from "../pending-review-findings.js";
+import { spawnGsdSubagent } from "../subagent-spawn.js";
 
 const MAX_REVISION_ROUNDS = 2;
 
@@ -43,45 +45,12 @@ interface RoundSummary {
 async function spawnWorker(
   projectRoot: string,
   task: string,
-): Promise<{ output: string; rawOutput: string }> {
-  const args: string[] = [
-    "--mode", "json", "-p", "--no-session",
-    `Task: ${task}`,
-  ];
-  const bundledPaths = (process.env.GSD_BUNDLED_EXTENSION_PATHS ?? "")
-    .split(delimiter).map(s => s.trim()).filter(Boolean);
-  const extensionArgs = bundledPaths.flatMap(p => ["--extension", p]);
-
-  return new Promise((resolve) => {
-    const gsdBin = resolveGsdBin();
-    if (!gsdBin) {
-      resolve({ output: "", rawOutput: "" });
-      return;
-    }
-    const proc = spawn(
-      process.execPath,
-      [gsdBin, ...extensionArgs, ...args],
-      { cwd: projectRoot, shell: false, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    let stdout = "";
-    proc.stdout.on("data", (data) => { stdout += data.toString(); });
-    proc.stderr.on("data", () => {});
-    proc.on("close", () => {
-      let output = "";
-      for (const line of stdout.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-          if (event.type === "message_end" && event.message?.role === "assistant") {
-            for (const part of event.message.content) {
-              if (part.type === "text") output = part.text;
-            }
-          }
-        } catch { /* skip */ }
-      }
-      resolve({ output, rawOutput: stdout });
-    });
-    proc.on("error", () => resolve({ output: "", rawOutput: "" }));
+  modelArg: string | null,
+): Promise<Awaited<ReturnType<typeof spawnGsdSubagent>>> {
+  return spawnGsdSubagent({
+    projectRoot,
+    task,
+    modelArg,
   });
 }
 
@@ -224,8 +193,16 @@ async function executeImplementationRound(input: {
   const revisionContext = round > 0
     ? `\n\nYou are in revision round ${round} after an independent code review. Keep good existing changes, fix the reported issues, and do not regress completed work.`
     : "";
+  const carryForwardContext = state.carry_forward_review.entries.length > 0
+    ? `\n\n${formatCarryForwardReviewContext(state.carry_forward_review.entries)}`
+    : "";
 
   const rawLogHashes: string[] = [];
+
+  // Resolve --model once per round from GSD_COMPOSED_LITE_MAIN_MODEL[_PROVIDER].
+  const modelArg = resolveMainModelArg(state);
+  const auditModel = modelArg ?? "default";
+  const auditProvider = state.review.main_model_provider ?? "default";
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
@@ -244,6 +221,7 @@ async function executeImplementationRound(input: {
       failureContext,
       revisionContext,
       reviewContext,
+      carryForwardContext,
       summaryContext,
       "",
       "Make the necessary code changes. Do not just describe what to do — actually edit the files.",
@@ -254,22 +232,24 @@ async function executeImplementationRound(input: {
       payload: {
         phase: 4,
         agent: `worker-step-${i}-r${round}`,
-        model: "default",
-        provider: "default",
+        model: auditModel,
+        provider: auditProvider,
         input_hash: sha256(task),
       },
     });
 
-    const result = await spawnWorker(projectRoot, task);
+    const result = await spawnWorker(projectRoot, task, modelArg);
 
-    const rawLogRelPath = `logs/raw/4-${state.phases[4].attempt}-worker-step${i}-r${round}.jsonl`;
-    const rawLogPath = join(projectRoot, RAW_LOGS_DIR, `4-${state.phases[4].attempt}-worker-step${i}-r${round}.jsonl`);
+    const rawLogFileName = buildRunScopedRawLogFileName(state.run_id, `4-${state.phases[4].attempt}-worker-step${i}-r${round}.jsonl`);
+    const rawLogRelPath = `logs/raw/${rawLogFileName}`;
+    const rawLogPath = join(projectRoot, RAW_LOGS_DIR, rawLogFileName);
     const rawLogDir = dirname(rawLogPath);
     if (!existsSync(rawLogDir)) mkdirSync(rawLogDir, { recursive: true });
     writeFileSync(rawLogPath, result.rawOutput);
 
     const rawLogHash = sha256(result.rawOutput);
     rawLogHashes.push(rawLogHash);
+    const terminalResult = result.terminalResult;
 
     appendAudit(projectRoot, state.run_id, {
       event: "subagent_result",
@@ -278,9 +258,20 @@ async function executeImplementationRound(input: {
         agent: `worker-step-${i}-r${round}`,
         raw_log_hash: rawLogHash,
         raw_log_path: rawLogRelPath,
-        parsed_ok: true,
+        stop_reason: terminalResult.stopReason,
+        error_message: terminalResult.errorMessage,
+        parsed_ok: !terminalResult.terminalError,
       },
     });
+
+    if (terminalResult.terminalError) {
+      throw new Error([
+        `Worker step ${i + 1} failed`,
+        terminalResult.provider ? `provider=${terminalResult.provider}` : null,
+        terminalResult.model ? `model=${terminalResult.model}` : null,
+        terminalResult.errorMessage ?? terminalResult.terminalError,
+      ].filter(Boolean).join(" | "));
+    }
   }
 
   if (!state.git.baseline_sha || state.git.baseline_sha === "unknown") {
@@ -323,7 +314,7 @@ async function executeImplementationRound(input: {
     prev_phase_output_hash: state.phases[3].artifact_envelope.output_hash,
     input_hash: sha256(steps.map(step => step.title).join(",")),
     raw_log_hash: sha256(rawLogHashes.join(",")),
-    raw_log_path: `logs/raw/4-${state.phases[4].attempt}-worker-step*-r${round}.jsonl`,
+    raw_log_path: `logs/raw/${buildRunScopedRawLogFileName(state.run_id, `4-${state.phases[4].attempt}-worker-step*-r${round}.jsonl`)}`,
   });
 
   state.phases[4].artifact_envelope = {
@@ -396,6 +387,11 @@ export async function runPhase4(
     });
 
     if (reviewResult.overall_assessment === "pass") {
+      markPendingReviewFindingsResolved({
+        projectRoot,
+        reviewKind: "code-review",
+        resolutionRunId: state.run_id,
+      });
       state.phases[4].artifact_envelope = {
         path: "implementation-summary",
         output_hash: summary.envelope.output_hash,
@@ -409,10 +405,29 @@ export async function runPhase4(
     }
 
     if (round >= MAX_REVISION_ROUNDS) {
-      throw new ComposedLiteFuseError(
-        "code_review_exhausted",
-        `Code review did not pass after ${MAX_REVISION_ROUNDS + 1} rounds`,
+      const recorded = recordPendingReviewFindings({
+        projectRoot,
+        runId: state.run_id,
+        requirement: state.requirement,
+        phase: 4,
+        reviewKind: "code-review",
+        reviewResult,
+        sourceReviewOutputHash: state.phases[4].artifact_envelope.output_hash,
+      });
+      state.phases[4].failure_reason = `Code review deferred after ${MAX_REVISION_ROUNDS + 1} rounds`;
+      state.phases[4].artifact_envelope = {
+        path: "implementation-summary",
+        output_hash: summary.envelope.output_hash,
+        producer_kind: "runtime",
+        producer_id: "runtime",
+        provider: null,
+        model: null,
+      };
+      ctx.ui.notify(
+        `Phase 4: Code review deferred after max revisions. Recorded ${recorded.review_kind} findings and continuing to Phase 5.`,
+        "warning",
       );
+      return;
     }
 
     reviewFeedback = reviewResult;

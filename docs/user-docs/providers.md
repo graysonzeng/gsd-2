@@ -5,6 +5,7 @@ Step-by-step setup instructions for every LLM provider GSD supports. If you ran 
 ## Table of Contents
 
 - [Quick Reference](#quick-reference)
+- [Credential Resolution Order](#credential-resolution-order)
 - [Built-in Providers](#built-in-providers)
   - [Anthropic (Claude)](#anthropic-claude)
   - [OpenAI](#openai)
@@ -44,6 +45,29 @@ Step-by-step setup instructions for every LLM provider GSD supports. If you ran 
 | Ollama | None (local) | — | `models.json` required |
 | LM Studio | None (local) | — | `models.json` required |
 | vLLM / SGLang | None (local) | — | `models.json` required |
+
+## Credential Resolution Order
+
+For providers that use API keys, GSD resolves credentials in this order:
+
+1. Runtime override (`--api-key` on the underlying CLI)
+2. `~/.gsd/agent/auth.json`
+3. Environment variable such as `OPENAI_API_KEY`
+4. `models.json` fallback resolution for provider overrides / custom providers
+
+Notes:
+
+- `auth.json` takes priority over environment variables. If both are set and differ, GSD uses the stored credential.
+- `models.json` is primarily an advanced configuration surface for custom providers, proxies, and per-provider overrides. It is not the primary place to store built-in OpenAI/Anthropic keys.
+- GSD only hydrates a small set of optional tool keys into `process.env` on startup. Built-in OpenAI auth is not backfilled into `OPENAI_API_KEY` from `auth.json`.
+- `models.json` is resolved from `~/.gsd/agent/models.json` first, then falls back to `~/.pi/agent/models.json` if the GSD file does not exist.
+
+If a provider request is using the wrong key, check these locations in the same order:
+
+1. Any explicit `--api-key` passed to the CLI/session
+2. `~/.gsd/agent/auth.json`
+3. The current process environment
+4. `~/.gsd/agent/models.json` and `~/.pi/agent/models.json`
 
 ---
 

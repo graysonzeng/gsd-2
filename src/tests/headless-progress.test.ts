@@ -161,6 +161,29 @@ describe('formatProgress', () => {
       assert.ok(result.includes('M001'))
     })
 
+    it('shows non-phase setStatus as status in verbose mode', () => {
+      const result = formatProgress({
+        type: 'extension_ui_request',
+        method: 'setStatus',
+        statusKey: 'zz-notifications',
+        message: '🔔 3 unread',
+      }, ctx())
+      assert.ok(result)
+      assert.ok(result.includes('[status]'))
+      assert.ok(result.includes('zz-notifications'))
+      assert.ok(!result.includes('[phase]'))
+    })
+
+    it('suppresses non-phase setStatus outside verbose mode', () => {
+      const result = formatProgress({
+        type: 'extension_ui_request',
+        method: 'setStatus',
+        statusKey: 'zz-notifications',
+        message: '🔔 3 unread',
+      }, ctx({ verbose: false }))
+      assert.equal(result, null)
+    })
+
     it('suppresses setWidget (TUI-only)', () => {
       const result = formatProgress({
         type: 'extension_ui_request',

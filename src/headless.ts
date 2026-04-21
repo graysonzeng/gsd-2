@@ -137,6 +137,24 @@ export function parseHeadlessArgs(argv: string[]): HeadlessOptions {
 
   const args = argv.slice(2)
 
+  const isKnownHeadlessFlag = (value: string): boolean => {
+    return value === '--timeout'
+      || value === '--json'
+      || value === '--output-format'
+      || value === '--model'
+      || value === '--context'
+      || value === '--context-text'
+      || value === '--auto'
+      || value === '--verbose'
+      || value === '--max-restarts'
+      || value === '--answers'
+      || value === '--events'
+      || value === '--supervised'
+      || value === '--response-timeout'
+      || value === '--resume'
+      || value === '--bare'
+  }
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
     if (arg === 'headless') continue
@@ -202,6 +220,8 @@ export function parseHeadlessArgs(argv: string[]): HeadlessOptions {
         options.resumeSession = args[++i]
       } else if (arg === '--bare') {
         options.bare = true
+      } else if (options.command !== 'auto' && !isKnownHeadlessFlag(arg)) {
+        options.commandArgs.push(arg)
       }
     } else if (options.command === 'auto') {
       options.command = arg

@@ -167,6 +167,25 @@ export GSD_ALLOWED_COMMAND_PREFIXES="pass,op,sops,doppler"
 
 > **注意：** 这是一个仅全局生效的设置。项目级 settings.json（`<project>/.gsd/settings.json`）不能覆盖命令 allowlist，以防克隆下来的仓库提升命令执行权限。
 
+### 内置 Provider 的认证优先级
+
+你可以在 `models.json` 里为内置 provider 设置 `apiKey`、`baseUrl` 和 `headers`，这在通过代理转发时尤其有用。
+
+但对于内置 provider，GSD 在解析凭证时，`models.json` 的优先级低于常规认证来源：
+
+1. 运行时覆盖（`--api-key`）
+2. `~/.gsd/agent/auth.json`
+3. provider 对应的环境变量，例如 `OPENAI_API_KEY`
+4. `models.json` 里的 provider `apiKey`
+
+因此，`models.json` 中的 provider `apiKey` 更适合以下高级场景：
+
+- custom provider
+- 代理 endpoint
+- 需要引用环境变量名或命令解析的可移植配置
+
+如果你发现内置 provider 看起来用了“错误的 key”，请先检查 `auth.json` 和当前环境变量，再假设当前生效的是 `models.json`。
+
 ### 自定义 Headers
 
 ```json

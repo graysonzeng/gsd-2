@@ -12,6 +12,7 @@
 |------|------|
 | [快速开始](./user-docs/getting-started.md) | 安装、首次运行和基础使用 |
 | [自动模式](./user-docs/auto-mode.md) | 自主执行如何工作，包括状态机、崩溃恢复和引导控制 |
+| [Composed-lite 工作流](./user-docs/composed-lite.md) | 阶段驱动的工作流运行时，内建跨 provider 评审；模型选择环境变量、Windsurf 集成、工件布局 |
 | [命令参考](./user-docs/commands.md) | 所有命令、键盘快捷键和 CLI 参数 |
 | [远程提问](./user-docs/remote-questions.md) | 用于无头自动模式的 Discord、Slack 和 Telegram 集成 |
 | [配置](./user-docs/configuration.md) | 偏好设置、模型选择、Git 设置和 Token 配置 |

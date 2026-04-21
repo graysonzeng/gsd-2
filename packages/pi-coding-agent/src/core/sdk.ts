@@ -98,6 +98,8 @@ export interface CreateAgentSessionOptions {
 	tools?: Tool[];
 	/** Custom tools to register (in addition to built-in tools). */
 	customTools?: ToolDefinition[];
+	/** Whether the built-in Skill tool should be available. Defaults to true. */
+	includeBuiltInSkillTool?: boolean;
 	/**
 	 * Additional tool names to activate after extensions/MCP servers register.
 	 * Names that are not registered by any extension are silently ignored
@@ -546,6 +548,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		customTools: options.customTools,
 		modelRegistry,
 		initialActiveToolNames,
+		includeBuiltInSkillTool: options.includeBuiltInSkillTool,
 		extensionRunnerRef,
 		isClaudeCodeReady: options.isClaudeCodeReady,
 	});

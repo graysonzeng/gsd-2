@@ -6,6 +6,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
+import { hostname } from "node:os";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -184,6 +185,134 @@ function readRuntimeOwnedStateMarker(basePath: string): RuntimeOwnedStateMarker 
   return null;
 }
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeRuntimeControlAction(input: string): "status" | "abandon" | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (trimmed === "status" || trimmed === "--status") return "status";
+  if (
+    trimmed === "abandon"
+    || trimmed === "--abandon"
+    || trimmed === "reset"
+    || trimmed === "--reset"
+  ) {
+    return "abandon";
+  }
+  return null;
+}
+
+async function showComposedLiteRuntimeStatus(basePath: string, ctx: ExtensionCommandContext): Promise<void> {
+  const { loadState } = await import("./composed-lite/state.js");
+  const { PHASE_NAMES } = await import("./composed-lite/types.js");
+  const { syncElapsedBudgetMinutes } = await import("./composed-lite/budget.js");
+
+  const state = loadState(basePath);
+  if (!state) {
+    ctx.ui.notify("No composed-lite runtime state found.", "info");
+    return;
+  }
+
+  syncElapsedBudgetMinutes(state);
+  ctx.ui.notify(
+    `Composed-Lite Runtime Status\n` +
+      `Run ID: ${state.run_id}\n` +
+      `Status: ${state.status}\n` +
+      `Mode: ${state.mode}\n` +
+      `Phase: ${state.current_phase} (${PHASE_NAMES[state.current_phase]})\n` +
+      `Admission: ${state.admission.state}\n` +
+      `Elapsed minutes: ${state.budget.elapsed_minutes}\n` +
+      `Updated: ${state.updated_at}` +
+      (state.fuse_reason ? `\nFuse: ${state.fuse_reason}` : ""),
+    "info",
+  );
+}
+
+async function abandonComposedLiteRuntime(basePath: string, ctx: ExtensionCommandContext): Promise<void> {
+  const { loadState, saveState } = await import("./composed-lite/state.js");
+  const { appendAudit } = await import("./composed-lite/audit-log.js");
+  const { releaseLock } = await import("./composed-lite/run-lock.js");
+  const { syncElapsedBudgetMinutes } = await import("./composed-lite/budget.js");
+
+  const state = loadState(basePath);
+  if (!state) {
+    ctx.ui.notify("No composed-lite runtime state found.", "info");
+    return;
+  }
+
+  if (state.status !== "active") {
+    ctx.ui.notify(`Composed-lite run ${state.run_id} is already ${state.status}.`, "info");
+    return;
+  }
+
+  const liveLease = state.lease.host === hostname() && isProcessAlive(state.lease.pid);
+  if (liveLease) {
+    ctx.ui.notify(
+      `Cannot abandon composed-lite run ${state.run_id} because PID ${state.lease.pid} still appears to be active. ` +
+        `Stop that runtime first, then retry the abandon/reset command.`,
+      "warning",
+    );
+    return;
+  }
+
+  syncElapsedBudgetMinutes(state);
+  state.status = "abandoned";
+  appendAudit(basePath, state.run_id, {
+    event: "run_abandoned",
+    payload: {
+      previous_phase: state.current_phase,
+      admission_state: state.admission.state,
+    },
+  });
+  saveState(basePath, state);
+  releaseLock(basePath);
+  ctx.ui.notify(`Composed-lite run ${state.run_id} marked as abandoned.`, "info");
+}
+
+export async function dispatchComposedLiteRuntime(
+  basePath: string,
+  input: string,
+  source: "resume" | "workflow-start" | "workflow-run",
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+): Promise<void> {
+  let runComposedLite: typeof import("./composed-lite/index.js").runComposedLite;
+  let parseComposedLiteDispatchArgs: typeof import("./composed-lite/index.js").parseComposedLiteDispatchArgs;
+
+  try {
+    ({ runComposedLite, parseComposedLiteDispatchArgs } = await import("./composed-lite/index.js"));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    ctx.ui.notify(`Failed to load composed-lite runtime: ${msg}`, "error");
+    return;
+  }
+
+  const parsed = parseComposedLiteDispatchArgs(input);
+
+  try {
+    await runComposedLite({
+      projectRoot: basePath,
+      requirement: parsed.requirement,
+      mode: parsed.mode,
+      source,
+      admissionAction: parsed.admissionAction,
+      carryForwardReviewAction: parsed.carryForwardReviewAction,
+      ctx,
+      pi,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    ctx.ui.notify(`Composed-lite runtime error: ${msg}`, "error");
+  }
+}
+
 // ─── /gsd start ──────────────────────────────────────────────────────────────
 
 export async function handleStart(
@@ -228,6 +357,17 @@ export async function handleStart(
   // /gsd start --resume or /gsd start resume → resume in-progress workflow
   if (isResumeCommand) {
     const basePath = process.cwd();
+    const runtimeControlAction = normalizeRuntimeControlAction(
+      trimmed.replace(/^--resume\b/, "").replace(/^resume\b/, "").trim(),
+    );
+    if (runtimeControlAction === "status") {
+      await showComposedLiteRuntimeStatus(basePath, ctx);
+      return;
+    }
+    if (runtimeControlAction === "abandon") {
+      await abandonComposedLiteRuntime(basePath, ctx);
+      return;
+    }
     const runtimeMarker = readRuntimeOwnedStateMarker(basePath);
     if (runtimeMarker?.status === "active") {
       ctx.ui.notify(
@@ -237,26 +377,13 @@ export async function handleStart(
         "info",
       );
 
-      import("./composed-lite/index.js").then(({ runComposedLite, parseComposedLiteDispatchArgs }) => {
-        const parsed = parseComposedLiteDispatchArgs(
-          trimmed.replace(/^--resume\b/, "").replace(/^resume\b/, "").trim(),
-        );
-        runComposedLite({
-          projectRoot: basePath,
-          requirement: parsed.requirement,
-          mode: parsed.mode,
-          source: "resume",
-          admissionAction: parsed.admissionAction,
-          ctx,
-          pi,
-        }).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          ctx.ui.notify(`Composed-lite runtime error: ${msg}`, "error");
-        });
-      }).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(`Failed to load composed-lite runtime: ${msg}`, "error");
-      });
+      await dispatchComposedLiteRuntime(
+        basePath,
+        trimmed.replace(/^--resume\b/, "").replace(/^resume\b/, "").trim(),
+        "resume",
+        ctx,
+        pi,
+      );
       return;
     }
 
@@ -414,24 +541,7 @@ export async function handleStart(
 
   // ─── Runtime-owned dispatch (composed-lite) ─────────────────────────────
   if (template.executor_extension === "composed-lite") {
-    const isPlan = description.includes("--plan") || args.includes("--plan");
-    const requirement = description.replace(/--plan\s*/, "").trim();
-    import("./composed-lite/index.js").then(({ runComposedLite }) => {
-      runComposedLite({
-        projectRoot: basePath,
-        requirement,
-        mode: isPlan ? "plan" : "full",
-        source: "workflow-start",
-        ctx,
-        pi,
-      }).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(`Composed-lite runtime error: ${msg}`, "error");
-      });
-    }).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      ctx.ui.notify(`Failed to load composed-lite runtime: ${msg}`, "error");
-    });
+    await dispatchComposedLiteRuntime(basePath, description, "workflow-start", ctx, pi);
     return;
   }
 
@@ -649,35 +759,18 @@ export function getTemplateCompletions(prefix: string): Array<{ value: string; l
  * Writes STATE.json into an artifact dir, creates a git branch, and dispatches
  * the `workflow-start` prompt.
  */
-export function dispatchMarkdownPhasePlugin(
+export async function dispatchMarkdownPhasePlugin(
   plugin: WorkflowPlugin,
   description: string,
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
-): void {
+) : Promise<void> {
   if (plugin.meta.mode !== "markdown-phase") return;
 
   // ─── Runtime-owned dispatch (composed-lite) ─────────────────────────────
   if (plugin.meta.executorExtension === "composed-lite") {
     const basePath = process.cwd();
-    import("./composed-lite/index.js").then(({ runComposedLite, parseComposedLiteDispatchArgs }) => {
-      const parsed = parseComposedLiteDispatchArgs(description);
-      runComposedLite({
-        projectRoot: basePath,
-        requirement: parsed.requirement,
-        mode: parsed.mode,
-        source: "workflow-start",
-        admissionAction: parsed.admissionAction,
-        ctx,
-        pi,
-      }).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(`Composed-lite runtime error: ${msg}`, "error");
-      });
-    }).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      ctx.ui.notify(`Failed to load composed-lite runtime: ${msg}`, "error");
-    });
+    await dispatchComposedLiteRuntime(basePath, description, "workflow-start", ctx, pi);
     return;
   }
 

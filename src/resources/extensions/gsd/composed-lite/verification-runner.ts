@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 
-import { RAW_LOGS_DIR } from "./types.js";
+import { RAW_LOGS_DIR, buildRunScopedRawLogFileName } from "./types.js";
 import { writeArtifact, sha256 } from "./artifacts.js";
 import type { ComposedLiteState } from "./types.js";
 
@@ -103,7 +103,7 @@ export function runVerification(
   }
 
   // Write raw log
-  const rawLogPath = join(projectRoot, RAW_LOGS_DIR, `5-${attempt}-verification.jsonl`);
+  const rawLogPath = join(projectRoot, RAW_LOGS_DIR, buildRunScopedRawLogFileName(runId, `5-${attempt}-verification.jsonl`));
   const rawLogDir = dirname(rawLogPath);
   if (!existsSync(rawLogDir)) mkdirSync(rawLogDir, { recursive: true });
   const logContent = results.map(r => JSON.stringify(r)).join("\n");

@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+const devCliPath = fileURLToPath(import.meta.url)
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '..')
 const srcLoaderPath = resolve(root, 'src', 'loader.ts')
@@ -15,7 +16,7 @@ const child = spawn(
   {
     cwd: process.cwd(),
     stdio: 'inherit',
-    env: process.env,
+    env: { ...process.env, GSD_BIN_PATH: process.env.GSD_BIN_PATH || devCliPath },
   },
 )
 

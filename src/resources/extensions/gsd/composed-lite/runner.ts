@@ -32,7 +32,7 @@ import {
 import { initState, loadState, saveState, writeStateMarker } from "./state.js";
 import { acquireLock, releaseLock } from "./run-lock.js";
 import { appendAudit } from "./audit-log.js";
-import { checkBudget } from "./budget.js";
+import { checkBudget, syncElapsedBudgetMinutes } from "./budget.js";
 import { sha256 } from "./artifacts.js";
 
 // Phase handlers — imported lazily per phase
@@ -168,14 +168,27 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
       );
     }
 
-    // Initialize main_model from session context (needed for cross-provider reviewer pick)
+    // Initialize main_model from session context (needed for cross-provider reviewer pick).
+    //
+    // Resolution order (v2):
+    //   GSD_COMPOSED_LITE_MAIN_MODEL    (explicit, from external agent / docs)
+    //   > GSD_SESSION_MODEL             (session-scoped, legacy)
+    //   > ANTHROPIC_MODEL               (legacy, Anthropic-specific)
+    //   > "unknown"                     (picker falls back to inferProvider("unknown"))
     if (!state.review.main_model) {
-      // Best-effort: use the model that's currently active in this session.
-      // pi.getSessionInfo is not always available, so fall back to env or "unknown".
       state.review.main_model =
-        process.env.GSD_SESSION_MODEL
+        (process.env.GSD_COMPOSED_LITE_MAIN_MODEL?.trim())
+        || process.env.GSD_SESSION_MODEL
         || process.env.ANTHROPIC_MODEL
         || "unknown";
+    }
+
+    // Explicit main provider override. When set, the reviewer picker skips
+    // substring-based provider inference and uses this value directly. Useful
+    // when `main_model` carries a custom alias not recognised by inferProvider.
+    if (!state.review.main_model_provider) {
+      const mainProviderOverride = process.env.GSD_COMPOSED_LITE_MAIN_MODEL_PROVIDER?.trim();
+      state.review.main_model_provider = mainProviderOverride || null;
     }
 
     // Update lock with actual run_id
@@ -215,7 +228,14 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
 
       // Budget check before each phase (except Phase 7 which always runs)
       if (phaseNum !== 7) {
-        const budgetCheck = checkBudget(state);
+        const allowAdmissionDecisionBeforeBudgetCheck =
+          phaseNum === 0
+          && state.admission.state === "awaiting_approval"
+          && Boolean(req.admissionAction || req.carryForwardReviewAction);
+        if (!allowAdmissionDecisionBeforeBudgetCheck) {
+          syncElapsedBudgetMinutes(state);
+        }
+        const budgetCheck = allowAdmissionDecisionBeforeBudgetCheck ? { ok: true as const } : checkBudget(state);
         if (!budgetCheck.ok) {
           fuse(state, budgetCheck.fuseReason, projectRoot);
           saveState(projectRoot, state);
@@ -358,11 +378,21 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
             output_hash: null,
           },
         });
+
+        saveState(projectRoot, state);
+
+        if (!state.fuse_reason && state.phases[phaseNum].status === "failed") {
+          ctx.ui.notify(
+            `Composed-lite run ${state.run_id} stopped at phase ${phaseNum} (${PHASE_NAMES[phaseNum]}) after a non-fuse failure. ` +
+            `Fix the issue and re-run with /gsd start resume.`,
+            "warning",
+          );
+          return;
+        }
       }
 
       // Update elapsed time
-      const elapsed = (Date.now() - new Date(state.created_at).getTime()) / 60_000;
-      state.budget.elapsed_minutes = Math.round(elapsed * 10) / 10;
+      syncElapsedBudgetMinutes(state);
 
       saveState(projectRoot, state);
     }

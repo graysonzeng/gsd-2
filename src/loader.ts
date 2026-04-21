@@ -138,7 +138,7 @@ process.env.GSD_VERSION = gsdVersion
 
 // GSD_BIN_PATH — absolute path to this loader (dist/loader.js), used by patched subagent
 // to spawn gsd instead of pi when dispatching workflow tasks
-process.env.GSD_BIN_PATH = process.argv[1]
+process.env.GSD_BIN_PATH = process.env.GSD_BIN_PATH || process.argv[1]
 
 // GSD_WORKFLOW_PATH — absolute path to bundled GSD-WORKFLOW.md, used by patched gsd extension
 // when dispatching workflow prompts. Prefers dist/resources/ (stable, set at build time)

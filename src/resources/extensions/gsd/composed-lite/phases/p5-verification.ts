@@ -6,6 +6,7 @@
  */
 
 import type { ComposedLiteState, ComposedLiteRunRequest } from "../types.js";
+import { buildRunScopedRawLogFileName } from "../types.js";
 import { writeArtifact, sha256 } from "../artifacts.js";
 import { appendAudit } from "../audit-log.js";
 import { saveState } from "../state.js";
@@ -51,7 +52,7 @@ export async function runPhase5(
     prev_phase_output_hash: state.phases[4].artifact_envelope.output_hash,
     input_hash: sha256(results.map(r => r.command).join(",")),
     raw_log_hash: sha256(results.map(r => JSON.stringify(r)).join("\n")),
-    raw_log_path: `logs/raw/5-${state.phases[5].attempt}-verification.jsonl`,
+    raw_log_path: `logs/raw/${buildRunScopedRawLogFileName(state.run_id, `5-${state.phases[5].attempt}-verification.jsonl`)}`,
   });
 
   state.phases[5].artifact_envelope = {

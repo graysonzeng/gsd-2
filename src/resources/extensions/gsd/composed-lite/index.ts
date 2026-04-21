@@ -9,19 +9,25 @@ export function parseComposedLiteDispatchArgs(input: string): {
   requirement: string;
   mode: "full" | "plan";
   admissionAction: "approve" | "reject" | null;
+  carryForwardReviewAction: "carry" | "ignore" | null;
 } {
   const isPlan = /(?:^|\s)--plan(?:\s|$)/.test(input);
   const hasApprove = /(?:^|\s)--approve(?:\s|$)/.test(input);
   const hasReject = /(?:^|\s)--reject(?:\s|$)/.test(input);
+  const hasCarry = /(?:^|\s)--carry-review-findings(?:\s|$)/.test(input);
+  const hasIgnore = /(?:^|\s)--ignore-review-findings(?:\s|$)/.test(input);
   const requirement = input
     .replace(/(?:^|\s)--plan(?:\s|$)/g, " ")
     .replace(/(?:^|\s)--approve(?:\s|$)/g, " ")
     .replace(/(?:^|\s)--reject(?:\s|$)/g, " ")
+    .replace(/(?:^|\s)--carry-review-findings(?:\s|$)/g, " ")
+    .replace(/(?:^|\s)--ignore-review-findings(?:\s|$)/g, " ")
     .trim();
 
   return {
     requirement,
     mode: isPlan ? "plan" : "full",
     admissionAction: hasReject ? "reject" : hasApprove ? "approve" : null,
+    carryForwardReviewAction: hasIgnore ? "ignore" : hasCarry ? "carry" : null,
   };
 }

@@ -161,6 +161,25 @@ export GSD_ALLOWED_COMMAND_PREFIXES="pass,op,sops,doppler"
 
 > **Note:** This setting is global-only. Project-level settings.json (`<project>/.gsd/settings.json`) cannot override the command allowlist — this prevents a cloned repo from escalating command execution privileges.
 
+### Built-in Provider Auth Precedence
+
+You can set `apiKey`, `baseUrl`, and `headers` for built-in providers in `models.json`, especially when routing through a proxy.
+
+However, when GSD resolves credentials for a built-in provider, `models.json` is lower priority than the usual auth sources:
+
+1. Runtime override (`--api-key`)
+2. `~/.gsd/agent/auth.json`
+3. Provider environment variable such as `OPENAI_API_KEY`
+4. `models.json` provider `apiKey`
+
+Use `models.json` provider `apiKey` mainly for advanced setups:
+
+- custom providers
+- proxy endpoints
+- portable configs that reference an environment variable name or command
+
+If your built-in provider seems to be using the wrong key, check `auth.json` and the current environment before assuming `models.json` is active.
+
 ### Custom Headers
 
 ```json

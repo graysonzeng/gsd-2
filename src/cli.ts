@@ -25,6 +25,7 @@ import { applySecurityOverrides } from './security-overrides.js'
 import { validateConfiguredModel } from './startup-model-validation.js'
 import {
   parseCliArgs,
+  resolveCreateAgentSessionToolOptions,
   runWebCliBranch,
   migrateLegacyFlatSessions,
 } from './cli-web-branch.js'
@@ -552,6 +553,8 @@ if (isPrintMode) {
   await resourceLoader.reload()
   markStartup('resourceLoader.reload')
 
+  const printModeToolOptions = resolveCreateAgentSessionToolOptions(cliFlags)
+
   const { session, extensionsResult, modelFallbackMessage } = await createAgentSession({
     authStorage,
     modelRegistry,
@@ -559,6 +562,7 @@ if (isPrintMode) {
     sessionManager,
     resourceLoader,
     isClaudeCodeReady: () => modelRegistry.isProviderRequestReady('claude-code'),
+    ...printModeToolOptions,
   })
   markStartup('createAgentSession')
 

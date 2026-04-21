@@ -10,14 +10,16 @@ import { stringify as yamlStringify } from "yaml";
 import type { ComposedLiteState, ComposedLiteRunRequest } from "../types.js";
 import { writeArtifact, sha256 } from "../artifacts.js";
 import { appendAudit } from "../audit-log.js";
+import { pauseBudget, resumeBudget } from "../budget.js";
 import { saveState } from "../state.js";
 import { AdmissionPendingSignal, ComposedLiteFuseError } from "../types.js";
+import { getLatestPendingReviewFindingsBundle, summarizePendingReviewFindings } from "../pending-review-findings.js";
 
 export async function runPhase0(
   state: ComposedLiteState,
   req: ComposedLiteRunRequest,
 ): Promise<void> {
-  const { projectRoot, ctx, admissionAction } = req;
+  const { projectRoot, ctx, admissionAction, carryForwardReviewAction } = req;
 
   // ── Evidence collection ─────────────────────────────────────────────────
   if (state.admission.state === "pending") {
@@ -30,6 +32,35 @@ export async function runPhase0(
     });
   }
 
+   const pendingEntries = state.carry_forward_review.entries.length > 0
+     ? state.carry_forward_review.entries
+     : getLatestPendingReviewFindingsBundle(projectRoot);
+
+   if (state.carry_forward_review.action === null && pendingEntries.length > 0) {
+     if (carryForwardReviewAction === "carry") {
+       state.carry_forward_review.action = "carry";
+       state.carry_forward_review.entries = pendingEntries;
+     } else if (carryForwardReviewAction === "ignore") {
+       state.carry_forward_review.action = "ignore";
+       state.carry_forward_review.entries = [];
+     } else {
+       const findingsSummary = summarizePendingReviewFindings(pendingEntries);
+       pauseBudget(state);
+       state.admission.state = "awaiting_approval";
+       saveState(projectRoot, state);
+       ctx.ui.notify(
+         `Composed-Lite Pending Review Findings\n` +
+         `${findingsSummary}\n\n` +
+         `Re-run with --carry-review-findings to include them in this run, or --ignore-review-findings to skip them. ` +
+         `You can combine that choice with --approve or --reject.`,
+         "info",
+       );
+       throw new AdmissionPendingSignal(
+         `Admission for run ${state.run_id} is awaiting carry-forward review selection`,
+       );
+     }
+   }
+
   // ── Build admission draft ───────────────────────────────────────────────
   const admissionDraft = {
     requirement: state.requirement,
@@ -37,17 +68,23 @@ export async function runPhase0(
     scope_boundary: "As described in requirement",
     acceptance_criteria: "All phases complete without fuse",
     mode: state.mode,
+    carry_forward_review_action: state.carry_forward_review.action,
+    carry_forward_review_summary: state.carry_forward_review.entries.length > 0
+      ? summarizePendingReviewFindings(state.carry_forward_review.entries)
+      : "none",
   };
 
   const admissionYaml = yamlStringify(admissionDraft);
   const admissionHash = sha256(yamlStringify(admissionDraft));
 
   if (state.admission.state !== "approved") {
+    pauseBudget(state);
     state.admission.state = "awaiting_approval";
     state.admission.admission_hash = admissionHash;
     saveState(projectRoot, state);
 
     if (admissionAction === "reject") {
+      resumeBudget(state);
       state.admission.state = "rejected";
       throw new ComposedLiteFuseError(
         "admission_rejected",
@@ -68,6 +105,7 @@ export async function runPhase0(
       );
     }
 
+    resumeBudget(state);
     state.admission.state = "approved";
     state.admission.approved_by = "explicit-user";
     state.admission.approved_at = new Date().toISOString();

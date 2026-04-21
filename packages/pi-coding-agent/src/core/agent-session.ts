@@ -164,6 +164,8 @@ export interface AgentSessionConfig {
 	initialActiveToolNames?: string[];
 	/** Override base tools (useful for custom runtimes). */
 	baseToolsOverride?: Record<string, AgentTool>;
+	/** Whether the built-in Skill tool should be available. Defaults to true. */
+	includeBuiltInSkillTool?: boolean;
 	/** Mutable ref used by Agent to access the current ExtensionRunner */
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Optional: check if the claude-code CLI provider is ready (installed + authed).
@@ -279,6 +281,7 @@ export class AgentSession {
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _baseToolsOverride?: Record<string, AgentTool>;
+	private _includeBuiltInSkillTool: boolean;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionShutdownHandler?: ShutdownHandler;
@@ -316,6 +319,7 @@ export class AgentSession {
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._baseToolsOverride = config.baseToolsOverride;
+		this._includeBuiltInSkillTool = config.includeBuiltInSkillTool ?? true;
 
 		// Initialize delegated subsystems
 		this._retryHandler = new RetryHandler({
@@ -1269,7 +1273,7 @@ export class AgentSession {
 	}
 
 	private _getBuiltinTools(): AgentTool[] {
-		return [this._createBuiltInSkillTool()];
+		return this._includeBuiltInSkillTool ? [this._createBuiltInSkillTool()] : [];
 	}
 
 	private _getRegisteredToolDefinitions(): ToolDefinition[] {

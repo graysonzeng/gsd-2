@@ -39,13 +39,27 @@ function parseHeadlessArgs(argv: string[]): HeadlessOptions {
   }
 
   const args = argv.slice(2)
-  let positionalStarted = false
+
+  const isKnownHeadlessFlag = (value: string): boolean => {
+    return value === '--timeout'
+      || value === '--json'
+      || value === '--model'
+      || value === '--context'
+      || value === '--context-text'
+      || value === '--auto'
+      || value === '--verbose'
+      || value === '--max-restarts'
+      || value === '--answers'
+      || value === '--events'
+      || value === '--supervised'
+      || value === '--response-timeout'
+  }
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
     if (arg === 'headless') continue
 
-    if (!positionalStarted && arg.startsWith('--')) {
+    if (arg.startsWith('--')) {
       if (arg === '--timeout' && i + 1 < args.length) {
         options.timeout = parseInt(args[++i], 10)
       } else if (arg === '--json') {
@@ -72,9 +86,10 @@ function parseHeadlessArgs(argv: string[]): HeadlessOptions {
         options.json = true
       } else if (arg === '--response-timeout' && i + 1 < args.length) {
         options.responseTimeout = parseInt(args[++i], 10)
+      } else if (options.command !== 'auto' && !isKnownHeadlessFlag(arg)) {
+        options.commandArgs.push(arg)
       }
-    } else if (!positionalStarted) {
-      positionalStarted = true
+    } else if (options.command === 'auto') {
       options.command = arg
     } else {
       options.commandArgs.push(arg)
@@ -137,10 +152,10 @@ test('filter allows matching event types', () => {
 
 test('no filter allows all event types (undefined check)', () => {
   const filter: Set<string> | undefined = undefined
-  const shouldEmit = (type: string) => !filter || filter.has(type)
-  assert.ok(shouldEmit('agent_end'))
-  assert.ok(shouldEmit('message_update'))
-  assert.ok(shouldEmit('tool_execution_start'))
+  const shouldEmit = (activeFilter: Set<string> | undefined, type: string) => !activeFilter || activeFilter.has(type)
+  assert.ok(shouldEmit(filter, 'agent_end'))
+  assert.ok(shouldEmit(filter, 'message_update'))
+  assert.ok(shouldEmit(filter, 'tool_execution_start'))
 })
 
 test('empty filter blocks all events', () => {

@@ -42,6 +42,7 @@ import {
   uninstallPlugin,
   validateFetchedContent,
 } from "../../workflow-install.js";
+import { dispatchComposedLiteRuntime } from "../../commands-workflow-templates.js";
 
 // ─── Custom Workflow Subcommands ─────────────────────────────────────────
 
@@ -147,34 +148,16 @@ export function parseWorkflowOverridesOnly(args: string): Record<string, string>
  * Dispatch a resolved plugin according to its declared mode.
  * If the plugin has an executor_extension, delegate to the runtime instead.
  */
-function dispatchPluginByMode(
+async function dispatchPluginByMode(
   plugin: WorkflowPlugin,
   args: string,
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
-): void {
+): Promise<void> {
   // ── Runtime-owned dispatch ──────────────────────────────────────────────
   if (plugin.meta.executorExtension === "composed-lite") {
     const base = projectRoot();
-    // Dynamic import to avoid circular deps
-    import("../../composed-lite/index.js").then(({ runComposedLite, parseComposedLiteDispatchArgs }) => {
-      const parsed = parseComposedLiteDispatchArgs(args);
-      runComposedLite({
-        projectRoot: base,
-        requirement: parsed.requirement,
-        mode: parsed.mode,
-        source: "workflow-run",
-        admissionAction: parsed.admissionAction,
-        ctx,
-        pi,
-      }).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(`Composed-lite runtime error: ${msg}`, "error");
-      });
-    }).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      ctx.ui.notify(`Failed to load composed-lite runtime: ${msg}`, "error");
-    });
+    await dispatchComposedLiteRuntime(base, args, "workflow-run", ctx, pi);
     return;
   }
 
@@ -213,7 +196,7 @@ function dispatchPluginByMode(
         return;
       }
       // Delegate to commands-workflow-templates which handles branch + state file.
-      dispatchMarkdownPhasePlugin(plugin, args.trim(), ctx, pi);
+      await dispatchMarkdownPhasePlugin(plugin, args.trim(), ctx, pi);
       return;
     }
 
@@ -486,7 +469,7 @@ async function handleCustomWorkflow(
     const base = projectRoot();
     const plugin = resolvePlugin(base, head);
     if (plugin) {
-      dispatchPluginByMode(plugin, rest, ctx, pi);
+      await dispatchPluginByMode(plugin, rest, ctx, pi);
       return true;
     }
   }

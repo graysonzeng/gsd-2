@@ -30,6 +30,7 @@ import type { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { shortHash } from "../utils/hash.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
+import { formatOpenAIError } from "./openai-shared.js";
 import { transformMessagesWithReport } from "./transform-messages.js";
 
 // =============================================================================
@@ -467,9 +468,9 @@ export async function processResponsesStream<TApi extends Api>(
 				output.stopReason = "toolUse";
 			}
 		} else if (event.type === "error") {
-			throw new Error(`Error Code ${event.code}: ${event.message}` || "Unknown error");
+			throw new Error(formatOpenAIError(event));
 		} else if (event.type === "response.failed") {
-			throw new Error("Unknown error");
+			throw new Error(formatOpenAIError(event));
 		}
 	}
 }

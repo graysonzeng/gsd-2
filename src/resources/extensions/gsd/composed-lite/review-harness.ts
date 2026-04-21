@@ -6,9 +6,8 @@
  * Contract C12: Subagent identity injected by harness, not forgeable.
  */
 
-import { spawn } from "node:child_process";
 import { writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname, delimiter as pathDelimiter } from "node:path";
+import { join, dirname } from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
 import { parse as yamlParse } from "yaml";
@@ -20,11 +19,12 @@ import type {
   PhaseNumber,
   ComposedLiteRunRequest,
 } from "./types.js";
-import { RAW_LOGS_DIR } from "./types.js";
+import { RAW_LOGS_DIR, buildRunScopedRawLogFileName } from "./types.js";
 import { writeArtifact, sha256 } from "./artifacts.js";
 import { appendAudit } from "./audit-log.js";
 import { ComposedLiteFuseError } from "./types.js";
-import { resolveGsdBin } from "./resolve-bin.js";
+import { buildModelArg } from "./model-arg.js";
+import { spawnGsdSubagent } from "./subagent-spawn.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -56,66 +56,22 @@ function writePromptToTempFile(name: string, prompt: string): { dir: string; fil
 
 /**
  * Spawn a subagent process and capture its output.
+ *
+ * `buildModelArg` is imported from `model-arg.js` so the same
+ * provider-qualification rule applies to reviewer + main-agent subagents.
  */
 async function spawnReviewer(
   projectRoot: string,
-  model: string,
+  reviewer: { model: string; provider: string | null | undefined },
   task: string,
   systemPromptPath: string,
-): Promise<{ output: string; exitCode: number; rawOutput: string }> {
-  const args: string[] = [
-    "--mode", "json",
-    "-p",
-    "--no-session",
-    "--model", model,
-    "--append-system-prompt", systemPromptPath,
-    `Task: ${task}`,
-  ];
-
-  const bundledPaths = (process.env.GSD_BUNDLED_EXTENSION_PATHS ?? "")
-    .split(pathDelimiter)
-    .map(s => s.trim())
-    .filter(Boolean);
-  const extensionArgs = bundledPaths.flatMap(p => ["--extension", p]);
-
-  return new Promise((resolve) => {
-    const gsdBin = resolveGsdBin();
-    if (!gsdBin) {
-      resolve({ output: "", exitCode: 1, rawOutput: "" });
-      return;
-    }
-    const proc = spawn(
-      process.execPath,
-      [gsdBin, ...extensionArgs, ...args],
-      { cwd: projectRoot, shell: false, stdio: ["ignore", "pipe", "pipe"] },
-    );
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (data) => { stdout += data.toString(); });
-    proc.stderr.on("data", (data) => { stderr += data.toString(); });
-
-    proc.on("close", (code) => {
-      // Extract final assistant text from JSON events
-      let output = "";
-      for (const line of stdout.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-          if (event.type === "message_end" && event.message?.role === "assistant") {
-            for (const part of event.message.content) {
-              if (part.type === "text") output = part.text;
-            }
-          }
-        } catch { /* skip non-JSON lines */ }
-      }
-      resolve({ output, exitCode: code ?? 1, rawOutput: stdout });
-    });
-
-    proc.on("error", () => {
-      resolve({ output: "", exitCode: 1, rawOutput: "" });
-    });
+ ): Promise<Awaited<ReturnType<typeof spawnGsdSubagent>>> {
+  const modelArg = buildModelArg(reviewer.model, reviewer.provider);
+  return spawnGsdSubagent({
+    projectRoot,
+    task,
+    modelArg,
+    extraArgs: ["--append-system-prompt", systemPromptPath],
   });
 }
 
@@ -212,28 +168,43 @@ Do not claim to have executed commands.`;
   let rawLogHash = "";
   let rawLogRelPath = "";
   const maxRetries = 2;
+  let terminalFailure: string | null = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const spawnResult = await spawnReviewer(
       projectRoot,
-      reviewerModel,
+      { model: reviewerModel, provider: reviewerProvider },
       task,
       tmp.filePath,
     );
 
     // Write raw log
+    const rawLogFileName = buildRunScopedRawLogFileName(
+      state.run_id,
+      `${phase}-${state.phases[phase].attempt}-reviewer-${attempt}.jsonl`,
+    );
     const rawLogPath = join(
       projectRoot,
       RAW_LOGS_DIR,
-      `${phase}-${state.phases[phase].attempt}-reviewer-${attempt}.jsonl`,
+      rawLogFileName,
     );
-    rawLogRelPath = `logs/raw/${phase}-${state.phases[phase].attempt}-reviewer-${attempt}.jsonl`;
+    rawLogRelPath = `logs/raw/${rawLogFileName}`;
     const rawLogDir = dirname(rawLogPath);
     if (!existsSync(rawLogDir)) mkdirSync(rawLogDir, { recursive: true });
     writeFileSync(rawLogPath, spawnResult.rawOutput);
     rawLogHash = sha256(spawnResult.rawOutput);
 
-    result = parseReviewerOutput(spawnResult.output);
+    const terminalResult = spawnResult.terminalResult;
+    if (terminalResult.terminalError) {
+      terminalFailure = [
+        `Reviewer invocation failed`,
+        terminalResult.provider ? `provider=${terminalResult.provider}` : null,
+        terminalResult.model ? `model=${terminalResult.model}` : null,
+        terminalResult.errorMessage ?? terminalResult.terminalError,
+      ].filter(Boolean).join(" | ");
+    }
+
+    result = terminalFailure ? null : parseReviewerOutput(terminalResult.outputText);
 
     // Audit: subagent result
     appendAudit(projectRoot, state.run_id, {
@@ -242,9 +213,15 @@ Do not claim to have executed commands.`;
         phase,
         agent: "composed-lite-reviewer",
         raw_log_hash: rawLogHash,
+        stop_reason: terminalResult.stopReason,
+        error_message: terminalResult.errorMessage,
         parsed_ok: Boolean(result),
       },
     });
+
+    if (terminalFailure) {
+      break;
+    }
 
     if (result) {
       appendAudit(projectRoot, state.run_id, {
@@ -263,6 +240,10 @@ Do not claim to have executed commands.`;
   // Cleanup temp files
   try { fs.unlinkSync(tmp.filePath); } catch { /* ignore */ }
   try { fs.rmSync(tmp.dir, { recursive: true }); } catch { /* ignore */ }
+
+  if (terminalFailure) {
+    throw new ComposedLiteFuseError("review_unavailable", terminalFailure);
+  }
 
   if (!result) {
     throw new ComposedLiteFuseError(

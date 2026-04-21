@@ -316,6 +316,9 @@ export function formatProgress(event: Record<string, unknown>, ctx: ProgressCont
         if (statusKey) {
           const label = parsePhaseLabel(statusKey, msg)
           if (label) return `${c.cyan}[phase]   ${label}${c.reset}`
+          if (!ctx.verbose) return null
+          if (!msg) return null
+          return `${c.dim}[status]  ${statusKey}: ${msg}${c.reset}`
         }
         // Fallback: show message if non-empty
         if (msg) return `${c.cyan}[phase]   ${msg}${c.reset}`
@@ -403,13 +406,11 @@ function parsePhaseLabel(statusKey: string, message: string): string | null {
       case 'phase':
         return `Phase: ${value}${message ? ' -- ' + message : ''}`
       default:
-        return `${kind}: ${value}${message ? ' -- ' + message : ''}`
+        return null
     }
   }
 
-  // Single-word status keys with a message
-  if (message) return `${statusKey}: ${message}`
-  return statusKey || null
+  return null
 }
 
 // ---------------------------------------------------------------------------

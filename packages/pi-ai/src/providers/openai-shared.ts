@@ -21,6 +21,108 @@ import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copi
 // Lazy SDK loading
 // =============================================================================
 
+const GENERIC_ERROR_MESSAGES = new Set([
+	"unknown error",
+	"an unknown error occurred",
+	"error",
+	"{}",
+	"[object Object]",
+	"null",
+	"undefined",
+]);
+
+function readPath(input: unknown, path: readonly string[]): unknown {
+	let current = input;
+	for (const segment of path) {
+		if (!current || typeof current !== "object" || !(segment in current)) {
+			return undefined;
+		}
+		current = (current as Record<string, unknown>)[segment];
+	}
+	return current;
+}
+
+function normalizeScalar(value: unknown): string | null {
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		return trimmed || null;
+	}
+	if (typeof value === "number" || typeof value === "boolean") {
+		return String(value);
+	}
+	return null;
+}
+
+function isGenericErrorMessage(message: string | null): boolean {
+	if (!message) return true;
+	return GENERIC_ERROR_MESSAGES.has(message.trim().toLowerCase());
+}
+
+function pushUnique(target: string[], value: string | null): void {
+	if (!value) return;
+	if (target.includes(value)) return;
+	target.push(value);
+}
+
+export function formatOpenAIError(error: unknown, extraMessage?: string): string {
+	const nestedMessagePaths = [
+		["response", "error", "message"],
+		["response", "data", "error", "message"],
+		["error", "message"],
+		["cause", "message"],
+		["message"],
+	] as const;
+	const nestedCodePaths = [
+		["response", "error", "code"],
+		["response", "data", "error", "code"],
+		["error", "code"],
+		["code"],
+	] as const;
+	const nestedStatusPaths = [
+		["status"],
+		["response", "status"],
+		["response", "data", "status"],
+	] as const;
+
+	const candidates: string[] = [];
+	for (const path of nestedMessagePaths) {
+		pushUnique(candidates, normalizeScalar(readPath(error, path)));
+	}
+
+	const preferredMessage = candidates.find((candidate) => !isGenericErrorMessage(candidate))
+		?? candidates.find((candidate) => candidate !== null)
+		?? "Unknown error";
+
+	const parts: string[] = [preferredMessage];
+
+	for (const path of nestedCodePaths) {
+		const code = normalizeScalar(readPath(error, path));
+		if (code && !parts.includes(`code=${code}`) && !parts.some((part) => part.includes(code))) {
+			parts.push(`code=${code}`);
+			break;
+		}
+	}
+
+	for (const path of nestedStatusPaths) {
+		const status = normalizeScalar(readPath(error, path));
+		if (status && !parts.includes(`status=${status}`) && !parts.some((part) => part.includes(status))) {
+			parts.push(`status=${status}`);
+			break;
+		}
+	}
+
+	if (extraMessage) {
+		for (const line of extraMessage.split("\n")) {
+			const normalized = normalizeScalar(line);
+			if (normalized && !parts.includes(normalized)) {
+				parts.push(normalized);
+			}
+		}
+	}
+
+	return parts.join(" | ");
+}
+
 let _openAIClass: typeof OpenAI | undefined;
 
 /**
@@ -139,7 +241,7 @@ export function assertStreamSuccess(output: AssistantMessage, signal?: AbortSign
 		throw new Error("Request was aborted");
 	}
 	if (output.stopReason === "aborted" || output.stopReason === "error") {
-		throw new Error("An unknown error occurred");
+		throw new Error(output.errorMessage?.trim() || `OpenAI stream ended with stopReason=${output.stopReason}`);
 	}
 }
 
@@ -170,8 +272,7 @@ export function handleStreamError(
 ): void {
 	for (const block of output.content) delete (block as { index?: number }).index;
 	output.stopReason = signal?.aborted ? "aborted" : "error";
-	output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
-	if (extraMessage) output.errorMessage += `\n${extraMessage}`;
+	output.errorMessage = formatOpenAIError(error, extraMessage);
 	stream.push({ type: "error", reason: output.stopReason, error: output });
 	stream.end();
 }

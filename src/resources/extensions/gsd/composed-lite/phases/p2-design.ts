@@ -5,19 +5,19 @@
  * Contract C1: Review only via harness. C11: Revision exhausted → fuse.
  */
 
-import { spawn } from "node:child_process";
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
+import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
 
 import type { ComposedLiteState, ComposedLiteRunRequest } from "../types.js";
-import { RAW_LOGS_DIR } from "../types.js";
+import { RAW_LOGS_DIR, buildRunScopedRawLogFileName } from "../types.js";
 import { writeArtifact, readArtifact, sha256 } from "../artifacts.js";
 import { appendAudit } from "../audit-log.js";
-import { saveState } from "../state.js";
-import { runReview, type ReviewResult } from "../review-harness.js";
+import { runReview } from "../review-harness.js";
 import { pickReviewerModel, ReviewerUnavailableError } from "../review-model-picker.js";
 import { ComposedLiteFuseError } from "../types.js";
-import { resolveGsdBin } from "../resolve-bin.js";
+import { resolveMainModelArg } from "../model-arg.js";
+import { formatCarryForwardReviewContext, markPendingReviewFindingsResolved, recordPendingReviewFindings } from "../pending-review-findings.js";
+import { spawnGsdSubagent } from "../subagent-spawn.js";
 
 const MAX_REVISION_ROUNDS = 2;
 
@@ -26,53 +26,12 @@ const MAX_REVISION_ROUNDS = 2;
 async function generateDesign(
   projectRoot: string,
   task: string,
-): Promise<{ output: string; rawOutput: string }> {
-  const args: string[] = [
-    "--mode", "json",
-    "-p",
-    "--no-session",
-    `Task: ${task}`,
-  ];
-
-  const bundledPaths = (process.env.GSD_BUNDLED_EXTENSION_PATHS ?? "")
-    .split(delimiter).map(s => s.trim()).filter(Boolean);
-  const extensionArgs = bundledPaths.flatMap(p => ["--extension", p]);
-
-  return new Promise((resolve) => {
-    const gsdBin = resolveGsdBin();
-    if (!gsdBin) {
-      resolve({ output: "", rawOutput: "" });
-      return;
-    }
-    const proc = spawn(
-      process.execPath,
-      [gsdBin, ...extensionArgs, ...args],
-      { cwd: projectRoot, shell: false, stdio: ["ignore", "pipe", "pipe"] },
-    );
-
-    let stdout = "";
-    proc.stdout.on("data", (data) => { stdout += data.toString(); });
-    proc.stderr.on("data", () => {});
-
-    proc.on("close", () => {
-      let output = "";
-      for (const line of stdout.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-          if (event.type === "message_end" && event.message?.role === "assistant") {
-            for (const part of event.message.content) {
-              if (part.type === "text") output = part.text;
-            }
-          }
-        } catch { /* skip */ }
-      }
-      resolve({ output, rawOutput: stdout });
-    });
-
-    proc.on("error", () => {
-      resolve({ output: "", rawOutput: "" });
-    });
+  modelArg: string | null,
+): Promise<Awaited<ReturnType<typeof spawnGsdSubagent>>> {
+  return spawnGsdSubagent({
+    projectRoot,
+    task,
+    modelArg,
   });
 }
 
@@ -85,10 +44,27 @@ export async function runPhase2(
   const { projectRoot, ctx } = req;
 
   // ── Setup reviewer ──────────────────────────────────────────────────────
+  // Inject ModelRegistry.isProviderRequestReady so the picker sees auth.json
+  // credentials and externalCli providers (e.g. `claude-code`) — not just env
+  // vars. Falls back to env-only readiness inside the picker when ctx does
+  // not expose a registry (headless / test contexts).
+  const registry = (req.ctx as unknown as { modelRegistry?: { isProviderRequestReady?: (p: string) => boolean } }).modelRegistry;
+  const isProviderReady = typeof registry?.isProviderRequestReady === "function"
+    ? (provider: string) => {
+        try {
+          return registry.isProviderRequestReady!(provider);
+        } catch {
+          return false;
+        }
+      }
+    : undefined;
+
   try {
     const pickerResult = pickReviewerModel({
       mainModel: state.review.main_model || "unknown",
+      mainProvider: state.review.main_model_provider || undefined,
       env: process.env,
+      isProviderReady,
     });
     state.review.reviewer_model = pickerResult.model;
     state.review.reviewer_provider = pickerResult.provider;
@@ -115,28 +91,92 @@ export async function runPhase2(
   // ── Read research brief for context ─────────────────────────────────────
   const researchBrief = readArtifact(projectRoot, "research-brief");
   const researchContext = researchBrief ? researchBrief.body : "(no research brief)";
+  const carryForwardContext = formatCarryForwardReviewContext(state.carry_forward_review.entries);
 
   // ── Design + Review loop ────────────────────────────────────────────────
   ctx.ui.notify("Phase 2: Design — generating design document...", "info");
+
+  // Resolve --model once per phase from GSD_COMPOSED_LITE_MAIN_MODEL[_PROVIDER].
+  // The envelope/audit identity uses the declarative state values (not the
+  // CLI-formatted arg) so downstream tooling can read a clean {model, provider}.
+  const mainModelArg = resolveMainModelArg(state);
+  const envelopeModel = mainModelArg ? state.review.main_model : null;
+  const envelopeProvider = state.review.main_model_provider ?? null;
+  const auditModel = envelopeModel ?? "default";
+  const auditProvider = envelopeProvider ?? "default";
 
   for (let round = 0; round <= MAX_REVISION_ROUNDS; round++) {
     state.phases[2].revision_round = round;
 
     // Generate design
     const designTask = round === 0
-      ? `Based on the following requirement and research, create a comprehensive design document.\n\nRequirement: ${state.requirement}\n\nResearch:\n${researchContext}\n\nOutput a markdown design document covering: overview, approach, key decisions, file changes needed, edge cases, and testing strategy.`
-      : `Revise the design document based on the reviewer feedback. Address all critical and important issues.\n\nPrevious design:\n${readArtifact(projectRoot, "design-doc")?.body || "(missing)"}\n\nReviewer feedback:\n${readArtifact(projectRoot, "design-review")?.body || "(missing)"}\n\nOutput the complete revised design document.`;
+      ? [
+        `Based on the following requirement and research, create a comprehensive design document.`,
+        `Requirement: ${state.requirement}`,
+        carryForwardContext,
+        `Research:\n${researchContext}`,
+        `Output a markdown design document covering: overview, approach, key decisions, file changes needed, edge cases, and testing strategy.`,
+      ].filter(Boolean).join("\n\n")
+      : [
+        `Revise the design document based on the reviewer feedback. Address all critical and important issues.`,
+        carryForwardContext,
+        `Previous design:\n${readArtifact(projectRoot, "design-doc")?.body || "(missing)"}`,
+        `Reviewer feedback:\n${readArtifact(projectRoot, "design-review")?.body || "(missing)"}`,
+        `Output the complete revised design document.`,
+      ].filter(Boolean).join("\n\n");
 
-    const designResult = await generateDesign(projectRoot, designTask);
+    // Audit: main-agent subagent_call (mirrors P1/P4 coverage so P2 design
+    // generation is traceable, not just the reviewer invocation).
+    appendAudit(projectRoot, state.run_id, {
+      event: "subagent_call",
+      payload: {
+        phase: 2,
+        agent: `design-agent-${round}`,
+        model: auditModel,
+        provider: auditProvider,
+        input_hash: sha256(designTask),
+      },
+    });
+
+    const designResult = await generateDesign(projectRoot, designTask, mainModelArg);
 
     // Write raw log
-    const rawLogPath = join(projectRoot, RAW_LOGS_DIR, `2-${state.phases[2].attempt}-design-${round}.jsonl`);
+    const rawLogFileName = buildRunScopedRawLogFileName(state.run_id, `2-${state.phases[2].attempt}-design-${round}.jsonl`);
+    const rawLogRelPath = `logs/raw/${rawLogFileName}`;
+    const rawLogPath = join(projectRoot, RAW_LOGS_DIR, rawLogFileName);
     const rawLogDir = dirname(rawLogPath);
     if (!existsSync(rawLogDir)) mkdirSync(rawLogDir, { recursive: true });
     writeFileSync(rawLogPath, designResult.rawOutput);
+    const rawLogHash = sha256(designResult.rawOutput);
+
+    const terminalResult = designResult.terminalResult;
+
+    // Audit: main-agent subagent_result (emit even on terminal error so the
+    // postmortem has a paired {call, result} entry).
+    appendAudit(projectRoot, state.run_id, {
+      event: "subagent_result",
+      payload: {
+        phase: 2,
+        agent: `design-agent-${round}`,
+        raw_log_hash: rawLogHash,
+        raw_log_path: rawLogRelPath,
+        stop_reason: terminalResult.stopReason,
+        error_message: terminalResult.errorMessage,
+        parsed_ok: !terminalResult.terminalError,
+      },
+    });
+
+    if (terminalResult.terminalError) {
+      throw new Error([
+        `Design generation failed`,
+        terminalResult.provider ? `provider=${terminalResult.provider}` : null,
+        terminalResult.model ? `model=${terminalResult.model}` : null,
+        terminalResult.errorMessage ?? terminalResult.terminalError,
+      ].filter(Boolean).join(" | "));
+    }
 
     // Write design artifact
-    const designBody = designResult.output || "# Design Document\n\n(empty)";
+    const designBody = terminalResult.outputText || "# Design Document\n\n(empty)";
     const designEnvelope = writeArtifact(projectRoot, "design-doc", designBody, {
       schema_version: 1,
       run_id: state.run_id,
@@ -146,13 +186,13 @@ export async function runPhase2(
       artifact_kind: "design-doc",
       producer_kind: "main_agent",
       producer_id: `design-agent-${round}`,
-      provider: null,
-      model: null,
+      provider: envelopeProvider,
+      model: envelopeModel,
       admission_hash: state.admission.admission_hash || "",
       prev_phase_output_hash: state.phases[1].artifact_envelope.output_hash,
       input_hash: sha256(designTask),
-      raw_log_hash: sha256(designResult.rawOutput),
-      raw_log_path: `logs/raw/2-${state.phases[2].attempt}-design-${round}.jsonl`,
+      raw_log_hash: rawLogHash,
+      raw_log_path: rawLogRelPath,
     });
 
     // ── Run review ──────────────────────────────────────────────────────
@@ -168,30 +208,54 @@ export async function runPhase2(
     });
 
     if (reviewResult.overall_assessment === "pass") {
+      markPendingReviewFindingsResolved({
+        projectRoot,
+        reviewKind: "design-review",
+        resolutionRunId: state.run_id,
+      });
       // Update phase envelope to point to design-doc (not review)
       state.phases[2].artifact_envelope = {
         path: "design-doc",
         output_hash: designEnvelope.output_hash,
         producer_kind: "main_agent",
         producer_id: `design-agent-${round}`,
-        provider: null,
-        model: null,
+        provider: envelopeProvider,
+        model: envelopeModel,
       };
       ctx.ui.notify("Phase 2: Design review passed.", "info");
       return;
     }
 
     const issueCount = reviewResult.critical.length + reviewResult.important.length;
+    if (round >= MAX_REVISION_ROUNDS) {
+      const recorded = recordPendingReviewFindings({
+        projectRoot,
+        runId: state.run_id,
+        requirement: state.requirement,
+        phase: 2,
+        reviewKind: "design-review",
+        reviewResult,
+        sourceReviewOutputHash: state.phases[2].artifact_envelope.output_hash,
+      });
+      state.phases[2].failure_reason = `Design review deferred after ${MAX_REVISION_ROUNDS + 1} rounds`;
+      state.phases[2].artifact_envelope = {
+        path: "design-doc",
+        output_hash: designEnvelope.output_hash,
+        producer_kind: "main_agent",
+        producer_id: `design-agent-${round}`,
+        provider: envelopeProvider,
+        model: envelopeModel,
+      };
+      ctx.ui.notify(
+        `Phase 2: Design review deferred after max revisions. Recorded ${recorded.review_kind} findings and continuing to Phase 3.`,
+        "warning",
+      );
+      return;
+    }
     ctx.ui.notify(
       `Phase 2: Design review — ${reviewResult.overall_assessment} (${issueCount} issues). ` +
-      (round < MAX_REVISION_ROUNDS ? "Revising..." : "Max revisions reached."),
-      round < MAX_REVISION_ROUNDS ? "info" : "warning",
+      "Revising...",
+      "info",
     );
   }
-
-  // C11: Revision exhausted → fuse
-  throw new ComposedLiteFuseError(
-    "design_review_exhausted",
-    `Design review did not pass after ${MAX_REVISION_ROUNDS + 1} rounds`,
-  );
 }

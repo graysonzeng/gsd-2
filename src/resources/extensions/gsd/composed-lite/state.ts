@@ -129,6 +129,8 @@ export function initState(
       max_verify_reentry: 3,
       consecutive_failures: 0,
       max_consecutive_failures: 2,
+      pause_started_at: null,
+      total_paused_minutes: 0,
     },
 
     admission: {
@@ -137,6 +139,11 @@ export function initState(
       approved_by: null,
       approved_at: null,
       admission_hash: null,
+    },
+
+    carry_forward_review: {
+      action: null,
+      entries: [],
     },
 
     phases: {
@@ -205,6 +212,20 @@ export function loadState(projectRoot: string): ComposedLiteState | null {
   if (state.env_fingerprint.project_root !== projectRoot) {
     // Allow recovery but update fingerprint
     state.env_fingerprint.project_root = projectRoot;
+  }
+
+  if (!state.carry_forward_review) {
+    state.carry_forward_review = {
+      action: null,
+      entries: [],
+    };
+  }
+
+  if (typeof state.budget.total_paused_minutes !== "number") {
+    state.budget.total_paused_minutes = 0;
+  }
+  if (!("pause_started_at" in state.budget)) {
+    state.budget.pause_started_at = null;
   }
 
   // 2. Reset any "running" phases to "pending" (crash recovery)

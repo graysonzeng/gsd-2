@@ -12,6 +12,7 @@ export interface ComposedLiteRunRequest {
   mode: "full" | "plan";
   source: "workflow-start" | "workflow-run" | "resume";
   admissionAction?: "approve" | "reject" | null;
+  carryForwardReviewAction?: "carry" | "ignore" | null;
   ctx: ExtensionCommandContext;
   pi: ExtensionAPI;
 }
@@ -98,6 +99,40 @@ export class AdmissionPendingSignal extends Error {
     super(message);
     this.name = "AdmissionPendingSignal";
   }
+}
+
+export type CarryForwardReviewAction = "carry" | "ignore";
+
+export interface ReviewFinding {
+  id: string;
+  target: string;
+  rationale: string;
+}
+
+export type ReviewArtifactKind = "design-review" | "code-review";
+
+export interface PendingReviewFindingsEntry {
+  schema_version: 1;
+  review_kind: ReviewArtifactKind;
+  source_run_id: string;
+  source_phase: 2 | 4;
+  source_requirement: string;
+  overall_assessment: "issues" | "fail";
+  source_review_output_hash: string | null;
+  critical: ReviewFinding[];
+  important: ReviewFinding[];
+  minor: ReviewFinding[];
+  rationale: string;
+  findings_hash: string;
+  created_at: string;
+  resolved: boolean;
+  resolved_at: string | null;
+  resolution_run_id: string | null;
+}
+
+export interface PendingReviewFindingsDocument {
+  schema_version: 1;
+  entries: PendingReviewFindingsEntry[];
 }
 
 // ─── Artifact Types ──────────────────────────────────────────────────────────
@@ -196,6 +231,8 @@ export interface ComposedLiteState {
     max_verify_reentry: number;
     consecutive_failures: number;
     max_consecutive_failures: number;
+    pause_started_at?: string | null;
+    total_paused_minutes?: number;
   };
 
   admission: {
@@ -206,12 +243,23 @@ export interface ComposedLiteState {
     admission_hash: string | null;
   };
 
+  carry_forward_review: {
+    action: CarryForwardReviewAction | null;
+    entries: PendingReviewFindingsEntry[];
+  };
+
   phases: Record<PhaseNumber, PhaseEntry>;
 
   last_verify_failure: string | null;
 
   review: {
     main_model: string;
+    /**
+     * Optional explicit provider for the main model. When set, picker
+     * skips substring-based inferProvider and uses this value directly.
+     * Populated from GSD_COMPOSED_LITE_MAIN_MODEL_PROVIDER.
+     */
+    main_model_provider?: string | null;
     reviewer_model: string | null;
     reviewer_provider: string | null;
     cross_provider: boolean;
@@ -246,6 +294,15 @@ export const ARTIFACTS_DIR = ".gsd/composed-lite/artifacts";
 export const LOGS_DIR = ".gsd/composed-lite/logs";
 export const RAW_LOGS_DIR = ".gsd/composed-lite/logs/raw";
 export const RUN_LOCK_PATH = ".gsd/composed-lite/run.lock";
+
+export function sanitizeRunIdForFileName(runId: string): string {
+  const sanitized = runId.trim().replace(/[^a-zA-Z0-9._-]+/g, "_");
+  return sanitized || "run";
+}
+
+export function buildRunScopedRawLogFileName(runId: string, suffix: string): string {
+  return `${sanitizeRunIdForFileName(runId)}-${suffix}`;
+}
 
 // ─── Artifact file paths ─────────────────────────────────────────────────────
 

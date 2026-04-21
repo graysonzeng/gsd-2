@@ -56,6 +56,35 @@ describe("Skill tool", () => {
 		});
 	}
 
+	it("does not register the built-in Skill tool when explicitly disabled", async () => {
+		const agentDir = join(testDir, "agent-home-disabled");
+		const authStorage = AuthStorage.inMemory({});
+		const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.json"));
+		const settingsManager = SettingsManager.inMemory();
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: testDir,
+			agentDir,
+			settingsManager,
+			noExtensions: true,
+			noPromptTemplates: true,
+			noThemes: true,
+		});
+		await resourceLoader.reload();
+
+		const session = new AgentSession({
+			agent: new Agent(),
+			sessionManager: SessionManager.inMemory(testDir),
+			settingsManager,
+			cwd: testDir,
+			resourceLoader,
+			modelRegistry,
+			includeBuiltInSkillTool: false,
+		} as any);
+
+		const tool = session.state.tools.find((entry) => entry.name === "Skill");
+		assert.equal(tool, undefined);
+	});
+
 	it("resolves a project-level skill to the exact skill block format", async () => {
 		const skillPath = writeSkill(
 			testDir,

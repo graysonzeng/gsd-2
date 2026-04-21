@@ -5,6 +5,7 @@
 ## 目录
 
 - [快速参考](#quick-reference)
+- [凭证解析顺序](#credential-resolution-order)
 - [内置 Providers](#built-in-providers)
   - [Anthropic（Claude）](#anthropic-claude)
   - [OpenAI](#openai)
@@ -45,6 +46,30 @@
 | Ollama | 无（本地） | — | 需要 `models.json` |
 | LM Studio | 无（本地） | — | 需要 `models.json` |
 | vLLM / SGLang | 无（本地） | — | 需要 `models.json` |
+
+<a id="credential-resolution-order"></a>
+## 凭证解析顺序
+
+对于使用 API key 的 provider，GSD 按以下顺序解析凭证：
+
+1. 运行时覆盖（底层 CLI 的 `--api-key`）
+2. `~/.gsd/agent/auth.json`
+3. 环境变量，例如 `OPENAI_API_KEY`
+4. `models.json` 中 provider override / custom provider 的 fallback 解析
+
+说明：
+
+- `auth.json` 的优先级高于环境变量。如果两者同时存在且值不同，GSD 会使用存储在 `auth.json` 里的凭证。
+- `models.json` 主要用于 custom provider、代理和 provider 级高级覆盖；它不是内置 OpenAI / Anthropic key 的首选存放位置。
+- GSD 在启动时只会把少量可选工具 key 水合到 `process.env`。内置 OpenAI 的认证不会从 `auth.json` 反向写入 `OPENAI_API_KEY`。
+- `models.json` 会优先从 `~/.gsd/agent/models.json` 读取；如果该文件不存在，再回退到 `~/.pi/agent/models.json`。
+
+如果你怀疑请求实际用了错误的 key，建议按相同顺序排查：
+
+1. 是否显式传了 `--api-key`
+2. `~/.gsd/agent/auth.json`
+3. 当前进程环境变量
+4. `~/.gsd/agent/models.json` 和 `~/.pi/agent/models.json`
 
 ---
 

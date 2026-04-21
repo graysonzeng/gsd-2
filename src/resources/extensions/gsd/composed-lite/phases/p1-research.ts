@@ -5,17 +5,16 @@
  * Runtime assembles research-brief.yaml from scout outputs.
  */
 
-import { spawn } from "node:child_process";
 import { writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
-import * as os from "node:os";
-import * as fs from "node:fs";
+import { join, dirname } from "node:path";
 
 import type { ComposedLiteState, ComposedLiteRunRequest } from "../types.js";
-import { RAW_LOGS_DIR } from "../types.js";
+import { RAW_LOGS_DIR, buildRunScopedRawLogFileName } from "../types.js";
 import { writeArtifact, sha256 } from "../artifacts.js";
 import { appendAudit } from "../audit-log.js";
-import { resolveGsdBin } from "../resolve-bin.js";
+import { resolveMainModelArg } from "../model-arg.js";
+import { formatCarryForwardReviewContext } from "../pending-review-findings.js";
+import { spawnGsdSubagent } from "../subagent-spawn.js";
 
 // ─── Scout tasks ─────────────────────────────────────────────────────────────
 
@@ -26,7 +25,7 @@ const SCOUT_TASKS = [
   },
   {
     focus: "constraints_risks",
-    task: "Identify constraints, risks, and potential blockers for the requirement. Look at existing tests, CI config, linting rules, and any known issues.",
+    task: "Identify constraints, risks, and potential blockers for the requirement. Sample representative evidence only: inspect at most 1 package manifest, 1 tsconfig/eslint config, up to 2 CI workflow files, and up to 4 representative tests. Do not exhaustively enumerate the entire test suite. Summarize the highest-signal constraints, likely blockers, and validation expectations in concise bullets.",
   },
   {
     focus: "prior_art",
@@ -39,57 +38,13 @@ const SCOUT_TASKS = [
 async function runScout(
   projectRoot: string,
   task: string,
-  focus: string,
-): Promise<{ output: string; rawOutput: string; exitCode: number }> {
-  const args: string[] = [
-    "--mode", "json",
-    "-p",
-    "--no-session",
-    "--tools", "read,grep,find,ls,bash",
-    `Task: ${task}`,
-  ];
-
-  const bundledPaths = (process.env.GSD_BUNDLED_EXTENSION_PATHS ?? "")
-    .split(delimiter)
-    .map(s => s.trim())
-    .filter(Boolean);
-  const extensionArgs = bundledPaths.flatMap(p => ["--extension", p]);
-
-  return new Promise((resolve) => {
-    const gsdBin = resolveGsdBin();
-    if (!gsdBin) {
-      resolve({ output: "", rawOutput: "", exitCode: 1 });
-      return;
-    }
-    const proc = spawn(
-      process.execPath,
-      [gsdBin, ...extensionArgs, ...args],
-      { cwd: projectRoot, shell: false, stdio: ["ignore", "pipe", "pipe"] },
-    );
-
-    let stdout = "";
-    proc.stdout.on("data", (data) => { stdout += data.toString(); });
-    proc.stderr.on("data", () => { /* discard */ });
-
-    proc.on("close", (code) => {
-      let output = "";
-      for (const line of stdout.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-          if (event.type === "message_end" && event.message?.role === "assistant") {
-            for (const part of event.message.content) {
-              if (part.type === "text") output = part.text;
-            }
-          }
-        } catch { /* skip */ }
-      }
-      resolve({ output, rawOutput: stdout, exitCode: code ?? 1 });
-    });
-
-    proc.on("error", () => {
-      resolve({ output: "", rawOutput: "", exitCode: 1 });
-    });
+  modelArg: string | null,
+): Promise<Awaited<ReturnType<typeof spawnGsdSubagent>>> {
+  return spawnGsdSubagent({
+    projectRoot,
+    task,
+    modelArg,
+    extraArgs: ["--tools", "read,grep,find,ls,bash"],
   });
 }
 
@@ -103,11 +58,23 @@ export async function runPhase1(
 
   ctx.ui.notify("Phase 1: Research — spawning scout agents for codebase analysis...", "info");
 
+  const carryForwardContext = formatCarryForwardReviewContext(state.carry_forward_review.entries);
+
   // Customize scout tasks with the requirement
   const tasks = SCOUT_TASKS.map(s => ({
     focus: s.focus,
-    task: `Context requirement: "${state.requirement}"\n\n${s.task}`,
+    task: [
+      `Context requirement: "${state.requirement}"`,
+      carryForwardContext,
+      s.task,
+    ].filter(Boolean).join("\n\n"),
   }));
+
+  // Resolve --model once per phase from GSD_COMPOSED_LITE_MAIN_MODEL[_PROVIDER].
+  // `null` means fall back to the child CLI's session default (legacy behaviour).
+  const modelArg = resolveMainModelArg(state);
+  const auditModel = modelArg ?? "default";
+  const auditProvider = state.review.main_model_provider ?? "default";
 
   // Run scouts in parallel
   const results = await Promise.all(
@@ -119,23 +86,28 @@ export async function runPhase1(
         payload: {
           phase: 1,
           agent: "scout",
-          model: "default",
-          provider: "default",
+          model: auditModel,
+          provider: auditProvider,
           input_hash: sha256(t.task),
         },
       });
 
-      const result = await runScout(projectRoot, t.task, t.focus);
+      const result = await runScout(projectRoot, t.task, modelArg);
 
       // Write raw log
+      const rawLogFileName = buildRunScopedRawLogFileName(
+        state.run_id,
+        `1-${state.phases[1].attempt}-scout-${t.focus}.jsonl`,
+      );
       const rawLogPath = join(
         projectRoot, RAW_LOGS_DIR,
-        `1-${state.phases[1].attempt}-scout-${t.focus}.jsonl`,
+        rawLogFileName,
       );
       const rawLogDir = dirname(rawLogPath);
       if (!existsSync(rawLogDir)) mkdirSync(rawLogDir, { recursive: true });
       writeFileSync(rawLogPath, result.rawOutput);
       const rawLogHash = sha256(result.rawOutput);
+      const terminalResult = result.terminalResult;
 
       appendAudit(projectRoot, state.run_id, {
         event: "subagent_result",
@@ -143,13 +115,24 @@ export async function runPhase1(
           phase: 1,
           agent: `scout-${t.focus}`,
           raw_log_hash: rawLogHash,
-          parsed_ok: result.exitCode === 0,
+          stop_reason: terminalResult.stopReason,
+          error_message: terminalResult.errorMessage,
+          parsed_ok: !terminalResult.terminalError && result.exitCode === 0,
         },
       });
 
+      if (terminalResult.terminalError) {
+        throw new Error([
+          `Scout ${t.focus} failed`,
+          terminalResult.provider ? `provider=${terminalResult.provider}` : null,
+          terminalResult.model ? `model=${terminalResult.model}` : null,
+          terminalResult.errorMessage ?? terminalResult.terminalError,
+        ].filter(Boolean).join(" | "));
+      }
+
       return {
         focus: t.focus,
-        output: result.output || "(no output)",
+        output: terminalResult.outputText || "(no output)",
         producerId,
         rawLogHash,
       };
@@ -194,7 +177,7 @@ export async function runPhase1(
     prev_phase_output_hash: state.phases[0].artifact_envelope.output_hash,
     input_hash: sha256(state.requirement),
     raw_log_hash: sha256(results.map(r => r.rawLogHash).join(",")),
-    raw_log_path: `logs/raw/1-${state.phases[1].attempt}-scout-*.jsonl`,
+    raw_log_path: `logs/raw/${buildRunScopedRawLogFileName(state.run_id, `1-${state.phases[1].attempt}-scout-*.jsonl`)}`,
   });
 
   state.phases[1].artifact_envelope = {

@@ -55,6 +55,24 @@ function parseHeadlessArgs(argv: string[]): HeadlessOptions {
 
   const args = argv.slice(2)
 
+  const isKnownHeadlessFlag = (value: string): boolean => {
+    return value === '--timeout'
+      || value === '--json'
+      || value === '--output-format'
+      || value === '--model'
+      || value === '--context'
+      || value === '--context-text'
+      || value === '--auto'
+      || value === '--verbose'
+      || value === '--max-restarts'
+      || value === '--answers'
+      || value === '--events'
+      || value === '--supervised'
+      || value === '--response-timeout'
+      || value === '--resume'
+      || value === '--bare'
+  }
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
     if (arg === 'headless') continue
@@ -106,6 +124,8 @@ function parseHeadlessArgs(argv: string[]): HeadlessOptions {
         options.resumeSession = args[++i]
       } else if (arg === '--bare') {
         options.bare = true
+      } else if (options.command !== 'auto' && !isKnownHeadlessFlag(arg)) {
+        options.commandArgs.push(arg)
       }
     } else if (options.command === 'auto') {
       options.command = arg
@@ -422,4 +442,27 @@ test('--bare does not affect other flags', () => {
   assert.equal(opts.timeout, 60000)
   assert.equal(opts.resumeSession, 'sess-abc')
   assert.equal(opts.command, 'auto')
+})
+
+test('unknown inner flags are preserved after the headless command for composed-lite plan mode', () => {
+  const opts = parseHeadlessArgs([
+    'node', 'gsd', 'headless',
+    'start',
+    'composed-lite',
+    '--plan',
+    'fresh validation run',
+  ])
+  assert.equal(opts.command, 'start')
+  assert.deepEqual(opts.commandArgs, ['composed-lite', '--plan', 'fresh validation run'])
+})
+
+test('unknown inner flags are preserved after the headless command for composed-lite admission actions', () => {
+  const opts = parseHeadlessArgs([
+    'node', 'gsd', 'headless',
+    'start',
+    'resume',
+    '--approve',
+  ])
+  assert.equal(opts.command, 'start')
+  assert.deepEqual(opts.commandArgs, ['resume', '--approve'])
 })
