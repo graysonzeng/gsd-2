@@ -209,6 +209,14 @@ function normalizeRuntimeControlAction(input: string): "status" | "abandon" | nu
   return null;
 }
 
+export function normalizeStartArgs(args: string): string {
+  const trimmed = (typeof args === "string" ? args : "").trim();
+  if (/^start\b(?=\s+(?:resume|--resume|list|--list)\b)/.test(trimmed)) {
+    return trimmed.replace(/^start\b\s*/, "").trim();
+  }
+  return trimmed;
+}
+
 async function showComposedLiteRuntimeStatus(basePath: string, ctx: ExtensionCommandContext): Promise<void> {
   const { loadState } = await import("./composed-lite/state.js");
   const { PHASE_NAMES } = await import("./composed-lite/types.js");
@@ -320,7 +328,7 @@ export async function handleStart(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
 ): Promise<void> {
-  const trimmed = args.trim();
+  const trimmed = normalizeStartArgs(args);
   const isResumeCommand =
     trimmed === "resume"
     || trimmed === "--resume"

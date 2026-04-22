@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { getGsdArgumentCompletions, TOP_LEVEL_SUBCOMMANDS } from "../commands/catalog.ts";
+import { normalizeStartArgs } from "../commands-workflow-templates.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -180,6 +181,16 @@ describe("workflow catalog registration", () => {
 // ─── Command Handler Tests ───────────────────────────────────────────────
 
 describe("workflow command handler", () => {
+  it("normalizeStartArgs strips a duplicated start prefix for resume controls", () => {
+    assert.equal(normalizeStartArgs("start resume --reset"), "resume --reset");
+    assert.equal(normalizeStartArgs("start --resume --status"), "--resume --status");
+  });
+
+  it("normalizeStartArgs leaves ordinary workflow descriptions untouched", () => {
+    assert.equal(normalizeStartArgs("start bugfix fix login redirect"), "start bugfix fix login redirect");
+    assert.equal(normalizeStartArgs("bugfix fix login redirect"), "bugfix fix login redirect");
+  });
+
   // Dynamically import the handler so module-level side effects
   // don't break when auto.ts pulls in heavy runtime deps.
   // We test the pure routing logic by calling handleWorkflowCommand directly.
