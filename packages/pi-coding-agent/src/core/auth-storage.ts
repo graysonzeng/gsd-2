@@ -232,6 +232,13 @@ function hashString(str: string): number {
 	return Math.abs(hash);
 }
 
+type CredentialSelectionSource = "local" | "runtime" | "pool" | "env" | "fallback";
+
+type LastResolvedCredential = {
+	source: CredentialSelectionSource;
+	index?: number;
+};
+
 /**
  * Credential storage backed by a JSON file.
  * Supports multiple credentials per provider with round-robin rotation and rate-limit fallback.
@@ -262,6 +269,7 @@ export class AuthStorage {
 	 * Map<provider, backoffExpiresAt>
 	 */
 	private providerBackoff: Map<string, number> = new Map();
+	private lastResolvedCredentials: Map<string, LastResolvedCredential> = new Map();
 
 	private constructor(private storage: AuthStorageBackend) {
 		this.reload();
@@ -335,6 +343,42 @@ export class AuthStorage {
 		return JSON.parse(content) as AuthStorageData;
 	}
 
+	private getSelectionKey(provider: string, sessionId?: string): string {
+		return `${provider}::${sessionId ?? "__default__"}`;
+	}
+
+	private recordResolvedCredential(
+		provider: string,
+		source: CredentialSelectionSource,
+		sessionId?: string,
+		index?: number,
+	): void {
+		this.lastResolvedCredentials.set(this.getSelectionKey(provider, sessionId), { source, index });
+	}
+
+	private getLastResolvedCredential(provider: string, sessionId?: string): LastResolvedCredential | undefined {
+		return this.lastResolvedCredentials.get(this.getSelectionKey(provider, sessionId));
+	}
+
+	private clearRuntimeState(provider?: string): void {
+		if (provider === undefined) {
+			this.providerRoundRobinIndex.clear();
+			this.credentialBackoff.clear();
+			this.providerBackoff.clear();
+			this.lastResolvedCredentials.clear();
+			return;
+		}
+
+		this.providerRoundRobinIndex.delete(provider);
+		this.credentialBackoff.delete(provider);
+		this.providerBackoff.delete(provider);
+		for (const key of this.lastResolvedCredentials.keys()) {
+			if (key.startsWith(`${provider}::`)) {
+				this.lastResolvedCredentials.delete(key);
+			}
+		}
+	}
+
 	/**
 	 * Normalize a storage entry to an array of credentials.
 	 * Handles both single credential (backward compat) and array formats.
@@ -358,6 +402,7 @@ export class AuthStorage {
 			});
 			this.data = this.parseStorageData(content);
 			this.loadError = null;
+			this.clearRuntimeState();
 		} catch (error) {
 			this.loadError = error as Error;
 			this.recordError(error);
@@ -433,9 +478,7 @@ export class AuthStorage {
 	 */
 	remove(provider: string): void {
 		delete this.data[provider];
-		this.providerRoundRobinIndex.delete(provider);
-		this.credentialBackoff.delete(provider);
-		this.providerBackoff.delete(provider);
+		this.clearRuntimeState(provider);
 		this.persistProviderChange(provider, undefined);
 	}
 
@@ -494,9 +537,7 @@ export class AuthStorage {
 			this.data[provider] = next;
 			this.persistProviderChange(provider, next);
 		}
-		this.providerRoundRobinIndex.delete(provider);
-		this.credentialBackoff.delete(provider);
-		this.providerBackoff.delete(provider);
+		this.clearRuntimeState(provider);
 		return true;
 	}
 
@@ -689,35 +730,21 @@ export class AuthStorage {
 		if (credentials.length === 0) return false;
 
 		const errorType = options?.errorType ?? "rate_limit";
-
-		// For unknown/transport errors (e.g. connection reset, "terminated"),
-		// don't back off the only credential — it would make getApiKey() return
-		// undefined and surface a misleading "Authentication failed" message.
 		if (errorType === "unknown" && credentials.length === 1) {
 			return false;
 		}
 
-		const backoffMs = getBackoffDuration(errorType);
-
-		// Determine which credential was just used (same logic as selectCredentialIndex
-		// but without incrementing round-robin)
-		let usedIndex: number;
-		if (credentials.length === 1) {
-			usedIndex = 0;
-		} else if (sessionId) {
-			usedIndex = hashString(sessionId) % credentials.length;
-		} else {
-			// Round-robin was already incremented in getApiKey, so the last-used
-			// index is (current - 1). Note: in a concurrent scenario where another
-			// getApiKey call fires between the original request and this backoff call,
-			// we may back off the wrong credential index. This is acceptable because:
-			// (a) pi runs single-threaded event loop, (b) backing off the wrong key
-			// is safe — it self-heals when the backoff expires.
-			const current = this.providerRoundRobinIndex.get(provider) ?? 0;
-			usedIndex = ((current - 1) % credentials.length + credentials.length) % credentials.length;
+		const selection = this.getLastResolvedCredential(provider, sessionId);
+		if (!selection || selection.source !== "pool") {
+			return false;
 		}
 
-		// Set backoff for this credential
+		const usedIndex = selection.index;
+		if (usedIndex === undefined || usedIndex < 0 || usedIndex >= credentials.length) {
+			return false;
+		}
+
+		const backoffMs = getBackoffDuration(errorType);
 		let providerBackoff = this.credentialBackoff.get(provider);
 		if (!providerBackoff) {
 			providerBackoff = new Map();
@@ -725,7 +752,6 @@ export class AuthStorage {
 		}
 		providerBackoff.set(usedIndex, Date.now() + backoffMs);
 
-		// Check if any credential is still available
 		for (let i = 0; i < credentials.length; i++) {
 			if (!this.isCredentialBackedOff(provider, i)) {
 				return true;
@@ -853,24 +879,23 @@ export class AuthStorage {
 	 * @param sessionId - Optional session ID for sticky credential selection
 	 */
 	async getApiKey(providerId: string, sessionId?: string, options?: { baseUrl?: string }): Promise<string | undefined> {
-		// If the model has a local baseUrl, return a dummy key to avoid auth blocking
 		if (options?.baseUrl && !this.fallbackResolver?.(providerId)) {
 			try {
 				const hostname = new URL(options.baseUrl).hostname;
 				if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0" || hostname === "::1") {
+					this.recordResolvedCredential(providerId, "local", sessionId);
 					return "local-no-key-needed";
 				}
 			} catch {
 				if (options.baseUrl.startsWith("unix:")) {
+					this.recordResolvedCredential(providerId, "local", sessionId);
 					return "local-no-key-needed";
 				}
 			}
 		}
 
-		// Runtime override takes highest priority
 		const runtimeKey = this.runtimeOverrides.get(providerId);
 		if (runtimeKey) {
-			// Block Google OAuth tokens used as runtime API key overrides
 			if (GOOGLE_API_KEY_PROVIDERS.has(providerId) && isGoogleOAuthToken(runtimeKey)) {
 				this.recordError(
 					new Error(
@@ -880,26 +905,24 @@ export class AuthStorage {
 				);
 				return undefined;
 			}
+			this.recordResolvedCredential(providerId, "runtime", sessionId);
 			return runtimeKey;
 		}
 
 		const credentials = this.getCredentialsForProvider(providerId);
-
 		if (credentials.length > 0) {
 			const index = this.selectCredentialIndex(providerId, credentials, sessionId);
 			if (index >= 0) {
 				const resolved = await this.resolveCredentialApiKey(providerId, credentials[index]);
-				if (resolved) return resolved;
-				// Credential unresolvable (e.g. type:"oauth" for a non-OAuth provider) —
-				// fall through to env / fallback instead of returning undefined (#2083)
+				if (resolved) {
+					this.recordResolvedCredential(providerId, "pool", sessionId, index);
+					return resolved;
+				}
 			}
-			// All credentials backed off or unresolvable - fall through to env/fallback
 		}
 
-		// Fall back to environment variable
 		const envKey = getEnvApiKey(providerId);
 		if (envKey) {
-			// Block Google OAuth tokens from environment variables (e.g., GEMINI_API_KEY=ya29.*)
 			if (GOOGLE_API_KEY_PROVIDERS.has(providerId) && isGoogleOAuthToken(envKey)) {
 				this.recordError(
 					new Error(
@@ -909,11 +932,15 @@ export class AuthStorage {
 				);
 				return undefined;
 			}
+			this.recordResolvedCredential(providerId, "env", sessionId);
 			return envKey;
 		}
 
-		// Fall back to custom resolver (e.g., models.json custom providers)
-		return this.fallbackResolver?.(providerId) ?? undefined;
+		const fallbackKey = this.fallbackResolver?.(providerId);
+		if (fallbackKey !== undefined) {
+			this.recordResolvedCredential(providerId, "fallback", sessionId);
+		}
+		return fallbackKey ?? undefined;
 	}
 
 	/**

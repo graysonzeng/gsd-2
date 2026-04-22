@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AuthStorage } from "./auth-storage.js";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -222,6 +225,34 @@ describe("AuthStorage — rate-limit backoff", () => {
 		const next = await storage.getApiKey("anthropic", sessionId);
 		assert.ok(next);
 		assert.notEqual(next, chosen);
+	});
+
+	it("marks the credential actually selected after skipping backed-off entries", async () => {
+		const storage = inMemory({
+			anthropic: [makeKey("sk-1"), makeKey("sk-2"), makeKey("sk-3")],
+		});
+
+		assert.equal(await storage.getApiKey("anthropic"), "sk-1");
+		storage.markUsageLimitReached("anthropic");
+
+		assert.equal(await storage.getApiKey("anthropic"), "sk-2");
+		assert.equal(await storage.getApiKey("anthropic"), "sk-3");
+
+		assert.equal(await storage.getApiKey("anthropic"), "sk-2");
+		storage.markUsageLimitReached("anthropic");
+
+		assert.equal(await storage.getApiKey("anthropic"), "sk-3");
+	});
+
+	it("does not back off pooled credentials when the failing key came from a runtime override", async () => {
+		const storage = inMemory({ anthropic: makeKey("sk-pooled") });
+		storage.setRuntimeApiKey("anthropic", "sk-runtime");
+
+		assert.equal(await storage.getApiKey("anthropic"), "sk-runtime");
+		assert.equal(storage.markUsageLimitReached("anthropic"), false);
+
+		storage.removeRuntimeApiKey("anthropic");
+		assert.equal(await storage.getApiKey("anthropic"), "sk-pooled");
 	});
 });
 
@@ -529,6 +560,45 @@ describe("AuthStorage — getEarliestBackoffExpiry", () => {
 
 		const expiry = storage.getEarliestBackoffExpiry("anthropic");
 		assert.equal(expiry, nearExpiry, "should return the nearest (smallest) expiry");
+	});
+
+	it("reload clears stale index-based backoff after credentials change on disk", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "auth-storage-reload-"));
+		const authPath = join(dir, "auth.json");
+		try {
+			writeFileSync(
+				authPath,
+				JSON.stringify(
+					{
+						anthropic: [makeKey("sk-1"), makeKey("sk-2")],
+					},
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			const storage = AuthStorage.create(authPath);
+			assert.equal(await storage.getApiKey("anthropic"), "sk-1");
+			storage.markUsageLimitReached("anthropic");
+
+			writeFileSync(
+				authPath,
+				JSON.stringify(
+					{
+						anthropic: makeKey("sk-2"),
+					},
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			storage.reload();
+			assert.equal(await storage.getApiKey("anthropic"), "sk-2");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
