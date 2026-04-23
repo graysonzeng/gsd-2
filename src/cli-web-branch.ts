@@ -1,8 +1,34 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
+import {
+  bashTool,
+  editTool,
+  findTool,
+  grepTool,
+  hashlineEditTool,
+  hashlineReadTool,
+  lsTool,
+  readTool,
+  type CreateAgentSessionOptions,
+  writeTool,
+} from '@gsd/pi-coding-agent'
 import { agentDir as defaultAgentDir, sessionsDir as defaultSessionsDir, webPreferencesPath as defaultWebPreferencesPath } from './app-paths.js'
 import { getProjectSessionsDir } from './project-sessions.js'
 import { launchWebMode, stopWebMode, type WebModeLaunchStatus, type WebModeStopOptions, type WebModeStopResult } from './web-mode.js'
+
+const builtInTools = {
+  read: readTool,
+  bash: bashTool,
+  edit: editTool,
+  write: writeTool,
+  grep: grepTool,
+  find: findTool,
+  ls: lsTool,
+  hashline_edit: hashlineEditTool,
+  hashline_read: hashlineReadTool,
+} as const
+
+type BuiltInToolName = keyof typeof builtInTools
 
 export interface CliFlags {
   mode?: 'text' | 'json' | 'rpc' | 'mcp'
@@ -15,6 +41,7 @@ export interface CliFlags {
   extensions: string[]
   appendSystemPrompt?: string
   tools?: string[]
+  extraToolNames?: string[]
   messages: string[]
   web?: boolean
   /** Optional project path for web mode: `gsd --web <path>` or `gsd web start <path>` */
@@ -31,6 +58,27 @@ export interface CliFlags {
 }
 
 type WritableLike = Pick<typeof process.stderr, 'write'>
+
+interface CreateAgentSessionToolOptions {
+  tools?: CreateAgentSessionOptions['tools']
+  extraActiveToolNames?: CreateAgentSessionOptions['extraActiveToolNames']
+  includeBuiltInSkillTool?: boolean
+}
+
+export function resolveCreateAgentSessionToolOptions(
+  flags: Pick<CliFlags, 'tools' | 'extraToolNames'>,
+): CreateAgentSessionToolOptions {
+  const tools = flags.tools?.map((name) => builtInTools[name as BuiltInToolName]).filter(Boolean)
+  const hasExplicitToolRestriction = !!flags.tools || !!flags.extraToolNames
+  const requestedSkill = (flags.extraToolNames ?? []).some((name) => name.toLowerCase() === 'skill')
+  return {
+    ...(tools && tools.length > 0 ? { tools } : {}),
+    ...(flags.extraToolNames && flags.extraToolNames.length > 0
+      ? { extraActiveToolNames: flags.extraToolNames }
+      : {}),
+    ...(hasExplicitToolRestriction ? { includeBuiltInSkillTool: requestedSkill } : {}),
+  }
+}
 
 export interface RunWebCliBranchDeps {
   runWebMode?: typeof launchWebMode
@@ -87,7 +135,22 @@ export function parseCliArgs(argv: string[]): CliFlags {
     } else if (arg === '--append-system-prompt' && i + 1 < args.length) {
       flags.appendSystemPrompt = args[++i]
     } else if (arg === '--tools' && i + 1 < args.length) {
-      flags.tools = args[++i].split(',')
+      const toolNames = args[++i].split(',').map((name) => name.trim()).filter(Boolean)
+      const builtinByLower = new Map<string, BuiltInToolName>(
+        Object.keys(builtInTools).map((name) => [name.toLowerCase(), name as BuiltInToolName]),
+      )
+      const builtins: string[] = []
+      const extras: string[] = []
+      for (const name of toolNames) {
+        const builtin = builtinByLower.get(name.toLowerCase())
+        if (builtin) {
+          builtins.push(builtin)
+        } else {
+          extras.push(name)
+        }
+      }
+      flags.tools = builtins
+      if (extras.length > 0) flags.extraToolNames = extras
     } else if (arg === '--list-models') {
       flags.listModels = (i + 1 < args.length && !args[i + 1].startsWith('-')) ? args[++i] : true
     } else if (!arg.startsWith('--') && !arg.startsWith('-')) {

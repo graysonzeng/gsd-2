@@ -370,12 +370,12 @@ Reviewer fan-out, merge semantics, and `retry_on` naming are unchanged from v6; 
 shared-harness/
 ├── reviewer-core.ts          # runReview({projectRoot, model, provider, systemPrompt, reviewPrompt, targetContent, maxAttempts}) → ReviewResult
 ├── review-model-picker.ts    # pickCrossReviewers(primaryModel, primaryProvider, count) → Array<{model, provider}>
-├── subagent-spawn.ts         # re-export of composed-lite/subagent-spawn.ts (state-agnostic)
-├── subagent-terminal.ts      # re-export of composed-lite/subagent-terminal.ts (state-agnostic)
+├── subagent-spawn.ts         # shared-harness-owned source file (state-agnostic; may use internal resolve-bin helper)
+├── subagent-terminal.ts      # shared-harness-owned source file (state-agnostic)
 └── index.ts                  # barrel exports + module-boundary comment
 ```
 
-**Scope guard** — `shared-harness/*` imports from `./` or `../` but **never from `../composed-lite/`** or `../phase-discipline/`. ESLint `no-restricted-paths` enforces this in PR-2's landing commit (non-negotiable).
+**Scope guard** — `shared-harness/*` imports from `./` or `../` but **never from `../composed-lite/`** or `../phase-discipline/`. A dedicated structural boundary test enforces this in PR-2's landing commit (non-negotiable).
 
 #### `src/resources/extensions/gsd/phase-discipline/` (new, 6 files + README — v7 adds 2 files for Π₈ skeleton)
 
@@ -631,7 +631,7 @@ This keeps the existing `retry_on` file-name matching in `rule-registry` unchang
 
 **Deliberate omissions in v1:**
 
-- No input/output token counts — requires structured metrics wiring (R-2 / OQ-7), deferred to v1.1.
+- No input/output token counts — requires structured metrics wiring (R-2 full fix), deferred to v1.1.
 - No cost in currency — depends on token counts; same deferral.
 - No full stdout/stderr capture — raw logs already live at `.gsd/composed-lite/logs/raw/*.jsonl` for composed-lite runs; phase-discipline reviewer stdout/stderr goes through the same `subagent-spawn` path and can be captured there if OQ-9 is later turned on.
 
@@ -674,17 +674,18 @@ This keeps the existing `retry_on` file-name matching in `rule-registry` unchang
 
 ### 9.0 Implementation readiness gate *(added 2026-04-23 after second receiving-code-review)*
 
-Before any PR below can be **landed** (not just opened), the implementer MUST re-verify these anchors against current `main`. A second reviewer pass on 2026-04-23 confirmed each is required and none is present on `main` today:
+Before any PR below can be **landed** (not just opened), the implementer MUST re-verify these anchors against current `main`. A later code pass on 2026-04-23 found that `main` has already absorbed **part** of the originally-planned Δ-K1 surface, so the table below intentionally distinguishes **already present runtime pieces** from **still-missing authoring / validation / wiring pieces**:
 
 | Anchor | Current `main` state | Where it must come from |
 |---|---|---|
-| `PreDispatchResult.action: "advise"` + `advisedUnitType` / `advisedUnitId` | Missing — `action` is `"proceed" \| "skip" \| "replace"` only (`src/resources/extensions/gsd/types.ts:438`) | PR-3a Δ-K1 |
-| `auto-dispatch.ts` honours an `"advise"` result | Missing — main loop only recognises `proceed` / `skip` / `replace` (`src/resources/extensions/gsd/rule-registry.ts:304-341`) | PR-3a Δ-K1 |
+| `PreDispatchResult.action: "advise"` + `advisedUnitType` / `advisedUnitId` | Already present on current `main` in `src/resources/extensions/gsd/types.ts` | Preserve and regression-lock in PR-3a |
+| Dispatch resolution honours an `"advise"` result | Already present on current `main` through `src/resources/extensions/gsd/auto/phases.ts` re-dispatch + `src/resources/extensions/gsd/auto-dispatch.ts` prefix rule `honour-phase-discipline-advice` | Preserve and regression-lock in PR-3a |
+| `preferences-validation.ts` accepts `pre_dispatch_hooks[].action: "advise"` | Missing — validator still only accepts `modify` / `skip` / `replace` | PR-3a contract-sync residue, or an explicit equivalent prerequisite before PR-3b |
 | `GSDPreferences.milestone_profile?: "auto" \| "phase-discipline-8step"` | Missing — no such field in `preferences-types.ts` | PR-3b |
 | Preset merge in `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` | Missing — both functions return the user-configured arrays verbatim (`preferences.ts:580-593`) | PR-3b |
-| `--tools` end-to-end restriction (`resolveCreateAgentSessionToolOptions` + `includeBuiltInSkillTool` + `autoActivateNewExtensionTools`) | Missing on `main` — exists on `feat/composed-lite-runtime-owned`; `src/cli-web-branch.ts:89-90` only does `flags.tools = args[++i].split(',')` | PR-1 (forward port) |
+| `--tools` end-to-end restriction (`resolveCreateAgentSessionToolOptions` + `includeBuiltInSkillTool` + `autoActivateNewExtensionTools`) | Partially present on `main` — `sdk.ts` already carries `extraActiveToolNames`, but root CLI wiring and built-in `Skill` gating are still missing | PR-1 (remaining end-to-end chain completion) |
 
-**Hard ordering constraint.** PR-3b MUST NOT be opened or merged until PR-3a is merged to `main`. The v7.1 scheduler advisory mechanism is a **design proposal that becomes a contract only when PR-3a lands.** Implementers who skip this gate will produce code that does not type-check against `main`.
+**Hard ordering constraint.** PR-3b MUST NOT be opened or merged until PR-1 and PR-2 are merged and the `advise` contract on `main` is fully synchronized end-to-end. As of 2026-04-23, that means the runtime pieces are already present, but the real validator still rejects `action: "advise"`; v7.1 therefore remains correct that PR-3b must not assume the contract is ready until that residue is closed.
 
 ### 9.1 Per-PR breakdown
 
@@ -713,13 +714,13 @@ Split to its own spec: `docs/superpowers/specs/2026-04-23-cli-tool-restriction-c
 
 1. `shared-harness/reviewer-core.ts` ← extract from `composed-lite/review-harness.ts` (decouple from `ComposedLiteState`; take plain input struct)
 2. `shared-harness/review-model-picker.ts` ← extract from `composed-lite/review-model-picker.ts` (already state-agnostic; just moves)
-3. `shared-harness/subagent-spawn.ts` ← re-export of `composed-lite/subagent-spawn.ts` (no code change)
-4. `shared-harness/subagent-terminal.ts` ← re-export of `composed-lite/subagent-terminal.ts` (no code change)
+3. `shared-harness/subagent-spawn.ts` ← becomes a `shared-harness`-owned source file (with `resolve-bin.ts` as a non-exported internal helper)
+4. `shared-harness/subagent-terminal.ts` ← becomes a `shared-harness`-owned source file
 5. `shared-harness/index.ts` ← new barrel
 
-**`composed-lite` is rewritten on `feat/composed-lite-runtime-owned` as a consumer** — `review-harness.ts` becomes a thin `runReview(buildInputFromState(...))` adapter. The `composed-lite` runtime's observable behaviour is byte-identical (enforced by §10 regression gate).
+**Branch reality matters.** The source files for this PR live on `feat/composed-lite-runtime-owned`, not on `main`; PR-2 is therefore a branch-local extraction from that Lab branch, not a change that can be implemented from `main` directly.
 
-**ESLint `no-restricted-paths`** enforces: `shared-harness/*` cannot import `composed-lite/` or `phase-discipline/`. Rule is added in the PR-2 landing commit.
+**Boundary enforcement** is a structural source test, not ESLint. Current repo state does not provide a landing path for the originally-proposed `no-restricted-paths` rule, so PR-2 uses a dedicated source-level boundary test to enforce that `shared-harness/*` never imports `composed-lite/` or `phase-discipline/`.
 
 ### PR-3a — Kernel delta Δ-K1 (new in v7.1)
 
@@ -727,39 +728,40 @@ Split to its own spec: `docs/superpowers/specs/2026-04-23-cli-tool-restriction-c
 
 | File | Change | Size |
 |---|---|---|
-| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/types.ts` | Add `"advise"` to `PreDispatchHookConfig.action`; add `advise_if_mismatch?` field; add `unitId?` / `advisedUnitType?` / `advisedUnitId?` to `PreDispatchResult`; add `"advise"` to `PreDispatchResult.action` | ~15 lines |
-| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/rule-registry.ts` | `runPreDispatchHooks()` propagates `action: "advise"` return value unchanged (currently would mis-handle it) | ~5 lines |
-| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/auto-dispatch.ts` | One new branch in main dispatch loop: if `preDispatchResult.action === "advise"` AND `advisedUnitType` is runnable, re-enter selection with advised unit as hard preference; else `logWarning` + proceed with original pick | ~20 lines |
-| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/tests/pre-dispatch-advise.test.ts` | New unit tests: advise honoured when runnable; advise ignored with warn when not runnable; legacy `modify/skip/replace` paths unchanged | ~80 lines |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences-validation.ts` | Accept `pre_dispatch_hooks[].action = "advise"` in the real preferences pipeline | ~5-10 lines |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/tests/pre-dispatch-advise.test.ts` | Add focused tests that lock the existing runtime behaviour on `main`: advise honoured when runnable, falls back when not runnable, final advised dispatch remains authoritative | ~80-140 lines |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/auto/phases.ts` / `auto-dispatch.ts` / `types.ts` / `rule-registry.ts` / `auto/loop-deps.ts` | Verify-first only: touch these files only if branch-tip inspection shows drift from the already-landed runtime contract | typically `0-15` lines per file |
 
-**Why PR-3a is separable.** `Δ-K1` is a pure kernel extension with no `phase-discipline/` dependency. It can be reviewed on its own merits (is the pre-dispatch contract well-specified? does `auto-dispatch.ts` honour the advice safely?) without coupling to the preset's policy decisions. Users who author custom pre-dispatch hooks benefit immediately from the advise capability, separate from phase-discipline.
+**Why PR-3a is separable.** `Δ-K1` is still the kernel contract for scheduler advice, but on current `main` it has become a **contract-sync PR** rather than a pure greenfield delta: runtime support already exists, while validation and regression coverage still lag. It remains reviewable on its own merits without coupling to phase-discipline policy.
 
-**Why PR-3a cannot be skipped.** Without `Δ-K1`, `profile-dispatch.ts` has no way to express ordering advice — only `modify` / `skip` / `replace` on the current unit. v7 incorrectly claimed the existing contract sufficed; v7.1 corrects this.
+**Why PR-3a cannot be skipped.** Without a fully synchronized `Δ-K1` contract, `profile-dispatch.ts` has no usable path for config-authored ordering advice. Current `main` already carries the additive runtime path, but the real validator still rejects `action: "advise"`; v7.1 therefore remains correct that PR-3b must not assume the contract is ready until that residue is closed.
 
 ### PR-3b — `phase-discipline/` preset + B-min skeleton + preferences extension
 
-**`main`-side edits (2 files, ~30 lines)**:
+**`main`-side edits (4 files, ~40-70 lines)**:
 
 | File | Change |
 |---|---|
-| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences-types.ts` | Add `milestone_profile?: "auto" \| "phase-discipline-8step"` field; add `provider? / cross_review? / cross_review_models?` to `PostUnitHookConfig`; add `provider?` to `PreDispatchHookConfig` |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences-types.ts` | Add `milestone_profile?: "auto" \| "phase-discipline-8step"` and update `KNOWN_PREFERENCE_KEYS` |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/types.ts` | Add `provider? / cross_review? / cross_review_models?` to hook config interfaces; keep hook-field ownership in the real type definitions |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences-validation.ts` | Validate the new hook fields and preserve the already-synchronized `advise` authoring path |
 | `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences.ts` | `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` call `phase-discipline/merge.ts` when `milestone_profile === "phase-discipline-8step"` |
 
 **New `phase-discipline/` directory** (6 files + README as in §3.4 — `preset.ts`, `reviewer-hook.ts`, `findings-carry.ts`, `merge.ts`, `profile-map.ts`, `profile-dispatch.ts`, README).
 
-**`profile-dispatch.ts` consumes the Δ-K1 contract from PR-3a** — without PR-3a merged first, PR-3b fails to compile (typecheck catches it).
+**`profile-dispatch.ts` consumes the Δ-K1 contract from PR-3a** — the runtime contract is already partially present on current `main`, but PR-3b still depends on PR-3a to finish validator acceptance and regression-lock the branch-tip behaviour. Without that sync, the preset is not safely usable even if parts of the extension still type-check.
 
-**Rollout order** *(corrected 2026-04-23 after third receiving-code-review; v7.1 had an incorrect "PR-3a after PR-2" serialisation)*:
+**Rollout order** *(corrected 2026-04-23 after a third receiving-code-review pass):*
 
 - **Parallel track 1** — PR-1 (CLI tool-restriction). Standalone. No code dependency on any other PR.
 - **Parallel track 2** — PR-2 (shared-harness extraction). Standalone. Branches from `feat/composed-lite-runtime-owned`; no dependency on main's PR-1/PR-3a.
-- **Parallel track 3** — PR-3a (Δ-K1 kernel delta). Standalone. Only edits main's `types.ts` / `rule-registry.ts` / `auto-dispatch.ts`; no consumers on main before PR-3b, so ship-and-leave-dormant is safe.
+- **Parallel track 3** — PR-3a (Δ-K1 contract-sync). Standalone. Locks and finishes the already-partially-landed advisory contract on `main`; the key missing piece is validator acceptance plus focused regression coverage.
 - **Parallel track 4** — PR-4 (AGENTS.md docs-map v1). Orthogonal; see separate spec.
-- **Merge point** — PR-3b (phase-discipline preset + skeleton). Blocked on `{PR-1, PR-2, PR-3a}` all merged to main. PR-3b is the only PR with a genuine three-way dependency.
+- **Merge point** — PR-3b (phase-discipline preset + skeleton). Blocked on `{PR-1, PR-2}` plus a fully-synced `advise` contract on `main` (currently represented by PR-3a). PR-3b is still the only PR with a genuine cross-track dependency set.
 
 v1.1–v1.4 each add capability on top of PR-3b without changing the branch layout; see §12.
 
-**PR-3a + PR-3b combined size estimate** — ~120 lines kernel delta (PR-3a) + ~30 lines preferences (PR-3b main-side) + ~280 lines extension (PR-3b extension-side) = ~430 lines total across both PRs. Note: v7's "~30 + ~280 = ~310 lines, 100% additive" claim was wrong — missed PR-3a kernel lines.
+**PR-3a + PR-3b combined size estimate** — ~90-170 lines contract-sync + tests in PR-3a, plus ~40-70 main-side preference/glue lines and ~280 extension-side lines in PR-3b. v7's earlier claim that this was a single ~310-line additive drop was wrong in both shape and sequencing.
 
 ## 10. Testing strategy
 
@@ -782,7 +784,7 @@ v1.1–v1.4 each add capability on top of PR-3b without changing the branch layo
 
 - `phase-discipline/` depends only on the stable `post_unit_hooks` / `pre_dispatch_hooks` API surface. If `gsd-2` upstream changes `preferences` architecture, the preset re-merges into whatever new shape the API takes.
 - `profile-dispatch.ts` returns `{action: "advise", advisedUnitType}` via the PR-3a kernel delta; it does not reach into `auto-dispatch.ts` scheduler heuristics. If the scheduler's unit-selection algorithm changes upstream, `profile-dispatch.ts` keeps working because its output is a *preference*, not an override.
-- `shared-harness/` has 5 files with narrow interfaces. ESLint `no-restricted-paths` prevents bidirectional pollution with `composed-lite/`.
+- `shared-harness/` has 5 exported files with narrow interfaces plus an internal helper. A dedicated structural boundary test prevents bidirectional pollution with `composed-lite/`.
 - `main`-side footprint after PR-3a + PR-3b is 4 files × (15–30 lines each) = ~80 lines; upstream rebases rarely conflict at this scope.
 - No schema extensions to `STATE.json` / `SLICE-STATE.json` / `.gsd/preferences.yaml` top-level beyond one enum field (`milestone_profile`).
 - No runtime version protocol between `shared-harness/` and its consumers (TypeScript types cover compat; see §0 rejected list).
@@ -831,7 +833,7 @@ v7 replaces v6's time-based Lab retirement conditions (T1/T2/T3) with a **capabi
 | **R-1** | Preset merge cached at construction time defeats "edit `.gsd/preferences.yaml` → next unit sees it" guarantee | `merge.ts` is stateless; `resolvePostUnitHooks()` calls it fresh on every invocation (matches existing semantics at `rule-registry.ts:86-108`) |
 | **R-2** *(v7 update)* | Reviewer cost invisible to budget diagnostics | **v1 interim:** §6.2 observability log persists per-reviewer `wall_clock_seconds` + `findings_counts` + `output_chars`, giving per-hook execution visibility even without token counts. **v1.1 full:** adds `unitType: "hook-review"` rows to `UnitMetrics` (~10 lines in `auto-post-unit.ts`); existing `getAverageCostPerUnitType` picks them up automatically. Downgraded from high to medium severity once v1 log lands |
 | **R-3** *(v7 update)* | User `post_unit_hooks` with same `name` as preset shadow new preset fields on upgrade | §3.2.1 locks merge semantics (full replacement, no field-level merging, `cross_review` defaults to 1 when omitted by shadowing hook); `merge.ts` emits two logWarnings; `phase-discipline/README.md` documents with examples |
-| **R-4** | `shared-harness/` import boundary erosion | ESLint `no-restricted-paths` added in PR-2 landing commit; CI runs on every PR |
+| **R-4** | `shared-harness/` import boundary erosion | Dedicated structural boundary test added in PR-2 landing commit; CI runs on every PR |
 | **R-5** | Memory-store pollution from findings carry-forward | `phase-discipline-findings-to-memories` caps at 5 `gotcha` entries per slice; deduped by summary |
 | **R-8** | `cross_review` × `max_cycles` × slice count multiplicatively amplifies cost | `cross_review` clamps to ≤ 5; default `max_cycles=2` not 3; v1.1 may add `cross_review_sample` |
 | **R-9** *(updated v7.1)* | Feat Lab long-term fork maintenance | §12 capability migration path (v1.1→v1.4) replaces v6's time-based retirement; PR-2 removes `review-model-picker.ts` from the Lab-only surface but the bulk (~33 of 34 files) still rebases with main until v1.4. Rebase conflicts are bounded because the scheduler / preferences API is the only moving target and PR-3a adds to it rather than restructuring it |

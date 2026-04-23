@@ -164,6 +164,10 @@ export interface AgentSessionConfig {
 	initialActiveToolNames?: string[];
 	/** Override base tools (useful for custom runtimes). */
 	baseToolsOverride?: Record<string, AgentTool>;
+	/** Whether the built-in Skill tool should be available. Defaults to true. */
+	includeBuiltInSkillTool?: boolean;
+	/** Whether newly discovered extension tools should auto-activate. Defaults to legacy behaviour. */
+	autoActivateNewExtensionTools?: boolean;
 	/** Mutable ref used by Agent to access the current ExtensionRunner */
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Optional: check if the claude-code CLI provider is ready (installed + authed).
@@ -263,7 +267,6 @@ export class AgentSession {
 	/** Cost of the most recent assistant response (for per-prompt display). */
 	private _lastTurnCost = 0;
 
-
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
@@ -279,6 +282,8 @@ export class AgentSession {
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _baseToolsOverride?: Record<string, AgentTool>;
+	private _autoActivateNewExtensionTools: boolean;
+	private _includeBuiltInSkillTool: boolean;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionShutdownHandler?: ShutdownHandler;
@@ -316,6 +321,8 @@ export class AgentSession {
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._baseToolsOverride = config.baseToolsOverride;
+		this._autoActivateNewExtensionTools = config.autoActivateNewExtensionTools ?? (config.initialActiveToolNames === undefined);
+		this._includeBuiltInSkillTool = config.includeBuiltInSkillTool ?? true;
 
 		// Initialize delegated subsystems
 		this._retryHandler = new RetryHandler({
@@ -355,7 +362,7 @@ export class AgentSession {
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
-			includeAllExtensionTools: true,
+			includeAllExtensionTools: this._autoActivateNewExtensionTools,
 		});
 	}
 
@@ -1269,7 +1276,7 @@ export class AgentSession {
 	}
 
 	private _getBuiltinTools(): AgentTool[] {
-		return [this._createBuiltInSkillTool()];
+		return this._includeBuiltInSkillTool ? [this._createBuiltInSkillTool()] : [];
 	}
 
 	private _getRegisteredToolDefinitions(): ToolDefinition[] {
@@ -1619,7 +1626,7 @@ export class AgentSession {
 		if (this._cwd !== previousCwd) {
 			this._buildRuntime({
 				activeToolNames: this.getActiveToolNames(),
-				includeAllExtensionTools: true,
+				includeAllExtensionTools: this._autoActivateNewExtensionTools,
 			});
 		} else {
 			// Even when cwd hasn't changed, restore the full tool set (#3616).
@@ -1629,7 +1636,7 @@ export class AgentSession {
 			// gsd_plan_slice to be missing from auto-mode subagent sessions.
 			this._refreshToolRegistry({
 				activeToolNames: this.getActiveToolNames(),
-				includeAllExtensionTools: true,
+				includeAllExtensionTools: this._autoActivateNewExtensionTools,
 			});
 		}
 
@@ -2144,6 +2151,7 @@ export class AgentSession {
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
 		const previousActiveToolNames = this.getActiveToolNames();
+		const shouldAutoIncludeExtensionTools = options?.includeAllExtensionTools ?? this._autoActivateNewExtensionTools;
 
 		const registeredTools = this._extensionRunner?.getAllRegisteredTools() ?? [];
 		const allCustomTools = [
@@ -2190,7 +2198,7 @@ export class AgentSession {
 			? [...options.activeToolNames]
 			: [...previousActiveToolNames];
 
-		if (options?.includeAllExtensionTools) {
+		if (shouldAutoIncludeExtensionTools) {
 			for (const tool of wrappedExtensionTools) {
 				nextActiveToolNames.push(tool.name);
 			}
@@ -2274,7 +2282,7 @@ export class AgentSession {
 		this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
 			flagValues: previousFlagValues,
-			includeAllExtensionTools: true,
+			includeAllExtensionTools: this._autoActivateNewExtensionTools,
 		});
 
 		const hasBindings =
