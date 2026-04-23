@@ -412,6 +412,15 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		assert.equal(options.persistSession, true, "persistSession must default to true");
 	});
 
+	test("buildSdkOptions disables persistSession when outer CLI uses --no-session", () => {
+		const options = buildSdkOptions(
+			"claude-sonnet-4-20250514",
+			"test prompt",
+			{ persistSession: false },
+		);
+		assert.equal(options.persistSession, false, "persistSession must follow outer ephemeral subagent mode");
+	});
+
 	test("buildSdkOptions sets model and prompt correctly", () => {
 		const options = buildSdkOptions("claude-sonnet-4-20250514", "hello world");
 		assert.equal(options.model, "claude-sonnet-4-20250514");

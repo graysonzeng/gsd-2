@@ -715,6 +715,10 @@ export async function resolveClaudePermissionMode(
 	return "bypassPermissions";
 }
 
+export function resolveClaudePersistSession(argv: readonly string[] = process.argv): boolean {
+	return !argv.some((arg) => arg === "--no-session");
+}
+
 // NOTE: These helpers intentionally mirror @gsd/pi-ai anthropic-shared
 // behavior so this extension remains typecheck-stable even when the published
 // @gsd/pi-ai barrel lags behind monorepo source exports.
@@ -767,12 +771,16 @@ function mapThinkingLevelToAnthropicEffort(level: ThinkingLevel | undefined, mod
 export function buildSdkOptions(
 	modelId: string,
 	prompt: string,
-	overrides?: { permissionMode?: "bypassPermissions" | "acceptEdits" | "default" | "plan" },
+	overrides?: {
+		permissionMode?: "bypassPermissions" | "acceptEdits" | "default" | "plan";
+		persistSession?: boolean;
+	},
 	extraOptions: Record<string, unknown> & { reasoning?: ThinkingLevel } = {},
 ): Record<string, unknown> {
 	const { reasoning, ...sdkExtraOptions } = extraOptions;
 	const mcpServers = buildWorkflowMcpServers();
 	const permissionMode = overrides?.permissionMode ?? "bypassPermissions";
+	const persistSession = overrides?.persistSession ?? resolveClaudePersistSession();
 	const disallowedTools = ["AskUserQuestion"];
 	// Pre-authorize the safe built-ins and every registered workflow MCP
 	// server's tools. `acceptEdits` mode (the interactive default) only
@@ -808,7 +816,7 @@ export function buildSdkOptions(
 		pathToClaudeCodeExecutable: getClaudePath(),
 		model: modelId,
 		includePartialMessages: true,
-		persistSession: true,
+		persistSession,
 		cwd: process.cwd(),
 		permissionMode,
 		allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
