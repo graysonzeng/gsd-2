@@ -1156,7 +1156,7 @@ export class SettingsManager {
 	}
 
 	getEditMode(): "standard" | "hashline" {
-		return this.settings.editMode ?? "standard";
+		return this.settings.editMode ?? "hashline";
 	}
 
 	setEditMode(mode: "standard" | "hashline"): void {

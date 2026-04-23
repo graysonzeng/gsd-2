@@ -25,6 +25,11 @@ describe("SettingsManager — global-only security settings", () => {
     }
   });
 
+  it("defaults edit mode to hashline for more reliable file edits", () => {
+    const sm = SettingsManager.inMemory();
+    assert.equal(sm.getEditMode(), "hashline");
+  });
+
   it("returns allowedCommandPrefixes set via setAllowedCommandPrefixes", () => {
     const sm = SettingsManager.inMemory();
     assert.equal(sm.getAllowedCommandPrefixes(), undefined);
