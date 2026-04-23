@@ -206,8 +206,10 @@ async function executeImplementationRound(input: {
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
+    const workerStatusKey = "cl:unit:worker";
 
     ctx.ui.notify(`  Step ${i + 1}/${steps.length}: ${step.title}`, "info");
+    ctx.ui.setStatus(workerStatusKey, `step ${i + 1}/${steps.length} started: ${step.title}`);
 
     const task = [
       "Implement the following step:",
@@ -265,6 +267,7 @@ async function executeImplementationRound(input: {
     });
 
     if (terminalResult.terminalError) {
+      ctx.ui.setStatus(workerStatusKey, `step ${i + 1}/${steps.length} failed: ${step.title}`);
       throw new Error([
         `Worker step ${i + 1} failed`,
         terminalResult.provider ? `provider=${terminalResult.provider}` : null,
@@ -272,6 +275,8 @@ async function executeImplementationRound(input: {
         terminalResult.errorMessage ?? terminalResult.terminalError,
       ].filter(Boolean).join(" | "));
     }
+
+    ctx.ui.setStatus(workerStatusKey, `step ${i + 1}/${steps.length} done: ${step.title}`);
   }
 
   if (!state.git.baseline_sha || state.git.baseline_sha === "unknown") {
@@ -377,6 +382,7 @@ export async function runPhase4(
     previousSummary = summary.body;
 
     ctx.ui.notify("Phase 4: Running independent code review...", "info");
+    ctx.ui.setStatus("cl:review", `code review round ${round + 1}: running`);
     const reviewResult = await runReview({
       state,
       req,
@@ -400,6 +406,7 @@ export async function runPhase4(
         provider: null,
         model: null,
       };
+      ctx.ui.setStatus("cl:review", "code review passed");
       ctx.ui.notify("Phase 4: Code review passed.", "info");
       return;
     }
@@ -423,6 +430,7 @@ export async function runPhase4(
         provider: null,
         model: null,
       };
+      ctx.ui.setStatus("cl:review", "code review deferred after max revisions");
       ctx.ui.notify(
         `Phase 4: Code review deferred after max revisions. Recorded ${recorded.review_kind} findings and continuing to Phase 5.`,
         "warning",
@@ -432,6 +440,7 @@ export async function runPhase4(
 
     reviewFeedback = reviewResult;
     const issueCount = reviewResult.critical.length + reviewResult.important.length;
+    ctx.ui.setStatus("cl:review", `${reviewResult.overall_assessment} (${issueCount} blocking issues), rerunning implementation`);
     ctx.ui.notify(
       `Phase 4: Code review — ${reviewResult.overall_assessment} (${issueCount} blocking issues). Re-running implementation...`,
       "warning",

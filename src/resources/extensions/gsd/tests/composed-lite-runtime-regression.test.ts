@@ -13,6 +13,7 @@ const RUN_LOCK_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "run
 const COMPOSED_LITE_INDEX_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "index.ts"), "utf-8");
 const PHASE0_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "phases", "p0-admission.ts"), "utf-8");
 const PHASE4_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "phases", "p4-implementation.ts"), "utf-8");
+const PHASE5_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "phases", "p5-verification.ts"), "utf-8");
 const RUNNER_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "runner.ts"), "utf-8");
 const REVIEW_HARNESS_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "review-harness.ts"), "utf-8");
 const STATE_SOURCE = readFileSync(join(__dirname, "..", "composed-lite", "state.ts"), "utf-8");
@@ -39,7 +40,7 @@ const START_RUNTIME_OWNED_BRANCH = START_DISPATCH_SOURCE.slice(
   START_DISPATCH_SOURCE.indexOf("// Load the workflow template content — prefer a project/global plugin"),
 );
 const RESUME_RUNTIME_OWNED_BRANCH = START_DISPATCH_SOURCE.slice(
-  START_DISPATCH_SOURCE.indexOf("if (runtimeMarker?.status === \"active\") {"),
+  START_DISPATCH_SOURCE.indexOf("const runtimeMarker = readRuntimeOwnedStateMarker(basePath);"),
   START_DISPATCH_SOURCE.indexOf("const inProgress = findInProgressWorkflows(basePath);"),
 );
 const MARKDOWN_RUNTIME_OWNED_BRANCH = START_DISPATCH_SOURCE.slice(
@@ -119,8 +120,10 @@ test("Phase 0 requires an explicit carry-forward review selection when unresolve
 });
 
 test("runner pauses cleanly on admission pending and allows active-run resume without a fresh requirement", () => {
-  assert.match(RUNNER_SOURCE, /const canResumeActiveRun = Boolean\(existing && existing\.status === "active"\)/);
-  assert.match(RUNNER_SOURCE, /if \(!requestedRequirement && !canResumeActiveRun\)/);
+  assert.match(RUNNER_SOURCE, /const canResumeExistingRun = Boolean\(/);
+  assert.match(RUNNER_SOURCE, /existing\.status === "active"/);
+  assert.match(RUNNER_SOURCE, /req\.source === "resume" && existing\.status === "failed"/);
+  assert.match(RUNNER_SOURCE, /if \(!requestedRequirement && !canResumeExistingRun\)/);
   assert.match(RUNNER_SOURCE, /if \(err instanceof AdmissionPendingSignal\)/);
   assert.match(RUNNER_SOURCE, /outcome: "pending_approval"/);
   assert.match(RUNNER_SOURCE, /Re-run with --approve or --reject/);
@@ -130,8 +133,9 @@ test("runner pauses cleanly on admission pending and allows active-run resume wi
 
 test("runner returns immediately after a non-fuse phase failure instead of masking it as state_integrity_error", () => {
   assert.match(RUNNER_SOURCE, /if \(!state\.fuse_reason && state\.phases\[phaseNum\]\.status === "failed"\)/);
+  assert.match(RUNNER_SOURCE, /state\.status = "failed"/);
   assert.match(RUNNER_SOURCE, /Fix the issue and re-run with \/gsd start resume\./);
-  assert.match(RUNNER_SOURCE, /saveState\(projectRoot, state\);\s*\n\s*if \(!state\.fuse_reason && state\.phases\[phaseNum\]\.status === "failed"\)/);
+  assert.match(RUNNER_SOURCE, /saveState\(projectRoot, state\);\s*\n\s*if \(!state\.fuse_reason && state\.phases\[phaseNum\]\.status === "failed"\) \{/);
 });
 
 test("runner rejects silently reusing an active composed-lite run for a different requirement", () => {
@@ -171,7 +175,7 @@ test("/gsd start resume recognizes the runtime-owned composed-lite STATE marker"
   assert.match(START_DISPATCH_SOURCE, /function readRuntimeOwnedStateMarker/);
   assert.match(START_DISPATCH_SOURCE, /const isResumeCommand =/);
   assert.match(START_DISPATCH_SOURCE, /parsed\.type === "runtime-owned" && parsed\.runtime === "composed-lite"/);
-  assert.match(START_DISPATCH_SOURCE, /if \(runtimeMarker\?\.status === "active"\)/);
+  assert.match(START_DISPATCH_SOURCE, /runtimeMarker && \(runtimeMarker\.status === "active" \|\| runtimeMarker\.status === "failed"\)/);
   assert.match(START_DISPATCH_SOURCE, /parseComposedLiteDispatchArgs\(/);
   assert.match(START_DISPATCH_SOURCE, /admissionAction: parsed\.admissionAction/);
   assert.match(START_DISPATCH_SOURCE, /source: "resume"/);
@@ -179,12 +183,39 @@ test("/gsd start resume recognizes the runtime-owned composed-lite STATE marker"
 
 test("/gsd start resume supports composed-lite runtime status and abandon/reset controls", () => {
   assert.match(START_DISPATCH_SOURCE, /function normalizeRuntimeControlAction/);
-  assert.match(START_DISPATCH_SOURCE, /trimmed === "status" \|\| trimmed === "--status"/);
-  assert.match(START_DISPATCH_SOURCE, /trimmed === "--abandon"/);
-  assert.match(START_DISPATCH_SOURCE, /trimmed === "--reset"/);
+  assert.match(START_DISPATCH_SOURCE, /trimmedWithoutForce === "status" \|\| trimmedWithoutForce === "--status"/);
+  assert.match(START_DISPATCH_SOURCE, /trimmedWithoutForce === "--abandon"/);
+  assert.match(START_DISPATCH_SOURCE, /trimmedWithoutForce === "--reset"/);
   assert.match(START_DISPATCH_SOURCE, /showComposedLiteRuntimeStatus/);
   assert.match(START_DISPATCH_SOURCE, /abandonComposedLiteRuntime/);
   assert.match(START_DISPATCH_SOURCE, /event: "run_abandoned"/);
+  assert.match(START_DISPATCH_SOURCE, /Lease: \$\{leaseSummary\}/);
+  assert.match(START_DISPATCH_SOURCE, /Phase failure:/);
+});
+
+test("/gsd start resume parses force-abandon controls without degrading to freeform requirement text", () => {
+  assert.match(START_DISPATCH_SOURCE, /const force = trimmed\.includes\("--force"\)/);
+  assert.match(START_DISPATCH_SOURCE, /trimmedWithoutForce/);
+  assert.match(START_DISPATCH_SOURCE, /return \{ action: "abandon", force \}/);
+  assert.match(START_DISPATCH_SOURCE, /runtimeControl\.action === "abandon"/);
+  assert.match(START_DISPATCH_SOURCE, /runtimeControl\.force/);
+});
+
+test("force-abandon stops a live local lease before marking the run abandoned", () => {
+  assert.match(START_DISPATCH_SOURCE, /process\.kill\(state\.lease\.pid, "SIGTERM"\)/);
+  assert.match(START_DISPATCH_SOURCE, /Force-stopping active composed-lite run/);
+  assert.match(START_DISPATCH_SOURCE, /termination:\s*termination\.outcome/);
+  assert.match(START_DISPATCH_SOURCE, /Force-abandon failed for composed-lite run/);
+});
+
+test("composed-lite phases emit structured cl:* status keys for headless progress", () => {
+  assert.match(RUNNER_SOURCE, /setStatus\("cl:phase"/);
+  assert.match(P1_SOURCE, /const statusKey = `cl:unit:scout:/);
+  assert.match(P2_SOURCE, /setStatus\("cl:unit:design"/);
+  assert.match(P3_SOURCE, /setStatus\("cl:unit:split"/);
+  assert.match(PHASE4_SOURCE, /const workerStatusKey = "cl:unit:worker"/);
+  assert.match(PHASE4_SOURCE, /setStatus\("cl:review"/);
+  assert.match(PHASE5_SOURCE, /setStatus\("cl:verify"/);
 });
 
 test("Phase 4 reruns implementation round-by-round before each follow-up review", () => {
@@ -209,8 +240,10 @@ test("state initializes and recovers carry_forward_review defaults", () => {
   assert.match(STATE_SOURCE, /if \(typeof state\.budget\.total_paused_minutes !== "number"\)/);
 });
 
-test("dev CLI preserves a runnable wrapper path for headless RPC subprocesses", () => {
+test("dev CLI refreshes dist resources and preserves a runnable wrapper path for headless RPC subprocesses", () => {
+  assert.match(DEV_CLI_SOURCE, /copy-resources-if-stale\.cjs/);
   assert.match(DEV_CLI_SOURCE, /GSD_BIN_PATH: process\.env\.GSD_BIN_PATH \|\| devCliPath/);
+  assert.ok(!DEV_CLI_SOURCE.includes("GSD_USE_SRC_RESOURCES"));
   assert.match(LOADER_SOURCE, /process\.env\.GSD_BIN_PATH = process\.env\.GSD_BIN_PATH \|\| process\.argv\[1\]/);
 });
 
@@ -233,7 +266,35 @@ test("review-harness records parsed_ok truthfully and stores the actual raw log 
   assert.match(REVIEW_HARNESS_SOURCE, /parsed_ok: Boolean\(result\)/);
   assert.match(REVIEW_HARNESS_SOURCE, /buildRunScopedRawLogFileName/);
   assert.match(REVIEW_HARNESS_SOURCE, /rawLogRelPath = `logs\/raw\/\$\{rawLogFileName\}`/);
+  assert.match(REVIEW_HARNESS_SOURCE, /raw_log_path: rawLogRelPath/);
+  assert.match(REVIEW_HARNESS_SOURCE, /assistant_started: terminalResult\.assistantStarted/);
+  assert.match(REVIEW_HARNESS_SOURCE, /message_updates: terminalResult\.messageUpdateCount/);
+  assert.match(REVIEW_HARNESS_SOURCE, /tool_uses: terminalResult\.toolExecutionCount/);
+  assert.match(REVIEW_HARNESS_SOURCE, /stderr_chars: spawnResult\.stderrOutput\.length/);
+  assert.match(REVIEW_HARNESS_SOURCE, /exit_code: spawnResult\.exitCode/);
   assert.doesNotMatch(REVIEW_HARNESS_SOURCE, /reviewer-final/);
+});
+
+test("review harness records an audit-only reviewer preflight snapshot before spawn", () => {
+  assert.match(REVIEW_HARNESS_SOURCE, /event: "reviewer_preflight"/);
+  assert.match(REVIEW_HARNESS_SOURCE, /reviewer_model: reviewerModel/);
+  assert.match(REVIEW_HARNESS_SOURCE, /reviewer_provider: reviewerProvider/);
+  assert.match(REVIEW_HARNESS_SOURCE, /model_arg: modelArg/);
+  assert.match(REVIEW_HARNESS_SOURCE, /max_retries: maxRetries/);
+  assert.match(REVIEW_HARNESS_SOURCE, /provider_ready_check_available:/);
+  assert.match(REVIEW_HARNESS_SOURCE, /provider_ready:/);
+  assert.match(REVIEW_HARNESS_SOURCE, /system_prompt_path: tmp\.filePath/);
+  assert.match(REVIEW_HARNESS_SOURCE, /system_prompt_file_exists: existsSync\(tmp\.filePath\)/);
+  assert.match(REVIEW_HARNESS_SOURCE, /review_prompt_chars: reviewPromptChars/);
+  assert.match(REVIEW_HARNESS_SOURCE, /target_content_chars: targetContentChars/);
+  assert.match(REVIEW_HARNESS_SOURCE, /task_chars: taskChars/);
+  assert.match(REVIEW_HARNESS_SOURCE, /system_prompt_chars: systemPromptChars/);
+  assert.match(REVIEW_HARNESS_SOURCE, /tool_restriction: "read"/);
+});
+
+test("review harness still has exactly one runtime reviewer spawn call site", () => {
+  const spawnReviewerMentions = REVIEW_HARNESS_SOURCE.match(/spawnReviewer\(/g) ?? [];
+  assert.equal(spawnReviewerMentions.length, 2);
 });
 
 test("subagent terminal parser is centralized and extracts provider errors", () => {
@@ -259,6 +320,15 @@ test("shared subagent spawn helper enforces a bounded timeout for composed-lite 
   assert.match(SUBAGENT_SPAWN_SOURCE, /subagent timed out after \$\{timeoutMs\}ms/);
 });
 
+test("shared subagent spawn helper tracks live children for parent-exit cleanup", () => {
+  assert.match(SUBAGENT_SPAWN_SOURCE, /const liveSubagentProcesses = new Set/);
+  assert.match(SUBAGENT_SPAWN_SOURCE, /export function trackLiveSubagentProcess/);
+  assert.match(SUBAGENT_SPAWN_SOURCE, /export function cleanupTrackedSubagentProcesses/);
+  assert.match(SUBAGENT_SPAWN_SOURCE, /installSubagentCleanupHandlers\(\)/);
+  assert.match(SUBAGENT_SPAWN_SOURCE, /process\.once\("exit"/);
+  assert.match(SUBAGENT_SPAWN_SOURCE, /handleSignal\("SIGTERM", 143\)/);
+});
+
 test("composed-lite raw log helpers scope filenames by run_id to avoid cross-run collisions", () => {
   assert.match(TYPES_SOURCE, /export function buildRunScopedRawLogFileName/);
   assert.match(TYPES_SOURCE, /sanitizeRunIdForFileName/);
@@ -279,11 +349,40 @@ test("review harness spawns reviewer with a provider-qualified --model arg (B0b)
   assert.match(MODEL_ARG_SOURCE, /export function buildModelArg\(/);
   assert.match(MODEL_ARG_SOURCE, /return `\$\{trimmedProvider\}\/\$\{model\}`/);
   assert.match(REVIEW_HARNESS_SOURCE, /import \{ buildModelArg \} from "\.\/model-arg\.js"/);
-  assert.match(REVIEW_HARNESS_SOURCE, /reviewer: \{ model: string; provider: string \| null \| undefined \}/);
-  assert.match(
-    REVIEW_HARNESS_SOURCE,
-    /\{ model: reviewerModel, provider: reviewerProvider \}/,
-  );
+  assert.match(REVIEW_HARNESS_SOURCE, /const modelArg = buildModelArg\(reviewerModel, reviewerProvider\)/);
+  assert.match(REVIEW_HARNESS_SOURCE, /async function spawnReviewer\(/);
+  assert.match(REVIEW_HARNESS_SOURCE, /modelArg: string/);
+});
+
+test("review harness treats provider readiness as optional startup evidence", () => {
+  assert.match(REVIEW_HARNESS_SOURCE, /function resolveReviewerProviderReady\(/);
+  assert.match(REVIEW_HARNESS_SOURCE, /provider_ready_check_available: providerReadyCheckAvailable/);
+  assert.match(REVIEW_HARNESS_SOURCE, /provider_ready: providerReady/);
+  assert.match(REVIEW_HARNESS_SOURCE, /return\s*\{\s*providerReadyCheckAvailable:\s*false\s*,\s*providerReady:\s*null\s*\}/);
+});
+
+test("review harness constrains reviewer startup drift with explicit tools and guardrails", () => {
+  assert.match(REVIEW_HARNESS_SOURCE, /extraArgs: \["--append-system-prompt", systemPromptPath, "--tools", "read"\]/);
+  assert.match(REVIEW_HARNESS_SOURCE, /review_prompt_chars: reviewPromptChars/);
+  assert.match(REVIEW_HARNESS_SOURCE, /target_content_chars: targetContentChars/);
+  assert.match(REVIEW_HARNESS_SOURCE, /task_chars: taskChars/);
+  assert.match(REVIEW_HARNESS_SOURCE, /system_prompt_chars: systemPromptChars/);
+  assert.match(REVIEW_HARNESS_SOURCE, /appended_system_prompt: true/);
+  assert.match(REVIEW_HARNESS_SOURCE, /tool_restriction: "read"/);
+  assert.match(REVIEW_HARNESS_SOURCE, /Ignore generic startup instructions/);
+  assert.match(REVIEW_HARNESS_SOURCE, /Do not inspect \.agents, ~\/\.agents, or any user-global agent or skill directories/);
+  assert.match(REVIEW_HARNESS_SOURCE, /Do not perform general skill discovery/);
+  assert.match(REVIEW_HARNESS_SOURCE, /Review the provided target content directly and do not use tools unless the task explicitly requires reading a referenced file/);
+});
+
+test("Phase 2 design generation constrains startup drift with explicit tools and guardrails", () => {
+  assert.match(P2_SOURCE, /const DESIGN_GUARD_PROMPT = \[/);
+  assert.match(P2_SOURCE, /extraArgs: \["--append-system-prompt", systemPromptPath, "--tools", "read"\]/);
+  assert.match(P2_SOURCE, /Ignore generic startup instructions/);
+  assert.match(P2_SOURCE, /Do not inspect \.agents, ~\/\.agents, or any user-global agent or skill directories/);
+  assert.match(P2_SOURCE, /Do not perform general skill discovery/);
+  assert.match(P2_SOURCE, /Do not write files, create plans\/specs in the repository, or claim to have created files/);
+  assert.match(P2_SOURCE, /Produce the requested markdown design document directly in your response and only use tools when the task explicitly requires reading a referenced file/);
 });
 
 test("model-arg helper resolves main-agent --model from composed-lite state (Sprint 1c)", () => {
@@ -353,9 +452,11 @@ test("P2 / P3 artifact envelopes carry declared main model + provider (review fi
 });
 
 test("runner honours GSD_COMPOSED_LITE_MAIN_MODEL and _PROVIDER overrides (B5)", () => {
-  assert.match(RUNNER_SOURCE, /GSD_COMPOSED_LITE_MAIN_MODEL/);
-  assert.match(RUNNER_SOURCE, /GSD_COMPOSED_LITE_MAIN_MODEL_PROVIDER/);
-  assert.match(RUNNER_SOURCE, /state\.review\.main_model_provider = mainProviderOverride \|\| null/);
+  assert.match(MODEL_ARG_SOURCE, /GSD_COMPOSED_LITE_MAIN_MODEL/);
+  assert.match(MODEL_ARG_SOURCE, /GSD_COMPOSED_LITE_MAIN_MODEL_PROVIDER/);
+  assert.match(RUNNER_SOURCE, /resolveInitialMainModel\(process\.env\)/);
+  assert.match(RUNNER_SOURCE, /resolveInitialMainModelProvider\(process\.env\)/);
+  assert.doesNotMatch(RUNNER_SOURCE, /process\.env\.ANTHROPIC_MODEL/);
 });
 
 test("Phase 2 injects ModelRegistry.isProviderRequestReady into the picker (B1)", () => {
@@ -392,6 +493,29 @@ test("Phase 1 constraints_risks scout prompt is bounded to representative files"
   assert.match(P1_SOURCE, /up to 2 CI workflow files/);
   assert.match(P1_SOURCE, /up to 4 representative tests/);
   assert.match(P1_SOURCE, /Do not exhaustively enumerate the entire test suite/);
+ });
+
+test("Phase 1 codebase_scan scout prompt is bounded to representative repo-local paths", () => {
+  assert.match(P1_SOURCE, /codebase structure/);
+  assert.match(P1_SOURCE, /at most 6 paths total/);
+  assert.match(P1_SOURCE, /Prefer root-level manifests, top-level packages, and concrete entrypoints/);
+  assert.match(P1_SOURCE, /Do not audit the scout guard or subagent prompt plumbing/);
+  assert.match(P1_SOURCE, /Prefer code and runtime entrypoints over docs, tests, and prompt sources/);
+});
+
+test("Phase 1 prior_art scout prompt prefers repo-local implementations over meta-agent infrastructure", () => {
+  assert.match(P1_SOURCE, /prior art/);
+  assert.match(P1_SOURCE, /at most 6 targeted matches or files/);
+  assert.match(P1_SOURCE, /Prefer repository-local implementations and reusable components/);
+  assert.match(P1_SOURCE, /Do not inspect user-global agent or skill directories/);
+  assert.match(P1_SOURCE, /Prefer code and executable configuration over docs, changelogs, and prompt text/);
+});
+
+test("Phase 1 scouts add a dedicated guard system prompt to ignore global skill discovery", () => {
+  assert.match(P1_SOURCE, /SCOUT_GUARD_PROMPT/);
+  assert.match(P1_SOURCE, /--append-system-prompt/);
+  assert.match(P1_SOURCE, /Do not inspect \.agents/);
+  assert.match(P1_SOURCE, /Do not perform general skill discovery/);
 });
 
 test("Phase 4 worker subagent failures are surfaced immediately instead of degrading to empty diff", () => {

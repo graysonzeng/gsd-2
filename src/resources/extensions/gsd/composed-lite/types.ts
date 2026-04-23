@@ -40,7 +40,7 @@ export const SKIP_IN_PLAN: Set<PhaseNumber> = new Set([4, 5, 6]);
 
 export type PhaseStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "fused";
 
-export type RunStatus = "active" | "fused" | "completed" | "abandoned";
+export type RunStatus = "active" | "failed" | "fused" | "completed" | "abandoned";
 
 // ─── Admission State ─────────────────────────────────────────────────────────
 

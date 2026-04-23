@@ -107,6 +107,7 @@ export async function runPhase3(
   const { projectRoot, ctx } = req;
 
   ctx.ui.notify("Phase 3: Split — breaking design into implementation steps...", "info");
+  ctx.ui.setStatus("cl:unit:split", "planning implementation steps");
 
   const designDoc = readArtifact(projectRoot, "design-doc");
   const designContent = designDoc ? designDoc.body : "(no design)";
@@ -242,6 +243,8 @@ Maximum 8 steps. Order them by dependency.`;
     provider: envelopeProvider,
     model: envelopeModel,
   };
+
+  ctx.ui.setStatus("cl:unit:split", `done — ${validation.steps.length} implementation steps defined`);
 
   ctx.ui.notify(
     `Phase 3: Split complete — ${validation.steps.length} implementation steps defined.`,

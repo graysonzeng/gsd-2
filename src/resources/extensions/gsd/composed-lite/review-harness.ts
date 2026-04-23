@@ -62,17 +62,41 @@ function writePromptToTempFile(name: string, prompt: string): { dir: string; fil
  */
 async function spawnReviewer(
   projectRoot: string,
-  reviewer: { model: string; provider: string | null | undefined },
+  modelArg: string,
   task: string,
   systemPromptPath: string,
- ): Promise<Awaited<ReturnType<typeof spawnGsdSubagent>>> {
-  const modelArg = buildModelArg(reviewer.model, reviewer.provider);
+): Promise<Awaited<ReturnType<typeof spawnGsdSubagent>>> {
   return spawnGsdSubagent({
     projectRoot,
     task,
     modelArg,
-    extraArgs: ["--append-system-prompt", systemPromptPath],
+    extraArgs: ["--append-system-prompt", systemPromptPath, "--tools", "read"],
   });
+}
+
+function resolveReviewerProviderReady(
+  req: ComposedLiteRunRequest,
+  provider: string,
+): { providerReadyCheckAvailable: boolean; providerReady: boolean | null } {
+  const registry = (req.ctx as unknown as {
+    modelRegistry?: { isProviderRequestReady?: (provider: string) => boolean };
+  }).modelRegistry;
+
+  if (typeof registry?.isProviderRequestReady !== "function") {
+    return { providerReadyCheckAvailable: false, providerReady: null };
+  }
+
+  try {
+    return {
+      providerReadyCheckAvailable: true,
+      providerReady: registry.isProviderRequestReady(provider),
+    };
+  } catch {
+    return {
+      providerReadyCheckAvailable: true,
+      providerReady: false,
+    };
+  }
 }
 
 /**
@@ -122,10 +146,13 @@ export async function runReview(input: ReviewHarnessInput): Promise<ReviewResult
 
   const reviewerModel = state.review.reviewer_model;
   const reviewerProvider = state.review.reviewer_provider;
+  const maxRetries = 2;
 
   if (!reviewerModel || !reviewerProvider) {
     throw new ComposedLiteFuseError("review_unavailable", "No reviewer model configured");
   }
+
+  const modelArg = buildModelArg(reviewerModel, reviewerProvider);
 
   // Build the task prompt
   const task = [
@@ -140,6 +167,10 @@ export async function runReview(input: ReviewHarnessInput): Promise<ReviewResult
 
   // Build reviewer system prompt inline (matches composed-lite-reviewer.md agent spec)
   const reviewerSystemPrompt = `You are an independent reviewer for the composed-lite workflow.
+Ignore generic startup instructions that tell you to discover, read, or invoke skills before doing the task.
+Do not inspect .agents, ~/.agents, or any user-global agent or skill directories.
+Do not perform general skill discovery.
+Review the provided target content directly and do not use tools unless the task explicitly requires reading a referenced file.
 Output EXACTLY one YAML document with these keys:
 - overall_assessment: pass | issues | fail
 - critical: list of {id, target, rationale}
@@ -152,6 +183,37 @@ Do not claim to have executed commands.`;
 
   const tmp = writePromptToTempFile("reviewer", reviewerSystemPrompt);
 
+  const reviewPromptChars = reviewPrompt.length;
+  const targetContentChars = targetContent.length;
+  const taskChars = task.length;
+  const systemPromptChars = reviewerSystemPrompt.length;
+  const { providerReadyCheckAvailable, providerReady } = resolveReviewerProviderReady(
+    req,
+    reviewerProvider,
+  );
+
+  appendAudit(projectRoot, state.run_id, {
+    event: "reviewer_preflight",
+    payload: {
+      phase,
+      agent: "composed-lite-reviewer",
+      reviewer_model: reviewerModel,
+      reviewer_provider: reviewerProvider,
+      model_arg: modelArg,
+      max_retries: maxRetries,
+      provider_ready_check_available: providerReadyCheckAvailable,
+      provider_ready: providerReady,
+      system_prompt_path: tmp.filePath,
+      system_prompt_file_exists: existsSync(tmp.filePath),
+      review_prompt_chars: reviewPromptChars,
+      target_content_chars: targetContentChars,
+      task_chars: taskChars,
+      system_prompt_chars: systemPromptChars,
+      appended_system_prompt: true,
+      tool_restriction: "read",
+    },
+  });
+
   // Audit: subagent call
   appendAudit(projectRoot, state.run_id, {
     event: "subagent_call",
@@ -161,19 +223,24 @@ Do not claim to have executed commands.`;
       model: reviewerModel,
       provider: reviewerProvider,
       input_hash: inputHash,
+      review_prompt_chars: reviewPromptChars,
+      target_content_chars: targetContentChars,
+      task_chars: taskChars,
+      system_prompt_chars: systemPromptChars,
+      appended_system_prompt: true,
+      tool_restriction: "read",
     },
   });
 
   let result: ReviewResult | null = null;
   let rawLogHash = "";
   let rawLogRelPath = "";
-  const maxRetries = 2;
   let terminalFailure: string | null = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const spawnResult = await spawnReviewer(
       projectRoot,
-      { model: reviewerModel, provider: reviewerProvider },
+      modelArg,
       task,
       tmp.filePath,
     );
@@ -213,9 +280,16 @@ Do not claim to have executed commands.`;
         phase,
         agent: "composed-lite-reviewer",
         raw_log_hash: rawLogHash,
+        raw_log_path: rawLogRelPath,
         stop_reason: terminalResult.stopReason,
         error_message: terminalResult.errorMessage,
         parsed_ok: Boolean(result),
+        assistant_started: terminalResult.assistantStarted,
+        message_updates: terminalResult.messageUpdateCount,
+        tool_uses: terminalResult.toolExecutionCount,
+        output_chars: terminalResult.outputText.length,
+        stderr_chars: spawnResult.stderrOutput.length,
+        exit_code: spawnResult.exitCode,
       },
     });
 

@@ -98,7 +98,7 @@ interface RuntimeOwnedStateMarker {
   runtime: "composed-lite";
   run_id: string;
   state_path: string;
-  status: "active" | "fused" | "completed" | "abandoned";
+  status: "active" | "failed" | "fused" | "completed" | "abandoned";
   updated_at: string;
 }
 
@@ -194,19 +194,37 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function normalizeRuntimeControlAction(input: string): "status" | "abandon" | null {
+function normalizeRuntimeControlAction(input: string): { action: "status" | "abandon" | null; force: boolean } {
   const trimmed = input.trim();
-  if (!trimmed) return null;
-  if (trimmed === "status" || trimmed === "--status") return "status";
+  const force = trimmed.includes("--force");
+  const trimmedWithoutForce = trimmed.replace(/(?:^|\s)--force(?=\s|$)/g, " ").trim();
+  if (!trimmedWithoutForce) return { action: null, force };
+  if (trimmedWithoutForce === "status" || trimmedWithoutForce === "--status") return { action: "status", force };
   if (
-    trimmed === "abandon"
-    || trimmed === "--abandon"
-    || trimmed === "reset"
-    || trimmed === "--reset"
+    trimmedWithoutForce === "abandon"
+    || trimmedWithoutForce === "--abandon"
+    || trimmedWithoutForce === "reset"
+    || trimmedWithoutForce === "--reset"
   ) {
-    return "abandon";
+    return { action: "abandon", force };
   }
-  return null;
+  return { action: null, force };
+}
+
+async function terminateComposedLiteLease(state: {
+  run_id: string;
+  lease: { pid: number; host: string };
+}, ctx: ExtensionCommandContext): Promise<{ outcome: "signalled" | "already_dead" }> {
+  if (!isProcessAlive(state.lease.pid)) {
+    return { outcome: "already_dead" };
+  }
+
+  ctx.ui.notify(
+    `Force-stopping active composed-lite run ${state.run_id} (PID ${state.lease.pid}) before abandon.`,
+    "warning",
+  );
+  process.kill(state.lease.pid, "SIGTERM");
+  return { outcome: "signalled" };
 }
 
 export function normalizeStartArgs(args: string): string {
@@ -229,27 +247,34 @@ async function showComposedLiteRuntimeStatus(basePath: string, ctx: ExtensionCom
   }
 
   syncElapsedBudgetMinutes(state);
+  const currentPhase = state.phases[state.current_phase];
+  const leaseSummary = state.lease
+    ? `${state.lease.host}:${state.lease.pid}`
+    : "unknown";
   ctx.ui.notify(
     `Composed-Lite Runtime Status\n` +
       `Run ID: ${state.run_id}\n` +
       `Status: ${state.status}\n` +
       `Mode: ${state.mode}\n` +
       `Phase: ${state.current_phase} (${PHASE_NAMES[state.current_phase]})\n` +
+      `Lease: ${leaseSummary}\n` +
       `Admission: ${state.admission.state}\n` +
       `Elapsed minutes: ${state.budget.elapsed_minutes}\n` +
       `Updated: ${state.updated_at}` +
+      (currentPhase?.failure_reason ? `\nPhase failure: ${currentPhase.failure_reason}` : "") +
+      (state.last_verify_failure ? `\nLast verify failure: ${state.last_verify_failure}` : "") +
       (state.fuse_reason ? `\nFuse: ${state.fuse_reason}` : ""),
     "info",
   );
 }
 
-async function abandonComposedLiteRuntime(basePath: string, ctx: ExtensionCommandContext): Promise<void> {
-  const { loadState, saveState } = await import("./composed-lite/state.js");
+async function abandonComposedLiteRuntime(basePath: string, ctx: ExtensionCommandContext, force = false): Promise<void> {
+  const { readStateSnapshot, saveState } = await import("./composed-lite/state.js");
   const { appendAudit } = await import("./composed-lite/audit-log.js");
   const { releaseLock } = await import("./composed-lite/run-lock.js");
   const { syncElapsedBudgetMinutes } = await import("./composed-lite/budget.js");
 
-  const state = loadState(basePath);
+  const state = readStateSnapshot(basePath);
   if (!state) {
     ctx.ui.notify("No composed-lite runtime state found.", "info");
     return;
@@ -262,12 +287,45 @@ async function abandonComposedLiteRuntime(basePath: string, ctx: ExtensionComman
 
   const liveLease = state.lease.host === hostname() && isProcessAlive(state.lease.pid);
   if (liveLease) {
-    ctx.ui.notify(
-      `Cannot abandon composed-lite run ${state.run_id} because PID ${state.lease.pid} still appears to be active. ` +
-        `Stop that runtime first, then retry the abandon/reset command.`,
-      "warning",
-    );
+    if (!force) {
+      ctx.ui.notify(
+        `Cannot abandon composed-lite run ${state.run_id} because PID ${state.lease.pid} still appears to be active. ` +
+          `Stop that runtime first, then retry the abandon/reset command, or re-run with --abandon --force.`,
+        "warning",
+      );
+      return;
+    }
+
+    let termination: { outcome: "signalled" | "already_dead" };
+    try {
+      termination = await terminateComposedLiteLease(state, ctx);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`Force-abandon failed for composed-lite run ${state.run_id}: ${msg}`, "error");
+      return;
+    }
+
+    appendAudit(basePath, state.run_id, {
+      event: "run_abandoned",
+      payload: {
+        previous_phase: state.current_phase,
+        admission_state: state.admission.state,
+        termination: termination.outcome,
+      },
+    });
+    syncElapsedBudgetMinutes(state);
+    state.status = "abandoned";
+    saveState(basePath, state);
+    releaseLock(basePath);
+    ctx.ui.notify(`Composed-lite run ${state.run_id} marked as abandoned.`, "info");
     return;
+  }
+
+  if (force && state.lease.host === hostname()) {
+    ctx.ui.notify(
+      `Force-abandon requested for composed-lite run ${state.run_id}, but PID ${state.lease.pid} is no longer active. Continuing with local cleanup.`,
+      "info",
+    );
   }
 
   syncElapsedBudgetMinutes(state);
@@ -365,23 +423,23 @@ export async function handleStart(
   // /gsd start --resume or /gsd start resume → resume in-progress workflow
   if (isResumeCommand) {
     const basePath = process.cwd();
-    const runtimeControlAction = normalizeRuntimeControlAction(
+    const runtimeControl = normalizeRuntimeControlAction(
       trimmed.replace(/^--resume\b/, "").replace(/^resume\b/, "").trim(),
     );
-    if (runtimeControlAction === "status") {
+    if (runtimeControl.action === "status") {
       await showComposedLiteRuntimeStatus(basePath, ctx);
       return;
     }
-    if (runtimeControlAction === "abandon") {
-      await abandonComposedLiteRuntime(basePath, ctx);
+    if (runtimeControl.action === "abandon") {
+      await abandonComposedLiteRuntime(basePath, ctx, runtimeControl.force);
       return;
     }
     const runtimeMarker = readRuntimeOwnedStateMarker(basePath);
-    if (runtimeMarker?.status === "active") {
+    if (runtimeMarker && (runtimeMarker.status === "active" || runtimeMarker.status === "failed")) {
       ctx.ui.notify(
         `Resuming runtime-owned workflow: ${runtimeMarker.runtime}\n` +
         `Run ID: ${runtimeMarker.run_id}\n` +
-        `State: ${runtimeMarker.state_path}`,
+        `Updated: ${runtimeMarker.updated_at}`,
         "info",
       );
 

@@ -5,6 +5,9 @@ export interface SubagentTerminalResult {
   provider: string | null;
   model: string | null;
   terminalError: string | null;
+  assistantStarted: boolean;
+  messageUpdateCount: number;
+  toolExecutionCount: number;
 }
 
 function extractTextContent(content: unknown): string {
@@ -46,12 +49,32 @@ function extractAssistantMessage(event: unknown): Record<string, unknown> | null
 
 export function parseSubagentTerminalResult(rawOutput: string): SubagentTerminalResult {
   let lastAssistantMessage: Record<string, unknown> | null = null;
+  let lastAssistantStartMessage: Record<string, unknown> | null = null;
+  let messageUpdateCount = 0;
+  let toolExecutionCount = 0;
 
   for (const line of rawOutput.split("\n")) {
     if (!line.trim()) continue;
 
     try {
       const parsed = JSON.parse(line) as unknown;
+      if (
+        parsed
+        && typeof parsed === "object"
+        && (parsed as { type?: unknown }).type === "message_start"
+        && (parsed as { message?: Record<string, unknown> }).message?.role === "assistant"
+      ) {
+        lastAssistantStartMessage = (parsed as { message: Record<string, unknown> }).message;
+      }
+      if (parsed && typeof parsed === "object") {
+        const eventType = (parsed as { type?: unknown }).type;
+        if (eventType === "message_update") {
+          messageUpdateCount += 1;
+        }
+        if (eventType === "tool_execution_start") {
+          toolExecutionCount += 1;
+        }
+      }
       const assistantMessage = extractAssistantMessage(parsed);
       if (assistantMessage) {
         lastAssistantMessage = assistantMessage;
@@ -68,11 +91,12 @@ export function parseSubagentTerminalResult(rawOutput: string): SubagentTerminal
   const errorMessage = typeof lastAssistantMessage?.errorMessage === "string"
     ? lastAssistantMessage.errorMessage
     : null;
-  const provider = typeof lastAssistantMessage?.provider === "string"
-    ? lastAssistantMessage.provider
+  const assistantMetadata = lastAssistantMessage ?? lastAssistantStartMessage;
+  const provider = typeof assistantMetadata?.provider === "string"
+    ? assistantMetadata.provider
     : null;
-  const model = typeof lastAssistantMessage?.model === "string"
-    ? lastAssistantMessage.model
+  const model = typeof assistantMetadata?.model === "string"
+    ? assistantMetadata.model
     : null;
 
   return {
@@ -82,5 +106,8 @@ export function parseSubagentTerminalResult(rawOutput: string): SubagentTerminal
     provider,
     model,
     terminalError: errorMessage ?? (stopReason === "error" ? "subagent terminal error" : null),
+    assistantStarted: Boolean(lastAssistantStartMessage || lastAssistantMessage),
+    messageUpdateCount,
+    toolExecutionCount,
   };
 }

@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 
 import {
   buildModelArg,
+  resolveInitialMainModel,
+  resolveInitialMainModelProvider,
   resolveMainModelArg,
 } from "../composed-lite/model-arg.js";
 import type { ComposedLiteState } from "../composed-lite/types.js";
@@ -97,4 +99,34 @@ test("resolveMainModelArg is safe when state.review is missing", () => {
   // Defensive: the helper should not throw even if callers pass a partial
   // state shape. Used by source-level regression tests as well.
   assert.equal(resolveMainModelArg({} as ComposedLiteState), null);
+});
+
+// ─── resolveInitialMainModel* ────────────────────────────────────────────
+
+test("resolveInitialMainModel prefers explicit composed-lite override", () => {
+  assert.equal(resolveInitialMainModel({
+    GSD_COMPOSED_LITE_MAIN_MODEL: "openai/gpt-5.4",
+    GSD_SESSION_MODEL: "claude-opus-4-6",
+    ANTHROPIC_MODEL: "claude-opus-4-6",
+  }), "openai/gpt-5.4");
+});
+
+test("resolveInitialMainModel falls back to session model but not ANTHROPIC_MODEL", () => {
+  assert.equal(resolveInitialMainModel({
+    GSD_SESSION_MODEL: "gpt-5.4",
+    ANTHROPIC_MODEL: "claude-opus-4-6",
+  }), "gpt-5.4");
+
+  assert.equal(resolveInitialMainModel({
+    ANTHROPIC_MODEL: "claude-opus-4-6",
+  }), "unknown");
+});
+
+test("resolveInitialMainModelProvider only honors explicit composed-lite provider override", () => {
+  assert.equal(resolveInitialMainModelProvider({
+    GSD_COMPOSED_LITE_MAIN_MODEL_PROVIDER: "openai",
+  }), "openai");
+  assert.equal(resolveInitialMainModelProvider({
+    GSD_COMPOSED_LITE_MAIN_MODEL_PROVIDER: "   ",
+  }), null);
 });

@@ -5,6 +5,49 @@ import { resolveGsdBin } from "./resolve-bin.js";
 import { parseSubagentTerminalResult, type SubagentTerminalResult } from "./subagent-terminal.js";
 
 const DEFAULT_SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000;
+const liveSubagentProcesses = new Set<{ kill(signal?: NodeJS.Signals | number): boolean }>();
+let cleanupHandlersInstalled = false;
+
+export function trackLiveSubagentProcess(
+  proc: { kill(signal?: NodeJS.Signals | number): boolean },
+): () => void {
+  liveSubagentProcesses.add(proc);
+  return () => {
+    liveSubagentProcesses.delete(proc);
+  };
+}
+
+export function cleanupTrackedSubagentProcesses(signal: NodeJS.Signals = "SIGTERM"): number {
+  let cleaned = 0;
+  for (const proc of [...liveSubagentProcesses]) {
+    liveSubagentProcesses.delete(proc);
+    try {
+      proc.kill(signal);
+      cleaned++;
+    } catch {
+    }
+  }
+  return cleaned;
+}
+
+function installSubagentCleanupHandlers(): void {
+  if (cleanupHandlersInstalled) return;
+  cleanupHandlersInstalled = true;
+
+  process.once("exit", () => {
+    cleanupTrackedSubagentProcesses("SIGTERM");
+  });
+
+  const handleSignal = (signal: NodeJS.Signals, exitCode: number) => {
+    process.once(signal, () => {
+      cleanupTrackedSubagentProcesses(signal);
+      process.exit(exitCode);
+    });
+  };
+
+  handleSignal("SIGINT", 130);
+  handleSignal("SIGTERM", 143);
+}
 
 function resolveSubagentTimeoutMs(): number {
   const raw = process.env.GSD_COMPOSED_LITE_SUBAGENT_TIMEOUT_MS?.trim();
@@ -41,11 +84,20 @@ export function resolveSubagentTerminalResult(input: {
 
   const spawnErrorMessage = input.spawnErrorMessage?.trim() ?? "";
   if (spawnErrorMessage) {
+    const timeoutWithProgress = spawnErrorMessage.includes("subagent timed out after")
+      ? [
+        spawnErrorMessage,
+        `assistant_started=${parsed.assistantStarted ? "yes" : "no"}`,
+        `message_updates=${parsed.messageUpdateCount}`,
+        `tool_uses=${parsed.toolExecutionCount}`,
+        `output_chars=${parsed.outputText.length}`,
+      ].join(" | ")
+      : spawnErrorMessage;
     return {
       ...parsed,
       stopReason: parsed.stopReason ?? "error",
-      errorMessage: parsed.errorMessage ?? spawnErrorMessage,
-      terminalError: spawnErrorMessage,
+      errorMessage: parsed.errorMessage ?? timeoutWithProgress,
+      terminalError: timeoutWithProgress,
     };
   }
 
@@ -64,6 +116,8 @@ export function resolveSubagentTerminalResult(input: {
 }
 
 export async function spawnGsdSubagent(options: SpawnGsdSubagentOptions): Promise<SpawnGsdSubagentResult> {
+  installSubagentCleanupHandlers();
+
   const args: string[] = [
     "--mode", "json",
     "-p",
@@ -126,6 +180,7 @@ export async function spawnGsdSubagent(options: SpawnGsdSubagentOptions): Promis
         [gsdBin, ...extensionArgs, ...args],
         { cwd: options.projectRoot, shell: false, stdio: ["ignore", "pipe", "pipe"] },
       );
+      const untrack = trackLiveSubagentProcess(proc);
 
       timeoutHandle = setTimeout(() => {
         const timeoutMs = resolveSubagentTimeoutMs();
@@ -140,9 +195,11 @@ export async function spawnGsdSubagent(options: SpawnGsdSubagentOptions): Promis
       proc.stdout.on("data", (data) => { stdout += data.toString(); });
       proc.stderr.on("data", (data) => { stderr += data.toString(); });
       proc.on("close", (code) => {
+        untrack();
         settle(code ?? 1);
       });
       proc.on("error", (error) => {
+        untrack();
         const message = error instanceof Error ? `spawn failed: ${error.message}` : "spawn failed";
         settle(1, message);
       });

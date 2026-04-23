@@ -179,11 +179,7 @@ export function initState(
   return state;
 }
 
-/**
- * Load and validate existing state. Returns null if no state exists.
- * Runs §5.5 recovery invariants on loaded state.
- */
-export function loadState(projectRoot: string): ComposedLiteState | null {
+export function readStateSnapshot(projectRoot: string): ComposedLiteState | null {
   const statePath = join(projectRoot, STATE_YAML_PATH);
   if (!existsSync(statePath)) return null;
 
@@ -201,10 +197,20 @@ export function loadState(projectRoot: string): ComposedLiteState | null {
     return null;
   }
 
-  // Basic schema check
   if (!state || state.schema_version !== 2 || !state.run_id) {
     return null;
   }
+
+  return state;
+}
+
+/**
+ * Load and validate existing state. Returns null if no state exists.
+ * Runs §5.5 recovery invariants on loaded state.
+ */
+export function loadState(projectRoot: string): ComposedLiteState | null {
+  const state = readStateSnapshot(projectRoot);
+  if (!state) return null;
 
   // §5.5 Recovery invariants
 

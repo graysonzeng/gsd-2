@@ -34,6 +34,15 @@ import { acquireLock, releaseLock } from "./run-lock.js";
 import { appendAudit } from "./audit-log.js";
 import { checkBudget, syncElapsedBudgetMinutes } from "./budget.js";
 import { sha256 } from "./artifacts.js";
+import { resolveInitialMainModel, resolveInitialMainModelProvider } from "./model-arg.js";
+
+function formatPhaseProgressLabel(phaseNum: PhaseNumber): string {
+  const phaseName = PHASE_NAMES[phaseNum]
+    .split("-")
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+  return `${phaseNum}/7 ${phaseName}`;
+}
 
 // Phase handlers — imported lazily per phase
 import { runPhase0 } from "./phases/p0-admission.js";
@@ -121,10 +130,16 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
   try {
     // ── Initialize or recover state ─────────────────────────────────────
     const existing = loadState(projectRoot);
-    const canResumeActiveRun = Boolean(existing && existing.status === "active");
+    const canResumeExistingRun = Boolean(
+      existing
+      && (
+        existing.status === "active"
+        || (req.source === "resume" && existing.status === "failed")
+      ),
+    );
     const requestedRequirement = req.requirement.trim();
 
-    if (!requestedRequirement && !canResumeActiveRun) {
+    if (!requestedRequirement && !canResumeExistingRun) {
       ctx.ui.notify(
         "composed-lite requires a requirement description. Usage: /gsd start composed-lite <description>",
         "error",
@@ -173,22 +188,16 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
     // Resolution order (v2):
     //   GSD_COMPOSED_LITE_MAIN_MODEL    (explicit, from external agent / docs)
     //   > GSD_SESSION_MODEL             (session-scoped, legacy)
-    //   > ANTHROPIC_MODEL               (legacy, Anthropic-specific)
     //   > "unknown"                     (picker falls back to inferProvider("unknown"))
     if (!state.review.main_model) {
-      state.review.main_model =
-        (process.env.GSD_COMPOSED_LITE_MAIN_MODEL?.trim())
-        || process.env.GSD_SESSION_MODEL
-        || process.env.ANTHROPIC_MODEL
-        || "unknown";
+      state.review.main_model = resolveInitialMainModel(process.env);
     }
 
     // Explicit main provider override. When set, the reviewer picker skips
     // substring-based provider inference and uses this value directly. Useful
     // when `main_model` carries a custom alias not recognised by inferProvider.
     if (!state.review.main_model_provider) {
-      const mainProviderOverride = process.env.GSD_COMPOSED_LITE_MAIN_MODEL_PROVIDER?.trim();
-      state.review.main_model_provider = mainProviderOverride || null;
+      state.review.main_model_provider = resolveInitialMainModelProvider(process.env);
     }
 
     // Update lock with actual run_id
@@ -290,6 +299,8 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
         },
       });
 
+      ctx.ui.setStatus("cl:phase", formatPhaseProgressLabel(phaseNum));
+
       try {
         const handler = PHASE_HANDLERS[phaseNum];
         await handler(state, req);
@@ -382,6 +393,8 @@ export async function runComposedLite(req: ComposedLiteRunRequest): Promise<void
         saveState(projectRoot, state);
 
         if (!state.fuse_reason && state.phases[phaseNum].status === "failed") {
+          state.status = "failed";
+          saveState(projectRoot, state);
           ctx.ui.notify(
             `Composed-lite run ${state.run_id} stopped at phase ${phaseNum} (${PHASE_NAMES[phaseNum]}) after a non-fuse failure. ` +
             `Fix the issue and re-run with /gsd start resume.`,

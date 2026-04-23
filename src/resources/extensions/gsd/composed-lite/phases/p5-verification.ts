@@ -24,6 +24,7 @@ export async function runPhase5(
   const { projectRoot, ctx } = req;
 
   ctx.ui.notify("Phase 5: Verification — running test/build/lint/typecheck...", "info");
+  ctx.ui.setStatus("cl:verify", "running test/build/lint/typecheck");
 
   // Run verification commands
   const results = runVerification(projectRoot, state.run_id, state.phases[5].attempt);
@@ -69,6 +70,7 @@ export async function runPhase5(
 
   if (allPassed) {
     state.last_verify_failure = null;
+    ctx.ui.setStatus("cl:verify", "all verification checks passed");
     ctx.ui.notify("Phase 5: All verification checks passed.", "info");
     return;
   }
@@ -77,10 +79,11 @@ export async function runPhase5(
   const failureSummary = extractFailureSummary(results);
   state.last_verify_failure = failureSummary;
   state.budget.verify_reentry_count++;
+  ctx.ui.setStatus("cl:verify", `failed — reentry ${state.budget.verify_reentry_count}/${state.budget.max_verify_reentry}`);
 
   ctx.ui.notify(
     `Phase 5: Verification failed (reentry ${state.budget.verify_reentry_count}/${state.budget.max_verify_reentry}).\n` +
-    `${failureSummary?.slice(0, 200) || ""}`,
+      `${failureSummary?.slice(0, 200) || ""}`,
     "warning",
   );
 

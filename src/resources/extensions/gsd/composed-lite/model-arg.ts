@@ -16,6 +16,30 @@
 
 import type { ComposedLiteState } from "./types.js";
 
+function normalizeTrim(value: string | null | undefined): string {
+  return (value ?? "").trim();
+}
+
+/**
+ * Resolve the initial main model for a composed-lite run.
+ *
+ * Only explicit composed-lite/session-scoped sources are allowed here.
+ * Falling back to broad globals like `ANTHROPIC_MODEL` silently drifts the
+ * runtime onto whichever provider happens to be exported in the shell.
+ */
+export function resolveInitialMainModel(env: NodeJS.ProcessEnv): string {
+  return normalizeTrim(env.GSD_COMPOSED_LITE_MAIN_MODEL)
+    || normalizeTrim(env.GSD_SESSION_MODEL)
+    || "unknown";
+}
+
+/**
+ * Resolve an explicit main-model provider override for composed-lite.
+ */
+export function resolveInitialMainModelProvider(env: NodeJS.ProcessEnv): string | null {
+  return normalizeTrim(env.GSD_COMPOSED_LITE_MAIN_MODEL_PROVIDER) || null;
+}
+
 /**
  * Format a `--model` argument, qualifying with `provider/` when known.
  *
