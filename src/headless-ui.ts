@@ -37,6 +37,13 @@ export interface ProgressContext {
   isError?: boolean               // tool execution ended with an error
 }
 
+export interface HeartbeatStatus {
+  phaseLabel: string | null
+  activeUnits: number
+  activeSummary?: string[]
+  lastProgressSeconds: number
+}
+
 // ---------------------------------------------------------------------------
 // ANSI Color Helpers
 // ---------------------------------------------------------------------------
@@ -192,6 +199,12 @@ function shortPath(p: unknown): string {
   return p.replace(/^\/Users\/[^/]+\/Developer\//, '')
 }
 
+export function getExtensionStatusText(event: Record<string, unknown>): string {
+  if (typeof event.statusText === 'string') return event.statusText
+  if (typeof event.message === 'string') return event.message
+  return ''
+}
+
 // ---------------------------------------------------------------------------
 // Format Duration
 // ---------------------------------------------------------------------------
@@ -308,19 +321,18 @@ export function formatProgress(event: Record<string, unknown>, ctx: ProgressCont
       }
 
       if (method === 'setStatus') {
-        // Parse statusKey for phase transitions
         const statusKey = String(event.statusKey ?? '')
-        const msg = String(event.message ?? '')
-        if (!statusKey && !msg) return null  // suppress empty status lines
-        // Show meaningful phase transitions
+        const msg = getExtensionStatusText(event)
+        if (!statusKey && !msg) return null
         if (statusKey) {
+          const clStatus = parseComposedLiteStatus(statusKey, msg)
+          if (clStatus) return clStatus
           const label = parsePhaseLabel(statusKey, msg)
           if (label) return `${c.cyan}[phase]   ${label}${c.reset}`
           if (!ctx.verbose) return null
           if (!msg) return null
           return `${c.dim}[status]  ${statusKey}: ${msg}${c.reset}`
         }
-        // Fallback: show message if non-empty
         if (msg) return `${c.cyan}[phase]   ${msg}${c.reset}`
         return null
       }
@@ -382,6 +394,17 @@ export function formatCostLine(costUsd: number, inputTokens: number, outputToken
   return `${c.dim}[cost]    $${costUsd.toFixed(4)} (${inputTokens + outputTokens} tokens)${c.reset}`
 }
 
+export function formatHeartbeatLine(status: HeartbeatStatus): string {
+  const phase = status.phaseLabel ?? 'Working'
+  const summary = Array.isArray(status.activeSummary)
+    ? status.activeSummary.filter(Boolean).slice(0, 3)
+    : []
+  const summarySuffix = summary.length > 0
+    ? ` (${summary.join(', ')})`
+    : ''
+  return `${c.dim}[alive]   ${phase} — ${status.activeUnits} active${summarySuffix}, no new activity for ${status.lastProgressSeconds}s${c.reset}`
+}
+
 // ---------------------------------------------------------------------------
 // Phase Label Parser
 // ---------------------------------------------------------------------------
@@ -408,6 +431,34 @@ function parsePhaseLabel(statusKey: string, message: string): string | null {
       default:
         return null
     }
+  }
+
+  return null
+}
+
+function parseComposedLiteStatus(statusKey: string, message: string): string | null {
+  if (statusKey === 'cl:phase') {
+    if (!message) return null
+    return `${c.cyan}[phase]   ${message}${c.reset}`
+  }
+
+  if (statusKey === 'cl:review') {
+    if (!message) return null
+    return `${c.cyan}[review]  ${message}${c.reset}`
+  }
+
+  if (statusKey === 'cl:verify') {
+    if (!message) return null
+    return `${c.cyan}[verify]  ${message}${c.reset}`
+  }
+
+  if (statusKey.startsWith('cl:unit:')) {
+    const parts = statusKey.split(':')
+    const kind = parts[2] ?? 'unit'
+    const name = parts.slice(3).join(':')
+    const label = name ? `${kind} ${name}` : kind
+    if (!message) return `${c.cyan}[work]    ${label}${c.reset}`
+    return `${c.cyan}[work]    ${label} -- ${message}${c.reset}`
   }
 
   return null

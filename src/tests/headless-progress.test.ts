@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatProgress, formatThinkingLine, formatCostLine, summarizeToolArgs } from '../headless-ui.js'
+import { formatProgress, formatThinkingLine, formatCostLine, summarizeToolArgs, formatHeartbeatLine } from '../headless-ui.js'
 import type { ProgressContext } from '../headless-ui.js'
 
 // Tests run with NO_COLOR or non-TTY stderr, so ANSI codes are empty strings.
@@ -192,6 +192,58 @@ describe('formatProgress', () => {
       }, ctx())
       assert.equal(result, null)
     })
+
+    it('shows composed-lite phase status in non-verbose mode', () => {
+      const result = formatProgress({
+        type: 'extension_ui_request',
+        method: 'setStatus',
+        statusKey: 'cl:phase',
+        message: '1/7 Research',
+      }, ctx({ verbose: false }))
+      assert.ok(result)
+      assert.ok(result.includes('[phase]'))
+      assert.ok(result.includes('1/7 Research'))
+    })
+
+    it('reads composed-lite phase status from statusText', () => {
+      const result = formatProgress({
+        type: 'extension_ui_request',
+        method: 'setStatus',
+        statusKey: 'cl:phase',
+        statusText: '1/7 Research',
+      }, ctx({ verbose: false }))
+      assert.ok(result)
+      assert.ok(result.includes('[phase]'))
+      assert.ok(result.includes('1/7 Research'))
+    })
+
+    it('shows composed-lite unit status as work progress in non-verbose mode', () => {
+      const result = formatProgress({
+        type: 'extension_ui_request',
+        method: 'setStatus',
+        statusKey: 'cl:unit:scout:codebase_scan',
+        message: 'started 1/3',
+      }, ctx({ verbose: false }))
+      assert.ok(result)
+      assert.ok(result.includes('[work]'))
+      assert.ok(result.includes('scout'))
+      assert.ok(result.includes('codebase_scan'))
+      assert.ok(result.includes('started 1/3'))
+    })
+
+    it('reads composed-lite unit status from statusText', () => {
+      const result = formatProgress({
+        type: 'extension_ui_request',
+        method: 'setStatus',
+        statusKey: 'cl:unit:scout:codebase_scan',
+        statusText: 'started 1/3',
+      }, ctx({ verbose: false }))
+      assert.ok(result)
+      assert.ok(result.includes('[work]'))
+      assert.ok(result.includes('scout'))
+      assert.ok(result.includes('codebase_scan'))
+      assert.ok(result.includes('started 1/3'))
+    })
   })
 
   describe('unknown events', () => {
@@ -319,5 +371,31 @@ describe('formatCostLine', () => {
     const result = formatCostLine(0.0523, 4200, 1100)
     assert.ok(result.includes('$0.0523'))
     assert.ok(result.includes('5300 tokens'))
+  })
+})
+
+describe('formatHeartbeatLine', () => {
+  it('formats alive heartbeat with phase and active unit counts', () => {
+    const result = formatHeartbeatLine({
+      phaseLabel: '1/7 Research',
+      activeUnits: 3,
+      lastProgressSeconds: 22,
+    })
+    assert.ok(result.includes('[alive]'))
+    assert.ok(result.includes('1/7 Research'))
+    assert.ok(result.includes('3 active'))
+    assert.ok(result.includes('22s'))
+  })
+
+  it('includes active unit summaries when provided', () => {
+    const result = formatHeartbeatLine({
+      phaseLabel: '1/7 Research',
+      activeUnits: 2,
+      activeSummary: ['scout codebase_scan: started 1/3', 'review: design round 1: review running'],
+      lastProgressSeconds: 15,
+    })
+    assert.ok(result.includes('2 active'))
+    assert.ok(result.includes('scout codebase_scan: started 1/3'))
+    assert.ok(result.includes('review: design round 1: review running'))
   })
 })

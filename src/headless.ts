@@ -24,6 +24,8 @@ import { loadAndValidateAnswerFile, AnswerInjector } from './headless-answers.js
 
 import {
   isTerminalNotification,
+  isTerminalCommandNotification,
+  getTerminalCommandNotificationExitCode,
   isBlockedNotification,
   isMilestoneReadyNotification,
   isQuickCommand,
@@ -45,7 +47,9 @@ import { VALID_OUTPUT_FORMATS } from './headless-types.js'
 import {
   handleExtensionUIRequest,
   formatProgress,
+  formatHeartbeatLine,
   formatThinkingLine,
+  getExtensionStatusText,
   formatTextStart,
   formatTextEnd,
   formatThinkingStart,
@@ -87,6 +91,56 @@ interface TrackedEvent {
   type: string
   timestamp: number
   detail?: string
+}
+
+interface HeadlessProgressSnapshot {
+  phaseLabel: string | null
+  activeKeys: Set<string>
+  activeSummaries: Map<string, string>
+  lastVisibleProgressAt: number
+  lastHeartbeatAt: number
+}
+
+function isTerminalProgressMessage(message: string): boolean {
+  return /\b(done|complete|completed|passed|pass|failed|error|deferred)\b/i.test(message)
+}
+
+function summarizeActiveStatus(statusKey: string, message: string): string {
+  if (statusKey === 'cl:review') return message ? `review: ${message}` : 'review'
+  if (statusKey === 'cl:verify') return message ? `verify: ${message}` : 'verify'
+  if (statusKey.startsWith('cl:unit:')) {
+    const parts = statusKey.split(':')
+    const kind = parts[2] ?? 'unit'
+    const name = parts.slice(3).join(':')
+    const label = name ? `${kind} ${name}` : kind
+    return message ? `${label}: ${message}` : label
+  }
+  return message || statusKey
+}
+
+function updateHeadlessProgress(snapshot: HeadlessProgressSnapshot, event: Record<string, unknown>): void {
+  if (event.type !== 'extension_ui_request' || event.method !== 'setStatus') return
+
+  const statusKey = String(event.statusKey ?? '')
+  const message = getExtensionStatusText(event)
+  if (!statusKey) return
+
+  if (statusKey === 'cl:phase') {
+    snapshot.phaseLabel = message || snapshot.phaseLabel
+    snapshot.activeKeys.clear()
+    snapshot.activeSummaries.clear()
+    return
+  }
+
+  if (statusKey.startsWith('cl:unit:') || statusKey === 'cl:review' || statusKey === 'cl:verify') {
+    if (message && isTerminalProgressMessage(message)) {
+      snapshot.activeKeys.delete(statusKey)
+      snapshot.activeSummaries.delete(statusKey)
+    } else {
+      snapshot.activeKeys.add(statusKey)
+      snapshot.activeSummaries.set(statusKey, summarizeActiveStatus(statusKey, message))
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +441,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   let blocked = false
   let completed = false
   let exitCode = 0
+  let timedOut = false
   let milestoneReady = false  // tracks "Milestone X ready." for auto-chaining
   const recentEvents: TrackedEvent[] = []
   const interactiveToolCallIds = new Set<string>()
@@ -402,6 +457,18 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   // Verbose text-mode state
   const toolStartTimes = new Map<string, number>()
   let lastCostData: { costUsd: number; inputTokens: number; outputTokens: number } | undefined
+  const heartbeatIntervalMsRaw = Number(process.env.GSD_HEADLESS_HEARTBEAT_MS ?? '15000')
+  const heartbeatIntervalMs = Number.isFinite(heartbeatIntervalMsRaw) && heartbeatIntervalMsRaw > 0
+    ? heartbeatIntervalMsRaw
+    : 15_000
+  const progressSnapshot: HeadlessProgressSnapshot = {
+    phaseLabel: null,
+    activeKeys: new Set<string>(),
+    activeSummaries: new Map<string, string>(),
+    lastVisibleProgressAt: Date.now(),
+    lastHeartbeatAt: 0,
+  }
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined
   let thinkingBuffer = ''
   // Streaming state: tracks whether we're inside a text or thinking block
   let inTextBlock = false
@@ -413,7 +480,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     const duration = Date.now() - startTime
     const status: HeadlessJsonResult['status'] = blocked ? 'blocked'
       : exitCode === EXIT_CANCELLED ? 'cancelled'
-      : exitCode === EXIT_ERROR ? (totalEvents === 0 ? 'error' : 'timeout')
+      : exitCode === EXIT_ERROR ? (timedOut ? 'timeout' : 'error')
       : 'success'
     const result: HeadlessJsonResult = {
       status,
@@ -446,7 +513,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
       type === 'tool_execution_start'
         ? String(event.toolName ?? '')
         : type === 'extension_ui_request'
-          ? `${event.method}: ${event.title ?? event.message ?? ''}`
+          ? `${event.method}: ${event.title ?? getExtensionStatusText(event) ?? ''}`
           : undefined
 
     recentEvents.push({ type, timestamp: Date.now(), detail })
@@ -497,7 +564,9 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   // Overall timeout (disabled when options.timeout === 0, e.g. auto-mode)
   const timeoutTimer = options.timeout > 0
     ? setTimeout(() => {
+        timedOut = true
         process.stderr.write(`[headless] Timeout after ${options.timeout / 1000}s\n`)
+        completed = true
         exitCode = EXIT_ERROR
         resolveCompletion()
       }, options.timeout)
@@ -668,8 +737,12 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
         lastCost: eventType === 'agent_end' ? lastCostData : undefined,
       }
 
+      updateHeadlessProgress(progressSnapshot, eventObj)
       const line = formatProgress(eventObj, ctx)
-      if (line) process.stderr.write(line + '\n')
+      if (line) {
+        process.stderr.write(line + '\n')
+        progressSnapshot.lastVisibleProgressAt = Date.now()
+      }
     }
 
     // Handle execution_complete (v2 structured completion)
@@ -699,12 +772,19 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
       if (isTerminalNotification(eventObj)) {
         completed = true
       }
+      if (isTerminalCommandNotification(eventObj)) {
+        completed = true
+        exitCode = getTerminalCommandNotificationExitCode(eventObj)
+        if (exitCode === EXIT_BLOCKED) {
+          blocked = true
+        }
+      }
 
       // Answer injection: try to handle with pre-supplied answers before supervised/auto
       if (injector && !FIRE_AND_FORGET_METHODS.has(String(eventObj.method ?? ''))) {
         if (injector.tryHandle(eventObj, injectorStdinAdapter)) {
           if (completed) {
-            exitCode = blocked ? EXIT_BLOCKED : EXIT_SUCCESS
+            exitCode = exitCode || (blocked ? EXIT_BLOCKED : EXIT_SUCCESS)
             resolveCompletion()
           }
           return
@@ -730,7 +810,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
       // If we detected a terminal notification, resolve after responding
       if (completed) {
-        exitCode = blocked ? EXIT_BLOCKED : EXIT_SUCCESS
+        exitCode = exitCode || (blocked ? EXIT_BLOCKED : EXIT_SUCCESS)
         resolveCompletion()
         return
       }
@@ -852,6 +932,20 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   if (!options.json) {
     process.stderr.write(`[headless] Running /gsd ${options.command}${options.commandArgs.length > 0 ? ' ' + options.commandArgs.join(' ') : ''}...\n`)
+    heartbeatTimer = setInterval(() => {
+      if (completed) return
+      const now = Date.now()
+      if (now - progressSnapshot.lastVisibleProgressAt < heartbeatIntervalMs) return
+      if (now - progressSnapshot.lastHeartbeatAt < heartbeatIntervalMs) return
+      process.stderr.write(formatHeartbeatLine({
+        phaseLabel: progressSnapshot.phaseLabel,
+        activeUnits: progressSnapshot.activeKeys.size,
+        activeSummary: [...progressSnapshot.activeSummaries.values()],
+        lastProgressSeconds: Math.max(1, Math.floor((now - progressSnapshot.lastVisibleProgressAt) / 1000)),
+      }) + '\n')
+      progressSnapshot.lastHeartbeatAt = now
+    }, heartbeatIntervalMs)
+    heartbeatTimer.unref?.()
   }
 
   // Send the command
@@ -899,6 +993,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   // Cleanup
   if (timeoutTimer) clearTimeout(timeoutTimer)
   if (idleTimer) clearTimeout(idleTimer)
+  if (heartbeatTimer) clearInterval(heartbeatTimer)
   pendingResponseTimers.forEach((timer) => clearTimeout(timer))
   pendingResponseTimers.clear()
   stopSupervisedReader?.()
@@ -910,7 +1005,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   // Summary
   const duration = ((Date.now() - startTime) / 1000).toFixed(1)
-  const status = blocked ? 'blocked' : exitCode === EXIT_CANCELLED ? 'cancelled' : exitCode === EXIT_ERROR ? (totalEvents === 0 ? 'error' : 'timeout') : 'complete'
+  const status = blocked ? 'blocked' : exitCode === EXIT_CANCELLED ? 'cancelled' : exitCode === EXIT_ERROR ? (timedOut ? 'timeout' : 'error') : 'complete'
 
   process.stderr.write(`[headless] Status: ${status}\n`)
   process.stderr.write(`[headless] Duration: ${duration}s\n`)

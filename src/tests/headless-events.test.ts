@@ -171,6 +171,8 @@ import {
   EXIT_ERROR,
   EXIT_BLOCKED,
   EXIT_CANCELLED,
+  isTerminalCommandNotification,
+  getTerminalCommandNotificationExitCode,
   isInteractiveHeadlessTool,
   shouldArmHeadlessIdleTimeout,
 } from '../headless-events.js'
@@ -207,6 +209,64 @@ test('mapStatusToExitCode: "cancelled" returns EXIT_CANCELLED', () => {
 
 test('mapStatusToExitCode: unknown status returns EXIT_ERROR', () => {
   assert.equal(mapStatusToExitCode('unknown'), EXIT_ERROR)
+})
+
+test('isTerminalCommandNotification: no in-progress workflows is terminal', () => {
+  assert.equal(isTerminalCommandNotification({
+    type: 'extension_ui_request',
+    method: 'notify',
+    message: 'No in-progress workflows found.',
+  }), true)
+})
+
+test('isTerminalCommandNotification: composed-lite lock failure is terminal', () => {
+  assert.equal(isTerminalCommandNotification({
+    type: 'extension_ui_request',
+    method: 'notify',
+    message: 'Cannot start composed-lite: Another composed-lite runtime (PID 123, run cl-1) is already active. Kill it first or wait for it to finish.',
+  }), true)
+})
+
+test('isTerminalCommandNotification: composed-lite waiting for admission is terminal', () => {
+  assert.equal(isTerminalCommandNotification({
+    type: 'extension_ui_request',
+    method: 'notify',
+    message: 'Composed-lite run cl-1 is waiting for admission approval. Re-run with --approve or --reject.',
+  }), true)
+})
+
+test('isTerminalCommandNotification: composed-lite non-fuse failure stop is terminal', () => {
+  assert.equal(isTerminalCommandNotification({
+    type: 'extension_ui_request',
+    method: 'notify',
+    message: 'Composed-lite run cl-1 stopped at phase 1 (research) after a non-fuse failure. Fix the issue and re-run with /gsd start resume.',
+  }), true)
+})
+
+test('isTerminalCommandNotification: composed-lite finished failed is terminal', () => {
+  assert.equal(isTerminalCommandNotification({
+    type: 'extension_ui_request',
+    method: 'notify',
+    message: 'Composed-lite run cl-1 finished: failed',
+  }), true)
+})
+
+test('getTerminalCommandNotificationExitCode: info notifications resolve success', () => {
+  assert.equal(getTerminalCommandNotificationExitCode({
+    type: 'extension_ui_request',
+    method: 'notify',
+    message: 'No in-progress workflows found.',
+    notifyType: 'info',
+  }), EXIT_SUCCESS)
+})
+
+test('getTerminalCommandNotificationExitCode: error notifications resolve error', () => {
+  assert.equal(getTerminalCommandNotificationExitCode({
+    type: 'extension_ui_request',
+    method: 'notify',
+    message: 'Cannot start composed-lite: Another composed-lite runtime is already active.',
+    notifyType: 'error',
+  }), EXIT_ERROR)
 })
 
 test('isInteractiveHeadlessTool: ask_user_questions is interactive', () => {

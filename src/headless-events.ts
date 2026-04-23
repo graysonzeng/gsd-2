@@ -90,6 +90,33 @@ export function isMilestoneReadyNotification(event: Record<string, unknown>): bo
   return /milestone\s+m\d+.*ready/i.test(String(event.message ?? ''))
 }
 
+const TERMINAL_COMMAND_NOTIFICATION_PATTERNS = [
+  /^no in-progress workflows found\.$/i,
+  /^no composed-lite runtime state found\.$/i,
+  /^composed-lite runtime status\b/i,
+  /^composed-lite run\s+.+\s+marked as abandoned\.$/i,
+  /^composed-lite run\s+.+\s+is already\s+(?:active|failed|fused|completed|abandoned)\.$/i,
+  /^composed-lite run\s+.+\s+is waiting for admission approval\./i,
+  /^composed-lite run\s+.+\s+stopped at phase\s+\d+\s+\([^)]+\)\s+after a non-fuse failure\./i,
+  /^composed-lite run\s+.+\s+finished:\s+(?:completed|failed|fused|abandoned)\b/i,
+  /^cannot start composed-lite:/i,
+  /^failed to load composed-lite runtime:/i,
+  /^composed-lite runtime error:/i,
+]
+
+export function isTerminalCommandNotification(event: Record<string, unknown>): boolean {
+  if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false
+  const message = String(event.message ?? '')
+  return TERMINAL_COMMAND_NOTIFICATION_PATTERNS.some((pattern) => pattern.test(message))
+}
+
+export function getTerminalCommandNotificationExitCode(event: Record<string, unknown>): number {
+  if (isBlockedNotification(event)) return EXIT_BLOCKED
+  const notifyType = String(event.notifyType ?? '').toLowerCase()
+  if (notifyType === 'error' || notifyType === 'warning') return EXIT_ERROR
+  return EXIT_SUCCESS
+}
+
 export function isInteractiveHeadlessTool(toolName: string | undefined): boolean {
   return INTERACTIVE_HEADLESS_TOOLS.has(String(toolName ?? ''))
 }

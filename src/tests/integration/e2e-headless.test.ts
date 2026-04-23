@@ -203,6 +203,13 @@ test("headless --output-format json emits a single HeadlessJsonResult on stdout"
 
   const combined = stripAnsi(result.stdout + result.stderr);
   assertNoCrashMarkers(combined);
+  const stderr = stripAnsi(result.stderr);
+  if (stderr.includes("Timeout after")) {
+    assert.ok(
+      !stderr.includes("Child process exited unexpectedly"),
+      `timeout-triggered shutdown should not be reported as an unexpected child exit:\n${stderr}`,
+    );
+  }
 });
 
 // ===========================================================================
@@ -316,6 +323,13 @@ test("headless --output-format stream-json emits NDJSON on stdout", async (t) =>
 
   const combined = stripAnsi(result.stdout + result.stderr);
   assertNoCrashMarkers(combined);
+  const stderr = stripAnsi(result.stderr);
+  if (stderr.includes("Timeout after")) {
+    assert.ok(
+      !stderr.includes("Child process exited unexpectedly"),
+      `timeout-triggered shutdown should not be reported as an unexpected child exit:\n${stderr}`,
+    );
+  }
 });
 
 // ===========================================================================
