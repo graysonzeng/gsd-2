@@ -5,8 +5,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 import { Agent } from "@gsd/pi-agent-core";
+import { readTool } from "../index.js";
+import { Type } from "@sinclair/typebox";
 import { AuthStorage } from "./auth-storage.js";
 import { AgentSession } from "./agent-session.js";
+import { createAgentSession } from "./sdk.js";
 import { ModelRegistry } from "./model-registry.js";
 import { DefaultResourceLoader } from "./resource-loader.js";
 import { SessionManager } from "./session-manager.js";
@@ -83,6 +86,77 @@ describe("Skill tool", () => {
 
 		const tool = session.state.tools.find((entry) => entry.name === "Skill");
 		assert.equal(tool, undefined);
+	});
+
+	it("does not auto-activate custom tools when initial active tools are explicitly restricted", async () => {
+		const agentDir = join(testDir, "agent-home-restricted-tools");
+		const authStorage = AuthStorage.inMemory({});
+		const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.json"));
+		const settingsManager = SettingsManager.inMemory();
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: testDir,
+			agentDir,
+			settingsManager,
+			noExtensions: true,
+			noPromptTemplates: true,
+			noThemes: true,
+		});
+		await resourceLoader.reload();
+
+		const session = new AgentSession({
+			agent: new Agent(),
+			sessionManager: SessionManager.inMemory(testDir),
+			settingsManager,
+			cwd: testDir,
+			resourceLoader,
+			modelRegistry,
+			initialActiveToolNames: ["read"],
+			includeBuiltInSkillTool: false,
+			customTools: [{
+				name: "memory_query",
+				label: "Memory Query",
+				description: "Query memory entries.",
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+			}],
+		} as any);
+
+		assert.deepEqual(session.getActiveToolNames(), ["read"]);
+	});
+
+	it("createAgentSession keeps custom tools inactive when tools are explicitly restricted", async () => {
+		const agentDir = join(testDir, "agent-home-sdk-restricted-tools");
+		const authStorage = AuthStorage.inMemory({});
+		const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.json"));
+		const settingsManager = SettingsManager.inMemory();
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: testDir,
+			agentDir,
+			settingsManager,
+			noExtensions: true,
+			noPromptTemplates: true,
+			noThemes: true,
+		});
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(testDir),
+			resourceLoader,
+			tools: [readTool],
+			includeBuiltInSkillTool: false,
+			customTools: [{
+				name: "memory_query",
+				label: "Memory Query",
+				description: "Query memory entries.",
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: undefined }),
+			}],
+		});
+
+		assert.deepEqual(session.getActiveToolNames(), ["read"]);
 	});
 
 	it("resolves a project-level skill to the exact skill block format", async () => {

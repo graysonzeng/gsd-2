@@ -12,7 +12,7 @@ const source = readFileSync(
 );
 
 describe("#3616 — newSession() must restore full tool set", () => {
-	test("newSession() calls _refreshToolRegistry with includeAllExtensionTools when cwd is unchanged", () => {
+	test("newSession() gates tool refresh through the session auto-activation flag when cwd is unchanged", () => {
 		// Find the newSession method
 		const newSessionStart = source.indexOf("async newSession(options?:");
 		assert.ok(newSessionStart >= 0, "should find newSession method");
@@ -26,7 +26,7 @@ describe("#3616 — newSession() must restore full tool set", () => {
 			"should have cwd-change guard",
 		);
 
-		// Verify the else branch exists and refreshes tools with includeAllExtensionTools
+		// Verify the else branch exists and refreshes tools through the session flag
 		const elseIdx = methodBody.indexOf("} else {");
 		assert.ok(elseIdx >= 0, "should have else branch for cwd-unchanged case");
 
@@ -36,8 +36,16 @@ describe("#3616 — newSession() must restore full tool set", () => {
 			"else branch should call _refreshToolRegistry",
 		);
 		assert.ok(
-			elseBranch.includes("includeAllExtensionTools: true"),
-			"else branch should pass includeAllExtensionTools: true to restore narrowed tools",
+			elseBranch.includes("includeAllExtensionTools: this._autoActivateNewExtensionTools"),
+			"else branch should use the session auto-activation flag when restoring tools",
+		);
+	});
+
+	test("constructor defaults auto-activation off when initialActiveToolNames are explicitly restricted", () => {
+		assert.ok(
+			source.includes("config.autoActivateNewExtensionTools")
+				&& source.includes("config.initialActiveToolNames === undefined"),
+			"constructor should derive the auto-activation default from whether initialActiveToolNames were explicitly provided",
 		);
 	});
 

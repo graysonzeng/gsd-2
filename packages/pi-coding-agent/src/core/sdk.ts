@@ -332,6 +332,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const initialActiveToolNames: string[] = options.extraActiveToolNames
 		? [...builtinActiveToolNames, ...options.extraActiveToolNames]
 		: builtinActiveToolNames;
+	const hasExplicitToolRestriction = options.tools !== undefined || options.extraActiveToolNames !== undefined;
 
 	let agent: Agent;
 
@@ -548,6 +549,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		customTools: options.customTools,
 		modelRegistry,
 		initialActiveToolNames,
+		autoActivateNewExtensionTools: !hasExplicitToolRestriction,
 		includeBuiltInSkillTool: options.includeBuiltInSkillTool,
 		extensionRunnerRef,
 		isClaudeCodeReady: options.isClaudeCodeReady,

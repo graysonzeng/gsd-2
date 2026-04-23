@@ -164,6 +164,8 @@ export interface AgentSessionConfig {
 	initialActiveToolNames?: string[];
 	/** Override base tools (useful for custom runtimes). */
 	baseToolsOverride?: Record<string, AgentTool>;
+	/** Whether newly registered extension tools should be auto-activated for this session. */
+	autoActivateNewExtensionTools?: boolean;
 	/** Whether the built-in Skill tool should be available. Defaults to true. */
 	includeBuiltInSkillTool?: boolean;
 	/** Mutable ref used by Agent to access the current ExtensionRunner */
@@ -281,6 +283,7 @@ export class AgentSession {
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _baseToolsOverride?: Record<string, AgentTool>;
+	private _autoActivateNewExtensionTools: boolean;
 	private _includeBuiltInSkillTool: boolean;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -319,6 +322,8 @@ export class AgentSession {
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._baseToolsOverride = config.baseToolsOverride;
+		this._autoActivateNewExtensionTools = config.autoActivateNewExtensionTools
+			?? (config.initialActiveToolNames === undefined);
 		this._includeBuiltInSkillTool = config.includeBuiltInSkillTool ?? true;
 
 		// Initialize delegated subsystems
@@ -359,7 +364,7 @@ export class AgentSession {
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
-			includeAllExtensionTools: true,
+			includeAllExtensionTools: this._autoActivateNewExtensionTools,
 		});
 	}
 
@@ -1612,7 +1617,7 @@ export class AgentSession {
 		if (this._cwd !== previousCwd) {
 			this._buildRuntime({
 				activeToolNames: this.getActiveToolNames(),
-				includeAllExtensionTools: true,
+				includeAllExtensionTools: this._autoActivateNewExtensionTools,
 			});
 		} else {
 			// Even when cwd hasn't changed, restore the full tool set (#3616).
@@ -1622,7 +1627,7 @@ export class AgentSession {
 			// gsd_plan_slice to be missing from auto-mode subagent sessions.
 			this._refreshToolRegistry({
 				activeToolNames: this.getActiveToolNames(),
-				includeAllExtensionTools: true,
+				includeAllExtensionTools: this._autoActivateNewExtensionTools,
 			});
 		}
 
@@ -2182,8 +2187,10 @@ export class AgentSession {
 		const nextActiveToolNames = options?.activeToolNames
 			? [...options.activeToolNames]
 			: [...previousActiveToolNames];
+		const shouldAutoIncludeExtensionTools = options?.includeAllExtensionTools
+			?? this._autoActivateNewExtensionTools;
 
-		if (options?.includeAllExtensionTools) {
+		if (shouldAutoIncludeExtensionTools) {
 			for (const tool of wrappedExtensionTools) {
 				nextActiveToolNames.push(tool.name);
 			}
@@ -2267,7 +2274,7 @@ export class AgentSession {
 		this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
 			flagValues: previousFlagValues,
-			includeAllExtensionTools: true,
+			includeAllExtensionTools: this._autoActivateNewExtensionTools,
 		});
 
 		const hasBindings =
