@@ -25,6 +25,8 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent
 import { existsSync, readFileSync } from "node:fs";
 import { join, basename, relative } from "node:path";
 
+import { buildAgentsDocsMapPromptBlock, loadAgentsSection, resolveDocsMapBare } from "./agents-md-loader.js";
+import { logWarning } from "./workflow-logger.js";
 import { gsdRoot, resolveMilestonePath } from "./paths.js";
 import { projectRoot } from "./commands/context.js";
 
@@ -76,6 +78,8 @@ export interface ExtractLearningsPromptContext {
   missingArtifacts: string[];
   /** Display name of the enclosing project (from `.gsd/PROJECT.md` or dir basename). */
   projectName: string;
+  /** Optional AGENTS.md docs-map L0 context injected by the extension layer. */
+  agentsContext?: string | null;
 }
 
 /**
@@ -328,6 +332,8 @@ GSD memory store via \`capture_thought\` (categories: pattern, gotcha or
 convention, architecture). The memory store is the single source of truth
 for cross-session durable knowledge (ADR-013).
 
+${ctx.agentsContext ? `${ctx.agentsContext}\n\n` : ""}
+
 ---
 
 ## Artefacts
@@ -465,6 +471,15 @@ export async function handleExtractLearnings(
   const projectName = extractProjectName(basePath);
   const outputPath = buildLearningsOutputPath(milestoneDir, milestoneId);
   const relativeOutputPath = relative(basePath, outputPath);
+  const agentsLoaded = await loadAgentsSection({
+    cwd: basePath,
+    unitType: "extract-learnings",
+    title: milestoneName,
+    bare: resolveDocsMapBare(undefined, (warning) => logWarning("prompt", warning)),
+  });
+  const agentsContext = agentsLoaded
+    ? buildAgentsDocsMapPromptBlock(agentsLoaded, { includeAddendum: false })
+    : null;
 
   const prompt = buildExtractLearningsPrompt({
     milestoneId,
@@ -477,6 +492,7 @@ export async function handleExtractLearnings(
     uatContent,
     missingArtifacts,
     projectName,
+    agentsContext,
   });
 
   ctx.ui.notify(`Extracting learnings for ${milestoneId}: "${milestoneName}"...`, "info");

@@ -24,7 +24,7 @@ import { getLoadedSkills, type Skill } from "@gsd/pi-coding-agent";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
 import { computeBudgets, resolveExecutorContextWindow, truncateAtSectionBoundary, type MinimalModelRegistry } from "./context-budget.js";
-import { getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
+import { getPendingGates, getPendingGatesForTurn, getTask } from "./gsd-db.js";
 import {
   GATE_REGISTRY,
   assertGateCoverage,
@@ -36,6 +36,7 @@ import { readPhaseAnchor, formatAnchorForPrompt } from "./phase-anchor.js";
 import { logWarning } from "./workflow-logger.js";
 import { inlineGraphSubgraph } from "./graph-context.js";
 import { buildExtractionStepsBlock } from "./commands-extract-learnings.js";
+import { buildAgentsDocsMapPromptBlock, loadAgentsSection, resolveDocsMapBare } from "./agents-md-loader.js";
 
 // ─── Preamble Cap ─────────────────────────────────────────────────────────────
 
@@ -85,6 +86,30 @@ function capPreamble(preamble: string): string {
   const budget = Math.min(MAX_PREAMBLE_CHARS, resolvePromptBudgets().inlineContextBudgetChars);
   if (preamble.length <= budget) return preamble;
   return truncateAtSectionBoundary(preamble, budget).content;
+}
+
+async function buildAgentsDocsMapBlock(args: {
+  cwd: string;
+  unitType: string;
+  title?: string;
+  filePaths?: string[];
+  bare?: boolean;
+  includeAddendum?: boolean;
+}): Promise<string> {
+  const loaded = await loadAgentsSection({
+    cwd: args.cwd,
+    unitType: args.unitType,
+    title: args.title,
+    filePaths: args.filePaths,
+    bare: resolveDocsMapBare(args.bare, (warning) => logWarning("prompt", warning)),
+  });
+  if (!loaded) {
+    return "";
+  }
+  for (const warning of loaded.warnings) {
+    logWarning("prompt", warning);
+  }
+  return buildAgentsDocsMapPromptBlock(loaded, { includeAddendum: args.includeAddendum });
 }
 
 // ─── Executor Constraints ─────────────────────────────────────────────────────
@@ -477,6 +502,7 @@ export function deriveSliceScope(sliceTitle: string, sliceDescription?: string):
 
   return undefined;
 }
+
 /**
  * Extract keywords from a slice title for scoped knowledge queries.
  * Splits on whitespace, filters stopwords, lowercases.
@@ -1127,10 +1153,18 @@ export async function buildPlanMilestonePrompt(mid: string, midTitle: string, ba
   const researchRel = relMilestoneFile(base, mid, "RESEARCH");
 
   const inlined: string[] = [];
+  const docsMapBlock = await buildAgentsDocsMapBlock({
+    cwd: base,
+    unitType: "plan-milestone",
+    title: midTitle,
+    includeAddendum: false,
+  });
 
   // Inject phase handoff anchor from research phase (if available)
   const researchAnchor = readPhaseAnchor(base, mid, "research-milestone");
   if (researchAnchor) inlined.push(formatAnchorForPrompt(researchAnchor));
+
+  if (docsMapBlock) inlined.push(docsMapBlock);
 
   inlined.push(await inlineFile(contextPath, contextRel, "Milestone Context"));
   const researchInline = await inlineFileOptional(researchPath, researchRel, "Milestone Research");
@@ -1309,6 +1343,12 @@ async function renderSlicePrompt(options: {
   const sliceContextRel = relSliceFile(base, mid, sid, "CONTEXT");
 
   const inlined: string[] = [...prependBlocks];
+  const docsMapBlock = await buildAgentsDocsMapBlock({
+    cwd: base,
+    unitType: promptTemplate,
+    title: sTitle,
+  });
+  if (docsMapBlock) inlined.push(docsMapBlock);
 
   // Phase handoff anchor from research phase (if available)
   const researchSliceAnchor = readPhaseAnchor(base, mid, "research-slice");
@@ -1491,6 +1531,13 @@ export async function buildExecuteTaskPrompt(
     ? level
     : { level: level as InlineLevel | undefined };
   const inlineLevel = opts.level ?? resolveInlineLevel();
+  const taskFiles = getTask(mid, sid, tid)?.files ?? [];
+  const docsMapBlock = await buildAgentsDocsMapBlock({
+    cwd: base,
+    unitType: "execute-task",
+    title: tTitle,
+    filePaths: taskFiles,
+  });
 
   // Inject phase handoff anchor from planning phase (if available)
   const planAnchor = readPhaseAnchor(base, mid, "plan-slice");
@@ -1556,8 +1603,12 @@ export async function buildExecuteTaskPrompt(
   const graphBlockET = await inlineGraphSubgraph(base, `${tid} ${tTitle}`, { budget: 2000 });
 
   const inlinedTemplates = inlineLevel === "minimal"
-    ? inlineTemplate("task-summary", "Task Summary")
+    ? [
+        ...(docsMapBlock ? [docsMapBlock] : []),
+        inlineTemplate("task-summary", "Task Summary"),
+      ].join("\n\n---\n\n")
     : [
+        ...(docsMapBlock ? [docsMapBlock] : []),
         inlineTemplate("task-summary", "Task Summary"),
         inlineTemplate("decisions", "Decisions"),
         ...(knowledgeContent ? [knowledgeContent] : []),
@@ -1667,6 +1718,13 @@ export async function buildCompleteSlicePrompt(
   const sliceContextRel = relSliceFile(base, mid, sid, "CONTEXT");
 
   const inlined: string[] = [];
+  const docsMapBlock = await buildAgentsDocsMapBlock({
+    cwd: base,
+    unitType: "complete-slice",
+    title: sTitle,
+    includeAddendum: false,
+  });
+  if (docsMapBlock) inlined.push(docsMapBlock);
   inlined.push(await inlineFile(roadmapPath, roadmapRel, "Milestone Roadmap"));
   const sliceCtxInline = await inlineFileOptional(sliceContextPath, sliceContextRel, "Slice Context (from discussion)");
   if (sliceCtxInline) inlined.push(sliceCtxInline);
@@ -1739,6 +1797,13 @@ export async function buildCompleteMilestonePrompt(
   const roadmapRel = relMilestoneFile(base, mid, "ROADMAP");
 
   const inlined: string[] = [];
+  const docsMapBlock = await buildAgentsDocsMapBlock({
+    cwd: base,
+    unitType: "complete-milestone",
+    title: midTitle,
+    includeAddendum: false,
+  });
+  if (docsMapBlock) inlined.push(docsMapBlock);
   inlined.push(await inlineFile(roadmapPath, roadmapRel, "Milestone Roadmap"));
 
   // Inline all slice summaries (deduplicated by slice ID)

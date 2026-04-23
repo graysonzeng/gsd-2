@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 
-import { resolveExtensionDirFromCandidates } from "../prompt-loader.ts";
+import { getTemplatesDir, resolveExtensionDirFromCandidates } from "../prompt-loader.ts";
 
 function makeExists(paths: Set<string>): (path: string) => boolean {
   return (path: string) => paths.has(path);
@@ -46,4 +46,10 @@ test("resolveExtensionDirFromCandidates falls back to prompts-only dir when neit
 
   const resolved = resolveExtensionDirFromCandidates(moduleDir, agentDir, makeExists(paths));
   assert.equal(resolved, moduleDir);
+});
+
+test("node:test mode should prefer worktree prompts when both trees are valid", () => {
+  const templatesDir = getTemplatesDir().replaceAll("\\", "/");
+  assert.match(templatesDir, /src\/resources\/extensions\/gsd\/templates$/);
+  assert.doesNotMatch(templatesDir, /\.gsd\/agent\/extensions\/gsd\/templates$/);
 });

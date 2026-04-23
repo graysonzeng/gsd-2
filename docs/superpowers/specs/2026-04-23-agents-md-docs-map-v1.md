@@ -43,13 +43,13 @@ Contrast with alternatives:
 | **C2** | L0 mandatory sections: `## Identity`, `## Constraints`, `## Routing Rules`, `## Invariants` |
 | **C3** | Per-file char cap: `AGENTS.md` whole-file ≤ 4000 chars; per L0 optional section ≤ 1000 chars |
 | **C4** | Cross-chain (ancestor-walk) whole-file cap: sum across ancestor chain ≤ 10000 chars; CI-enforced |
-| **C5** | `Routing Rules` syntax: `- **[when phrase]** → [L1 path under `.gsd/docs-map/`]` |
+| **C5** | `Routing Rules` syntax: `- **when phrase** → [relative L1 path]`; one optional surrounding bracket pair inside the bold phrase (for example `**[testing]**`) is tolerated and normalized during matching |
 | **C6** | L0 optional sections keyed by `<!-- task-type: <hint> -->` block markers; matched against `taskTypeHint` |
-| **C7** | L1 files live under `.gsd/docs-map/`; names are hint names (e.g. `testing.md`, `frontend.md`, `migration.md`) |
+| **C7** | L1 files conventionally live under `.gsd/docs-map/`, but v1 resolves them relative to the owning `AGENTS.md` file so tracked fixtures or policy-constrained repos may use another relative directory (e.g. `.docs-map/`) |
 | **C8** | When a Routing Rule matches and L1 is loaded, it enters the task prompt as **additional** content, not as replacement for the L0 full-file slurp |
 | **C9** | `taskTypeHint` derivation is a deterministic pure function: input = task title + file paths + file extensions; output = single hint string or `null` |
 | **C10** | No agent-authored `taskTypeHint` input in v1 (closes the risk of agent-vs-extension mismatch) |
-| **C11** | `CLAUDE.md` precedence preserved byte-identically (existing `resource-loader.ts:57-71` first-match rule) |
+| **C11** | Existing `resource-loader.ts:57-71` per-directory first-match rule is preserved byte-identically: `AGENTS.md` is checked before `CLAUDE.md` |
 | **C12** | L1 files named `AGENTS.md` or `CLAUDE.md` are forbidden (prevents ancestor-slurp defeating layer separation) |
 | **C13** | Platform `resource-loader.ts` is **not** modified in v1 — all work is extension-side |
 | **C14** | `--bare` CLI flag bypasses docs-map resolution (for tooling that wants raw ancestor-slurp) |

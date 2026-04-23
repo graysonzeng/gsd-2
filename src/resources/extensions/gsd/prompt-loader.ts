@@ -67,6 +67,14 @@ function resolveExtensionDir(): string {
   const moduleDir = dirname(fileURLToPath(import.meta.url));
   const gsdHome = process.env.GSD_HOME || join(homedir(), ".gsd");
   const agentGsdDir = join(gsdHome, "agent", "extensions", "gsd");
+  const isNodeTestRuntime =
+    process.env.NODE_TEST === "1" ||
+    process.execArgv.some((arg) => arg === "--test" || arg.startsWith("--test-")) ||
+    process.argv.some((arg) => arg === "--test" || arg.startsWith("--test-"));
+  if (isNodeTestRuntime) {
+    if (hasRequiredExtensionAssets(moduleDir)) return moduleDir;
+    if (hasRequiredExtensionAssets(agentGsdDir)) return agentGsdDir;
+  }
   return resolveExtensionDirFromCandidates(moduleDir, agentGsdDir);
 }
 

@@ -110,6 +110,9 @@ jobs:
       - name: Validate skill references
         run: node scripts/check-skill-references.mjs
 
+      - name: Validate AGENTS docs-map fixtures and caps
+        run: node --import ./src/resources/extensions/gsd/tests/resolve-ts.mjs --experimental-strip-types scripts/check-agents-docs-map.mts
+
       - name: Require tests with source changes
         if: github.event_name == 'pull_request'
         env:
