@@ -56,6 +56,35 @@ Migration is delivered as 4 PRs on 4 clean branches (v7.1 split PR-3 into PR-3a 
 
 The current `feat/composed-lite-runtime-owned` branch is **not** a landing target for any of the above; it is kept as a Lab for composed-lite runtime hardening only. `phase-discipline-preset.md` §12 defines the v1.1–v1.4 capability-migration roadmap that retires this Lab at v1.4 — note that `main` has never carried the composed-lite runtime (0 files, verified 2026-04-23), so retirement is a branch-delete, not a `git rm`.
 
+### Implementation sequencing hard constraints *(added 2026-04-23 after a second receiving-code-review pass)*
+
+This section is **prescriptive, not advisory.** A second reviewer pass re-verified the v7.1 spec against current `src/` source (not `dist-test/` / `dist/`) and confirmed:
+
+- `PreDispatchResult.action` on `main` is `"proceed" | "skip" | "replace"` — no `"advise"` (`src/resources/extensions/gsd/types.ts:438`)
+- `rule-registry` has no advisory path (`src/resources/extensions/gsd/rule-registry.ts:304-341`)
+- `GSDPreferences` has no `milestone_profile` field (grep `src/resources/extensions/gsd/preferences-types.ts` returns 0)
+- `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` directly return user-configured hooks with no preset merge (`src/resources/extensions/gsd/preferences.ts:580-593`)
+- `src/` has no `loadAgentsSection` / `deriveTaskTypeHint` / `agents-md-loader` / `docs-map` implementation (grep returns 0)
+- `src/cli-web-branch.ts:89-90` currently has only `flags.tools = args[++i].split(',')` — no `resolveCreateAgentSessionToolOptions` helper; the helper lives on `feat/composed-lite-runtime-owned` and is explicitly forward-ported by PR-1
+
+Therefore the following **No-Go list** applies to all implementers:
+
+| Action | Gate | Rationale |
+|---|---|---|
+| Start PR-3b (phase-discipline extension code) | **No-Go** until PR-3a merged to `main` | PR-3b imports the `"advise"` action shape from `PreDispatchResult`; without Δ-K1 it does not type-check |
+| Add `milestone_profile` to `GSDPreferences` outside PR-3b | **No-Go** | Preset-merge logic lives in PR-3b's `resolveMilestoneProfile()`; adding the field without the resolver creates dead preferences surface |
+| Use `composed-lite-harness-brainstorm.md` as implementation source | **No-Go** | That document is a superseded brainstorm; factually inaccurate claims from v3.5 (e.g. `main...HEAD` footprint under `packages/pi-coding-agent`) remain there for git-history reasons only. Authoritative specs are the 3 files in this directory |
+| Skip PR-1 on the path to PR-3b | **No-Go** | Phase-discipline reviewers require `--tools read` to actually exclude Skill; without PR-1's `resolveCreateAgentSessionToolOptions` chain, the CLI flag is cosmetic |
+
+And the Go list (all verified as safe to start immediately on separate branches):
+
+| Action | Gate | Notes |
+|---|---|---|
+| Start PR-1 (CLI tool-restriction forward port) | **Go** | Forward-ports the existing `feat/composed-lite-runtime-owned` implementation for 4 files; see CLI spec §2.2 |
+| Start PR-2 (shared-harness extraction) | **Go** after PR-1 | Pure refactor; no semantic change |
+| Start PR-3a (Δ-K1 kernel delta) | **Go** after PR-2 | Standalone, independently reviewable; see `phase-discipline-preset.md` §3.1a |
+| Start PR-4 (AGENTS.md docs-map v1) | **Go** parallel | Orthogonal to PR-1/2/3a/3b |
+
 ## Key interaction points
 
 ### Why the kernel delta (Δ-K1) exists
