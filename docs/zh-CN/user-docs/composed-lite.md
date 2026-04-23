@@ -46,6 +46,12 @@ gsd
 # Headless 模式也会在首个命令之后保留 composed-lite 的内层 flags
 gsd headless start composed-lite --plan "给 /api/upload 加限流"
 gsd headless start resume --approve
+
+# 真实验证请使用合理的超时预算。
+# 除非你是在刻意做 timeout 压测，否则不要把子代理窗口强行压到 20s / 30s。
+# headless 外层 --timeout 必须大于内层每个 subagent 的 timeout。
+env GSD_COMPOSED_LITE_SUBAGENT_TIMEOUT_MS=180000 \
+  gsd headless --timeout 600000 start composed-lite --approve "验证完整工作流"
 ```
 
 Composed-lite 当前通过内联 flag 解析模式与准入控制：使用 `--plan`、`--approve`、`--reject`。像 `plan`、`full` 这样的裸位置参数会被当作 requirement 文本的一部分，而不是模式选择器。
@@ -230,6 +236,18 @@ scout / design / split / worker / reviewer 子进程现在都有统一超时保�
 默认每个子代理 10 分钟；如果你的环境需要更短或更长的窗口，可以在开跑前设置
 `GSD_COMPOSED_LITE_SUBAGENT_TIMEOUT_MS`。超时会以显式 terminal error 的形式落到
 audit log 和 raw log 中，而不是把整个 phase 无限挂住。
+
+做真实端到端验证时，不要随手把子代理压到 `20000` 或 `30000` ms。
+这类窗口只适合显式的 timeout 压测；对正常的 Phase 1 / review 而言，它们会把本来健康的运行误判成失败。
+如果你通过 `gsd headless` 运行，还要确保外层 `--timeout` 明显大于
+`GSD_COMPOSED_LITE_SUBAGENT_TIMEOUT_MS`；否则 headless 可能会先于内层子代理预算耗尽而提前退出。
+
+一个实用的真实验证起点是：
+
+```bash
+env GSD_COMPOSED_LITE_SUBAGENT_TIMEOUT_MS=180000 \
+  gsd headless --timeout 600000 start composed-lite --approve "..."
+```
 
 ### Reviewer 命中了错误的 provider
 

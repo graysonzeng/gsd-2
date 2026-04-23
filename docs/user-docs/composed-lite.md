@@ -45,6 +45,12 @@ gsd
 # Headless mode preserves inner composed-lite flags after the first command
 gsd headless start composed-lite --plan "Add rate limiting to /api/upload"
 gsd headless start resume --approve
+
+# Real validation runs should use realistic timeout budgets.
+# Avoid forcing 20s / 30s subagent windows unless you are intentionally stress-testing timeouts.
+# The outer headless --timeout must be greater than the inner per-subagent timeout.
+env GSD_COMPOSED_LITE_SUBAGENT_TIMEOUT_MS=180000 \
+  gsd headless --timeout 600000 start composed-lite --approve "Validate the full workflow"
 ```
 
 Composed-lite currently parses mode and admission control from inline flags:
@@ -255,6 +261,20 @@ timeout. By default each subagent gets 10 minutes; if that is too low or too
 high for your environment, set `GSD_COMPOSED_LITE_SUBAGENT_TIMEOUT_MS` before
 starting the run. Timeout failures surface in the audit log and raw logs as
 explicit terminal errors instead of leaving the phase hanging forever.
+
+For real end-to-end validation, do not casually clamp subagents to `20000`
+or `30000` ms. Those windows are useful only for explicit timeout-stress
+tests and can make healthy Phase 1 / review work look broken. If you run via
+`gsd headless`, make sure the outer `--timeout` is comfortably larger than
+`GSD_COMPOSED_LITE_SUBAGENT_TIMEOUT_MS`; otherwise headless may terminate the
+run before the inner subagent budget has actually been exhausted.
+
+A practical starting point for real validation is:
+
+```bash
+env GSD_COMPOSED_LITE_SUBAGENT_TIMEOUT_MS=180000 \
+  gsd headless --timeout 600000 start composed-lite --approve "..."
+```
 
 ### Reviewer picked the wrong provider
 

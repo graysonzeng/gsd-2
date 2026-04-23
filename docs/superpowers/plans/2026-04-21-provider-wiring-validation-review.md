@@ -1,44 +1,30 @@
 # Provider Wiring Validation Review Checklist
 
-> Validation-only artifact. No source edits planned.
+> Fresh-run validation-only artifact. Do not resume prior run state. No source edits planned.
 
-## Review Targets
-- `src/resources/extensions/gsd/tests/hook-model-resolution.test.ts`
-- `src/resources/extensions/gsd/tests/auto-start-model-capture.test.ts`
-- `src/resources/extensions/gsd/tests/core-overlay-fallback.test.ts`
-- `src/resources/extensions/gsd/tests/extension-selector-separator.test.ts`
-- `src/resources/extensions/gsd/tests/provider-errors.test.ts`
+## Canonical review targets
+- `src/resources/extensions/gsd/auto-model-selection.ts`
+- `src/resources/extensions/gsd/auto-start.ts`
+- `packages/pi-ai/src/providers/api-family.ts`
+- `packages/pi-ai/src/providers/register-builtins.ts`
 - `docs/dev/ADR-012-provider-id-vs-api-shape.md`
-- `docs/dev/ADR-005-multi-model-provider-tool-strategy.md`
 
-## Checklist
+## Fresh-run checks
+- [ ] All five canonical anchor paths exist.
+- [ ] The validation run is fresh and not resumed from prior execution state.
+- [ ] No source files were edited as part of the task.
 
-### Resolution
-- [ ] Bare model IDs prefer the current provider when duplicates exist.
-- [ ] Provider-qualified IDs resolve deterministically.
-- [ ] OpenRouter-style `org/model` IDs are preserved correctly.
-- [ ] Unknown provider/model pairs fail cleanly.
+## Resolution and precedence
+- [ ] `auto-model-selection.ts` still owns provider-qualified and bare-ID resolution behavior.
+- [ ] `auto-model-selection.ts` still contains the transport-specific provider tiebreak exceptions.
+- [ ] `auto-start.ts` still captures the session model snapshot before guided-flow mutation points.
+- [ ] `auto-start.ts` still checks manual session override before preference fallback.
 
-### Auto-start / bootstrap
-- [ ] Session model snapshot is captured before guided-flow mutation points.
-- [ ] Manual session override is checked before preference fallback.
-- [ ] Custom providers are not overridden by `PREFERENCES.md` defaults.
-- [ ] Preferred models are validated against the live registry before capture.
+## API-shape architecture
+- [ ] `api-family.ts` still exposes API-family predicates for Anthropic, OpenAI, Gemini, and Bedrock surfaces.
+- [ ] `register-builtins.ts` still registers the built-in `api` values referenced by those predicates.
+- [ ] ADR-012 still states that API-shape-dependent behavior keys off `api`, not `provider`.
+- [ ] ADR-012 still documents the limited cases where direct `provider` comparison is correct.
 
-### UI selection
-- [ ] Interactive selection asks for provider first, then model.
-- [ ] Provider groups show model counts.
-- [ ] Exact persisted selection includes provider and model ID.
-- [ ] Ambiguous typed model queries still disambiguate by provider.
-
-### Architectural correctness
-- [ ] Provider equality checks are only used for transport-specific behavior.
-- [ ] API-shape-dependent behavior follows ADR-012 and should key off `model.api` / helpers.
-- [ ] Multi-provider compatibility assumptions align with ADR-005.
-
-### Fallback / recovery
-- [ ] Provider error handling tests cover transient vs permanent classification.
-- [ ] Provider-related recovery paths stay test-backed rather than inferred from behavior.
-
-## Decision Rule
-If all checklist items are satisfied by existing tests/docs, the requirement is complete as validation-only work. If any gap appears, open a follow-up plan for test additions before considering implementation changes.
+## Decision rule
+If all checklist items are satisfied by the canonical anchors and ADR-012, the requirement is complete as validation-only work. Any gap should open a follow-up validation or test task, not a source-edit task.

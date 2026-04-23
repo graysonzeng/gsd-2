@@ -1,49 +1,43 @@
-# Provider Wiring Validation Design Note
+# Fresh Validation Run Design Document
 
-> Validation-only artifact. No source edits planned.
+## Overview
+This document defines a fresh, validation-only pass for provider-wiring scope mapping. It must stand on its own, must not resume prior run state, and must not trigger source-file edits.
 
 ## Goal
-Confirm that provider wiring behavior is already covered by existing repository patterns and identify the minimum verification surface.
+Confirm that the read-only implementation anchors still map to the validation scope for provider identity vs API shape, model resolution, bootstrap capture, and built-in API registration.
 
-## Design
-Use the repo’s existing architecture as the design source of truth:
+## Canonical read-only anchors
+The design treats these as the required scope anchors:
 
-1. **Model resolution is validated through focused unit tests**
-   - `hook-model-resolution.test.ts`
-2. **Session bootstrap/provider precedence is validated through structural source assertions**
-   - `auto-start-model-capture.test.ts`
-3. **User-facing provider/model selection is validated through UI-fake command tests**
-   - `core-overlay-fallback.test.ts`
-   - `extension-selector-separator.test.ts`
-4. **Provider/API semantics are constrained by ADRs**
-   - ADR-012 for `provider` vs `api`
-   - ADR-005 for broader multi-provider/tool compatibility context
+- `src/resources/extensions/gsd/auto-model-selection.ts`
+- `src/resources/extensions/gsd/auto-start.ts`
+- `packages/pi-ai/src/providers/api-family.ts`
+- `packages/pi-ai/src/providers/register-builtins.ts`
+- `docs/dev/ADR-012-provider-id-vs-api-shape.md`
 
-## Boundaries
-In scope:
-- existing wiring patterns
-- reusable tests
-- architectural rules
-- verification entry points
+## Fresh-run procedure
+1. Verify all five canonical anchor paths exist.
+2. Review the implementation anchors read-only.
+3. Confirm ADR-012 still matches the implementation split between `provider` identity and `api` shape.
+4. Record conclusions only in minimal research/design/review/split artifacts.
+5. Make no edits under `src/**` or `packages/**`.
 
-Out of scope:
-- changing provider implementations
-- adding new providers
-- changing docs outside these minimal artifacts
-- refactoring model registry or routing
+## Scope checks
+- `auto-model-selection.ts` remains the model-resolution and provider-tiebreak anchor.
+- `auto-start.ts` remains the bootstrap precedence and model-capture anchor.
+- `api-family.ts` remains the API-shape predicate anchor.
+- `register-builtins.ts` remains the built-in API registration anchor.
+- ADR-012 remains the architecture review anchor for `provider` vs `api` usage.
 
-## Key Review Questions
-- Are provider-qualified selections persisted exactly as `{ provider, id }`?
-- Do bare model IDs resolve with current-provider preference?
-- Are custom providers protected from being overridden by preference defaults during auto-start?
-- Are provider comparisons only used where transport identity matters, not where API shape matters?
-- Does the UI keep provider-first disambiguation when model IDs collide?
+## Design decisions
+- Validation-only, no implementation work.
+- Canonical evidence is fixed to the five required read-only anchors.
+- Review is narrow and targeted rather than broad repo-wide validation.
+- ADR-012 is the correctness rubric for whether the anchors still cover the intended scope.
 
-## Reusable Components
-- source-order structural assertions
-- in-memory available-model fixtures
-- fake `ctx.ui.select()` flows
-- ADR-012 rule as reviewer rubric
-
-## Expected Outcome
-A reviewer or later executor should be able to validate provider wiring by reading the listed files and running the targeted existing tests, with no code changes required unless a gap is discovered.
+## Done condition
+This design is satisfied when:
+- all five canonical anchor files exist,
+- the implementation anchors have been reviewed in a fresh run,
+- the minimal research/review/split artifacts describe the same anchor set,
+- no source files were changed as part of the validation task.

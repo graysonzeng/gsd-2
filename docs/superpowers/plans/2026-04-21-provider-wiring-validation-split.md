@@ -1,37 +1,33 @@
 # Provider Wiring Validation Split
 
-> Minimal split artifact for validation-only work.
+> Minimal split artifact for fresh-run validation-only work. Do not resume prior run state.
 
-## Recommended Split
-This requirement is small enough to stay as a single validation track, but if it needs to be divided for review/execution later, split by evidence type rather than subsystem.
+## Scope
+This task is small enough to execute as a single track. If split is needed for review, split by implementation anchor while keeping the canonical anchor set fixed.
 
-### Track A — Resolution and selection
+## Track A — Model resolution and bootstrap capture
 Files:
-- `src/resources/extensions/gsd/tests/hook-model-resolution.test.ts`
-- `src/resources/extensions/gsd/tests/core-overlay-fallback.test.ts`
-- `src/resources/extensions/gsd/tests/extension-selector-separator.test.ts`
+- `src/resources/extensions/gsd/auto-model-selection.ts`
+- `src/resources/extensions/gsd/auto-start.ts`
 
 Purpose:
-- validate provider/model identification
-- validate exact persistence of provider-qualified choices
-- validate provider-first disambiguation
+- validate provider-qualified and bare-ID resolution
+- validate bootstrap model snapshot capture and precedence
+- validate where session-model state is captured before guided-flow mutation
 
-### Track B — Bootstrap and provider semantics
+## Track B — API-shape predicates and registrations
 Files:
-- `src/resources/extensions/gsd/tests/auto-start-model-capture.test.ts`
-- `src/resources/extensions/gsd/tests/provider-errors.test.ts`
+- `packages/pi-ai/src/providers/api-family.ts`
+- `packages/pi-ai/src/providers/register-builtins.ts`
 - `docs/dev/ADR-012-provider-id-vs-api-shape.md`
-- `docs/dev/ADR-005-multi-model-provider-tool-strategy.md`
 
 Purpose:
-- validate auto-start precedence and snapshot timing
-- validate provider error/fallback assumptions
-- validate correct use of `provider` vs `api`
-
-## Why this split
-- Keeps UI-facing selection concerns separate from bootstrap/architecture concerns.
-- Reuses existing test boundaries already present in the repo.
-- Avoids inventing new ownership boundaries for a validation-only requirement.
+- validate API-family predicate boundaries
+- validate built-in API registrations match the predicate families
+- validate ADR-012's rule that API-shape behavior keys off `api`, not `provider`
 
 ## No-edit rule
-Both tracks are review/verification only. No source-file edits are part of this split.
+Both tracks are review and verification only. No source-file edits are part of this split.
+
+## Completion rule
+The split is complete when both tracks point to the same canonical anchor set and the fresh validation run has been executed against the read-only scope references.
