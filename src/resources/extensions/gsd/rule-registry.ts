@@ -322,6 +322,17 @@ export class RuleRegistry {
         };
       }
 
+      if (hook.action === "advise") {
+        firedHooks.push(hook.name);
+        return {
+          action: "advise",
+          prompt: currentPrompt,
+          advisedUnitType: hook.unit_type,
+          model: hook.model,
+          firedHooks,
+        };
+      }
+
       if (hook.action === "modify") {
         firedHooks.push(hook.name);
         if (hook.prepend) {

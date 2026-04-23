@@ -24,6 +24,7 @@ import { isUnifiedAuditEnabled } from "./uok/audit-toggle.js";
 export type JournalEventType =
   | "iteration-start"
   | "dispatch-match"
+  | "dispatch-readvised"
   | "dispatch-stop"
   | "pre-dispatch-hook"
   | "unit-start"

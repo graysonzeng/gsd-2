@@ -415,15 +415,15 @@ export interface PreDispatchHookConfig {
   name: string;
   /** Unit types this hook intercepts before dispatch (e.g., ["execute-task"]). */
   before: string[];
-  /** Action to take: "modify" mutates the prompt, "skip" skips the unit, "replace" swaps it. */
-  action: "modify" | "skip" | "replace";
+  /** Action to take: "modify" mutates the prompt, "skip" skips the unit, "replace" swaps it, "advise" suggests a new dispatch target. */
+  action: "modify" | "skip" | "replace" | "advise";
   /** For "modify": text prepended to the unit prompt. Supports {milestoneId}, {sliceId}, {taskId}. */
   prepend?: string;
   /** For "modify": text appended to the unit prompt. Supports {milestoneId}, {sliceId}, {taskId}. */
   append?: string;
   /** For "replace": the replacement prompt. Supports {milestoneId}, {sliceId}, {taskId}. */
   prompt?: string;
-  /** For "replace": override the unit type label. */
+  /** For "replace" and "advise": override the unit type label. */
   unit_type?: string;
   /** For "skip": optional condition file — only skip if this file exists (relative to unit dir). */
   skip_if?: string;
@@ -434,12 +434,18 @@ export interface PreDispatchHookConfig {
 }
 
 export interface PreDispatchResult {
-  /** What happened: the unit proceeds with modifications, was skipped, or was replaced. */
-  action: "proceed" | "skip" | "replace";
+  /** What happened: the unit proceeds with modifications, was skipped, was replaced, or advised a different runnable target. */
+  action: "proceed" | "skip" | "replace" | "advise";
   /** Modified/replacement prompt (for "proceed" and "replace"). */
   prompt?: string;
   /** Override unit type (for "replace"). */
   unitType?: string;
+  /** Optional override for the resolved unit id. */
+  unitId?: string;
+  /** Advisory dispatch target unit type. */
+  advisedUnitType?: string;
+  /** Advisory dispatch target unit id override. Current YAML pre_dispatch_hooks do not populate this; it is reserved for programmatic callers and future v1.1+ use cases. */
+  advisedUnitId?: string;
   /** Model override. */
   model?: string;
   /** Names of hooks that fired, for logging. */

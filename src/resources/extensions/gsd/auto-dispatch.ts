@@ -86,6 +86,8 @@ export interface DispatchContext {
   sessionContextWindow?: number;
   /** Model registry forwarded to the budget engine so it can look up the configured executor model. */
   modelRegistry?: MinimalModelRegistry;
+  /** Optional pre-dispatch advice that asks dispatch resolution to prefer a specific runnable stock unit. */
+  advisedUnit?: { unitType: string; unitId?: string };
 }
 
 export interface DispatchRule {
@@ -194,7 +196,43 @@ export function isVerificationNotApplicable(value: string): boolean {
 
 // ─── Rules ────────────────────────────────────────────────────────────────
 
+const DISPATCH_RULES_BY_UNIT_TYPE = new Map<string, DispatchRule[]>([
+  ["rewrite-docs", []],
+  ["complete-slice", []],
+  ["run-uat", []],
+  ["reassess-roadmap", []],
+  ["discuss-milestone", []],
+  ["research-milestone", []],
+  ["plan-milestone", []],
+  ["research-slice", []],
+  ["refine-slice", []],
+  ["plan-slice", []],
+  ["gate-evaluate", []],
+  ["replan-slice", []],
+  ["reactive-execute", []],
+  ["execute-task", []],
+  ["validate-milestone", []],
+  ["complete-milestone", []],
+]);
+
 export const DISPATCH_RULES: DispatchRule[] = [
+  {
+    name: "honour-phase-discipline-advice",
+    match: async (ctx) => {
+      const advice = ctx.advisedUnit;
+      if (!advice) return null;
+      const stockRules = DISPATCH_RULES_BY_UNIT_TYPE.get(advice.unitType) ?? [];
+      for (const stockRule of stockRules) {
+        const stockAction = await stockRule.match({ ...ctx, advisedUnit: undefined });
+        if (!stockAction || stockAction.action !== "dispatch") continue;
+        return advice.unitId
+          ? { ...stockAction, unitId: advice.unitId }
+          : stockAction;
+      }
+      logWarning("dispatch", `phase-discipline advised ${advice.unitType} but it is not runnable; falling back`);
+      return null;
+    },
+  },
   {
     // ADR-011 Phase 2: pause-for-escalation must evaluate FIRST so phase-
     // agnostic rules (rewrite-docs gate, UAT checks, reassess) cannot bypass
@@ -1032,6 +1070,38 @@ export const DISPATCH_RULES: DispatchRule[] = [
     },
   },
 ];
+
+const byName = (name: string): DispatchRule => {
+  const rule = DISPATCH_RULES.find((entry) => entry.name === name);
+  if (!rule) throw new Error(`Missing dispatch rule: ${name}`);
+  return rule;
+};
+
+DISPATCH_RULES_BY_UNIT_TYPE.get("rewrite-docs")!.push(byName("rewrite-docs (override gate)"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("complete-slice")!.push(byName("summarizing → complete-slice"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("run-uat")!.push(byName("run-uat (post-completion)"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("reassess-roadmap")!.push(byName("reassess-roadmap (post-completion)"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("discuss-milestone")!.push(
+  byName("needs-discussion → discuss-milestone"),
+  byName("pre-planning (no context) → discuss-milestone"),
+);
+DISPATCH_RULES_BY_UNIT_TYPE.get("research-milestone")!.push(byName("pre-planning (no research) → research-milestone"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("plan-milestone")!.push(byName("pre-planning (has research) → plan-milestone"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("research-slice")!.push(
+  byName("planning (multiple slices need research) → parallel-research-slices"),
+  byName("planning (no research, not S01) → research-slice"),
+);
+DISPATCH_RULES_BY_UNIT_TYPE.get("refine-slice")!.push(byName("refining → refine-slice"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("plan-slice")!.push(
+  byName("planning → plan-slice"),
+  byName("executing → execute-task (recover missing task plan → plan-slice)"),
+);
+DISPATCH_RULES_BY_UNIT_TYPE.get("gate-evaluate")!.push(byName("evaluating-gates → gate-evaluate"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("replan-slice")!.push(byName("replanning-slice → replan-slice"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("reactive-execute")!.push(byName("executing → reactive-execute (parallel dispatch)"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("execute-task")!.push(byName("executing → execute-task"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("validate-milestone")!.push(byName("validating-milestone → validate-milestone"));
+DISPATCH_RULES_BY_UNIT_TYPE.get("complete-milestone")!.push(byName("completing-milestone → complete-milestone"));
 
 import { getRegistry } from "./rule-registry.js";
 

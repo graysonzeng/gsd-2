@@ -937,12 +937,116 @@ export async function runDispatch(
     return { action: "continue" };
   }
 
-  deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "dispatch-match", rule: dispatchResult.matchedRule, data: { unitType: dispatchResult.unitType, unitId: dispatchResult.unitId } });
-
   let unitType = dispatchResult.unitType;
   let unitId = dispatchResult.unitId;
   let prompt = dispatchResult.prompt;
-  const pauseAfterUatDispatch = dispatchResult.pauseAfterDispatch ?? false;
+  let pauseAfterUatDispatch = dispatchResult.pauseAfterDispatch ?? false;
+  let dispatchMatchRule = dispatchResult.matchedRule;
+
+  // Pre-dispatch hooks
+  const preDispatchResult = deps.runPreDispatchHooks(
+    unitType,
+    unitId,
+    prompt,
+    s.basePath,
+  );
+  if (preDispatchResult.firedHooks.length > 0) {
+    ctx.ui.notify(
+      `Pre-dispatch hook${preDispatchResult.firedHooks.length > 1 ? "s" : ""}: ${preDispatchResult.firedHooks.join(", ")}`,
+      "info",
+    );
+    deps.emitJournalEvent({
+      ts: new Date().toISOString(),
+      flowId: ic.flowId,
+      seq: ic.nextSeq(),
+      eventType: "pre-dispatch-hook",
+      data: {
+        firedHooks: preDispatchResult.firedHooks,
+        action: preDispatchResult.action,
+        ...(preDispatchResult.action === "advise"
+          ? {
+              advisedUnitType: preDispatchResult.advisedUnitType,
+              advisedUnitId: preDispatchResult.advisedUnitId,
+            }
+          : {}),
+      },
+    });
+  }
+  if (preDispatchResult.action === "skip") {
+    ctx.ui.notify(
+      `Skipping ${unitType} ${unitId} (pre-dispatch hook).`,
+      "info",
+    );
+    await new Promise((r) => setImmediate(r));
+    return { action: "continue" };
+  }
+
+  if (preDispatchResult.action === "advise" && preDispatchResult.advisedUnitType) {
+    const advisedDispatch = await deps.resolveDispatch({
+      basePath: s.basePath,
+      mid,
+      midTitle,
+      state,
+      prefs,
+      session: s,
+      structuredQuestionsAvailable,
+      sessionContextWindow: ctx.model?.contextWindow,
+      modelRegistry: ctx.modelRegistry as MinimalModelRegistry | undefined,
+      advisedUnit: {
+        unitType: preDispatchResult.advisedUnitType,
+        unitId: preDispatchResult.advisedUnitId,
+      },
+    });
+
+    if (advisedDispatch.action === "stop") {
+      deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "dispatch-stop", rule: advisedDispatch.matchedRule, data: { reason: advisedDispatch.reason } });
+      if (advisedDispatch.level === "warning") {
+        ctx.ui.notify(advisedDispatch.reason, "warning");
+        await deps.pauseAuto(ctx, pi);
+      } else {
+        await closeoutAndStop(ctx, pi, s, deps, advisedDispatch.reason);
+      }
+      debugLog("autoLoop", { phase: "exit", reason: "dispatch-stop" });
+      return { action: "break", reason: "dispatch-stop" };
+    }
+
+    if (advisedDispatch.action === "skip") {
+      await new Promise((r) => setImmediate(r));
+      return { action: "continue" };
+    }
+
+    if (advisedDispatch.action === "dispatch") {
+      unitType = advisedDispatch.unitType;
+      unitId = advisedDispatch.unitId;
+      prompt = advisedDispatch.prompt;
+      pauseAfterUatDispatch = advisedDispatch.pauseAfterDispatch ?? false;
+      dispatchMatchRule = advisedDispatch.matchedRule;
+      deps.emitJournalEvent({
+        ts: new Date().toISOString(),
+        flowId: ic.flowId,
+        seq: ic.nextSeq(),
+        eventType: "dispatch-readvised",
+        data: {
+          unitType,
+          unitId,
+          advisedFrom: dispatchResult.matchedRule,
+        },
+      });
+    }
+  }
+
+  if (preDispatchResult.action === "replace") {
+    prompt = preDispatchResult.prompt ?? prompt;
+    if (preDispatchResult.unitType) unitType = preDispatchResult.unitType;
+  } else if (preDispatchResult.action !== "advise" && preDispatchResult.prompt) {
+    prompt = preDispatchResult.prompt;
+  }
+
+  if (preDispatchResult.action !== "advise" && preDispatchResult.unitId) {
+    unitId = preDispatchResult.unitId;
+  }
+
+  deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "dispatch-match", rule: dispatchMatchRule, data: { unitType, unitId } });
 
   // ── Sliding-window stuck detection with graduated recovery ──
   const derivedKey = `${unitType}/${unitId}`;
@@ -1030,35 +1134,6 @@ export async function runDispatch(
         loopState.stuckRecoveryAttempts = 0;
       }
     }
-  }
-
-  // Pre-dispatch hooks
-  const preDispatchResult = deps.runPreDispatchHooks(
-    unitType,
-    unitId,
-    prompt,
-    s.basePath,
-  );
-  if (preDispatchResult.firedHooks.length > 0) {
-    ctx.ui.notify(
-      `Pre-dispatch hook${preDispatchResult.firedHooks.length > 1 ? "s" : ""}: ${preDispatchResult.firedHooks.join(", ")}`,
-      "info",
-    );
-    deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "pre-dispatch-hook", data: { firedHooks: preDispatchResult.firedHooks, action: preDispatchResult.action } });
-  }
-  if (preDispatchResult.action === "skip") {
-    ctx.ui.notify(
-      `Skipping ${unitType} ${unitId} (pre-dispatch hook).`,
-      "info",
-    );
-    await new Promise((r) => setImmediate(r));
-    return { action: "continue" };
-  }
-  if (preDispatchResult.action === "replace") {
-    prompt = preDispatchResult.prompt ?? prompt;
-    if (preDispatchResult.unitType) unitType = preDispatchResult.unitType;
-  } else if (preDispatchResult.prompt) {
-    prompt = preDispatchResult.prompt;
   }
 
   const guardBasePath = _resolveDispatchGuardBasePath(s);

@@ -48,9 +48,14 @@ export async function runUnit(
   // it from capturing the (now-root) process.cwd() and rebuilding the tool
   // runtime with the wrong cwd.
   const sessionAbortController = new AbortController();
+  type AbortableNewSessionOptions = NonNullable<Parameters<NonNullable<AutoSession["cmdCtx"]>["newSession"]>[0]> & {
+    abortSignal?: AbortSignal;
+  };
   _setSessionSwitchInFlight(true);
   try {
-    const sessionPromise = s.cmdCtx!.newSession({ abortSignal: sessionAbortController.signal }).finally(() => {
+    const sessionPromise = s.cmdCtx!.newSession({
+      abortSignal: sessionAbortController.signal,
+    } as AbortableNewSessionOptions).finally(() => {
       if (sessionSwitchGeneration === mySessionSwitchGeneration) {
         _setSessionSwitchInFlight(false);
       }

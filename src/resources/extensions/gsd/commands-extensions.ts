@@ -11,8 +11,13 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { lockSync, unlockSync } from "proper-lockfile";
-import semver from "semver";
+
+const require = createRequire(import.meta.url);
+const semver = require("semver") as {
+  gt: (left: string, right: string) => boolean;
+};
 
 const gsdHome = process.env.GSD_HOME || join(homedir(), ".gsd");
 

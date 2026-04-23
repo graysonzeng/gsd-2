@@ -177,7 +177,6 @@ Extend `PreDispatchHookConfig.action` with `"advise"` and extend `PreDispatchRes
 interface PreDispatchHookConfig {
   action: "modify" | "skip" | "replace" | "advise";  // + "advise"
   // ...
-  advise_if_mismatch?: "prefer" | "block";  // prefer = rewrite this dispatch; block = also mark prior phase incomplete
 }
 interface PreDispatchResult {
   action: "proceed" | "skip" | "replace" | "advise";
@@ -191,7 +190,15 @@ interface PreDispatchResult {
 }
 ```
 
-When `runPreDispatchHooks()` returns `{action: "advise", advisedUnitType, advisedUnitId}`, `auto-dispatch.ts` re-enters its selection path with the advice as a hard preference: if the advised unit is runnable, run it; otherwise fall back to the original choice and log that the advice was not honoured. This is strictly one extra branch in `auto-dispatch.ts`'s main loop (~20 lines) and is additive — legacy pre-dispatch hooks keep the `modify/skip/replace` semantics.
+When `runPreDispatchHooks()` returns `{action: "advise", advisedUnitType, advisedUnitId}`, the advisory is consumed by the real dispatch pipeline in `auto/phases.ts::runDispatch()`: the loop first resolves its normal dispatch candidate, then runs pre-dispatch hooks on that candidate, and if the result is advisory it performs **one** second `resolveDispatch(...)` call with `DispatchContext.advisedUnit` populated. If the advised unit is runnable, that second dispatch wins; otherwise the existing stock rules fall back to the original adaptive choice and log that the advice was not honoured. Legacy pre-dispatch hooks keep the `modify/skip/replace` semantics.
+
+**Required consumer-side surface (validated against live code path on 2026-04-23):**
+
+- `types.ts` — add `"advise"` to `PreDispatchHookConfig.action`, and add `advisedUnitType?` / `advisedUnitId?` to `PreDispatchResult`
+- `rule-registry.ts` — propagate `action: "advise"` through `evaluatePreDispatch()` unchanged
+- `auto/loop-deps.ts` — widen `LoopDeps.runPreDispatchHooks(...)` return type to include `advisedUnitType?` / `advisedUnitId?` / `unitId?`
+- `auto/phases.ts::runDispatch()` — after the first `resolveDispatch(...)`, call `runPreDispatchHooks(...)`, emit advisory journal/notification payloads, and when advice is present perform a second `resolveDispatch(...)` with `advisedUnit` set
+- `auto-dispatch.ts` — add the `honour-phase-discipline-advice` prefix rule that consumes `DispatchContext.advisedUnit`
 
 ##### Integration with `DISPATCH_RULES` *(added 2026-04-23 after third receiving-code-review)*
 
@@ -224,9 +231,11 @@ The third receiving-code-review pass flagged that `auto-dispatch.ts` is a **rule
 - **"runnable" judgement** — reuse the stock `DispatchRule.match()` for the advised `unitType`. No new judgement function exists; "runnable" is defined as "the stock rule for this unit type would match the current `ctx` if it were evaluated normally."
 - **Multiple candidate `unitId` for a given `unitType`** — `profile-dispatch.ts` emits only `advisedUnitType` in v1 (never `advisedUnitId`); the stock rule owns `unitId` construction (via `state.activeSlice.id`, `basePath`, etc.). `advisedUnitId` on `PreDispatchResult` is reserved for v1.1+ use cases (e.g. scout-fan-out in v1.2 where a specific slice is targeted).
 - **Honour-advice is NOT short-circuit** — it is simply a `DispatchRule` with the highest priority. If the prefix rule returns `null` (advised unit not runnable), the remaining `DISPATCH_RULES` evaluate normally with the original `ctx`, preserving `auto-mode`'s adaptive behaviour.
+- **Consumer of advisory output** — the prefix rule is not enough by itself. `auto/phases.ts::runDispatch()` is the real consumer of `runPreDispatchHooks()` and must issue the second `resolveDispatch(...)` call with `advisedUnit`; otherwise the new prefix rule is never exercised.
+- **No recursive pre-dispatch on the advised second pass** — advisory re-dispatch happens exactly once. The advised second `resolveDispatch(...)` call does **not** rerun `runPreDispatchHooks()` on the newly selected unit, preventing recursive advice loops and keeping the originally selected post-advice unit authoritative for downstream journaling / stuck detection / pause-after-UAT / prior-slice guards.
 - **`advisedUnitId` validation** — when v1.1+ callers do set `advisedUnitId`, the prefix rule overwrites the stock rule's computed `unitId` as-is. Any illegal id surfaces as a downstream failure at unit execution; the contract does not validate ids at the scheduler layer (keeps scheduler pure).
 - **`DISPATCH_RULES_BY_UNIT_TYPE`** — new index map built once at module load by iterating `DISPATCH_RULES` and grouping by the `unitType` emitted by each rule's first `dispatch` match. Rules with no fixed `unitType` (e.g. the pause-for-escalation rule at index 0) are excluded from the map (their semantics are "interrupt", not "dispatch a named unit").
-- **Line count** — "~20 lines" refers to the prefix rule itself. Total PR-3a delta: +25 lines in `auto-dispatch.ts` (prefix rule + index map), +12 lines in `types.ts` (`"advise"` action + `advisedUnitType` / `advisedUnitId`), +8 lines in `rule-registry.ts` (propagate `advise` through `evaluatePreDispatch`), ~80 lines in new test file. Net ~125 lines, consistent with README estimate.
+- **Line count** — "~20 lines" refers only to the prefix rule in `auto-dispatch.ts`. Real PR-3a scope is larger: `types.ts`, `rule-registry.ts`, `auto-dispatch.ts`, `auto/phases.ts`, `auto/loop-deps.ts`, plus focused tests for the advised re-dispatch path.
 
 **Rejected alternative: hard hint on preferences.** The third-review evaluator suggested adding `preferredUnitType/preferredUnitId` to `ctx` and letting existing rules optionally consult it. Rejected because (a) it requires editing every stock rule to consult the preference, (b) it couples rules to a preset-level concept, (c) it complicates testing (every rule's `match` now has an implicit branch). The prefix-rule approach keeps the advisory mechanism localised to a single new rule and leaves stock rules byte-identical.
 
