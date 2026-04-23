@@ -47,6 +47,69 @@ export function normalizeForFuzzyMatch(text: string): string {
 		.join("\n");
 }
 
+function buildNormalizedFuzzyText(text: string): { normalized: string; sourceIndices: number[] } {
+	const normalizedParts: string[] = [];
+	const sourceIndices: number[] = [];
+
+	const pushNormalizedChar = (char: string, sourceIndex: number): void => {
+		normalizedParts.push(char);
+		sourceIndices.push(sourceIndex);
+	};
+
+	for (let i = 0; i < text.length; i++) {
+		const char = text[i];
+
+		if (char === "\r") {
+			continue;
+		}
+
+		if (char === "\n") {
+			while (normalizedParts.length > 0) {
+				const lastChar = normalizedParts.at(-1);
+				if (lastChar !== " " && lastChar !== "\t") break;
+				normalizedParts.pop();
+				sourceIndices.pop();
+			}
+			pushNormalizedChar("\n", i);
+			continue;
+		}
+
+		if (char === "“" || char === "”") {
+			pushNormalizedChar('"', i);
+			continue;
+		}
+
+		if (char === "‘" || char === "’") {
+			pushNormalizedChar("'", i);
+			continue;
+		}
+
+		if (/[‐‑‒–—−]/.test(char)) {
+			pushNormalizedChar("-", i);
+			continue;
+		}
+
+		if (UNICODE_SPACES.test(char)) {
+			pushNormalizedChar(" ", i);
+			continue;
+		}
+
+		pushNormalizedChar(char, i);
+	}
+
+	while (normalizedParts.length > 0) {
+		const lastChar = normalizedParts.at(-1);
+		if (lastChar !== " " && lastChar !== "\t") break;
+		normalizedParts.pop();
+		sourceIndices.pop();
+	}
+
+	return {
+		normalized: normalizedParts.join(""),
+		sourceIndices,
+	};
+}
+
 export interface FuzzyMatchResult {
 	/** Whether a match was found */
 	found: boolean;
@@ -58,7 +121,7 @@ export interface FuzzyMatchResult {
 	usedFuzzyMatch: boolean;
 	/**
 	 * The content to use for replacement operations.
-	 * When exact match: original content. When fuzzy match: normalized content.
+	 * Always the original LF-normalized content.
 	 */
 	contentForReplacement: string;
 }
@@ -66,8 +129,8 @@ export interface FuzzyMatchResult {
 /**
  * Find oldText in content, trying exact match first, then fuzzy match.
  *
- * When fuzzy matching is used, the returned contentForReplacement is the
- * fuzzy-normalized version of the content.
+ * When fuzzy matching is used, the returned index/matchLength still point
+ * into the original content so replacements do not rewrite unrelated text.
  */
 export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
 	const exactIndex = content.indexOf(oldText);
@@ -81,9 +144,9 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 		};
 	}
 
-	const normalizedContent = normalizeForFuzzyMatch(content);
+	const normalizedContent = buildNormalizedFuzzyText(content);
 	const normalizedOldText = normalizeForFuzzyMatch(oldText);
-	const fuzzyIndex = normalizedContent.indexOf(normalizedOldText);
+	const fuzzyIndex = normalizedContent.normalized.indexOf(normalizedOldText);
 
 	if (fuzzyIndex === -1) {
 		return {
@@ -95,12 +158,15 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 		};
 	}
 
+	const startIndex = normalizedContent.sourceIndices[fuzzyIndex];
+	const endSourceIndex = normalizedContent.sourceIndices[fuzzyIndex + normalizedOldText.length - 1] + 1;
+
 	return {
 		found: true,
-		index: fuzzyIndex,
-		matchLength: normalizedOldText.length,
+		index: startIndex,
+		matchLength: endSourceIndex - startIndex,
 		usedFuzzyMatch: true,
-		contentForReplacement: normalizedContent,
+		contentForReplacement: content,
 	};
 }
 
@@ -380,7 +446,7 @@ export async function computeEditDiff(
 		}
 
 		// Compute the new content using the matched position
-		// When fuzzy matching was used, contentForReplacement is the normalized version
+		// Even for fuzzy matches, contentForReplacement/index point into the original content
 		const baseContent = matchResult.contentForReplacement;
 		const newContent =
 			baseContent.substring(0, matchResult.index) +

@@ -21,7 +21,9 @@ describe("edit-diff", () => {
 		const result = fuzzyFindText("const title = “Hello”;\n", "const title = \"Hello\";\n");
 		assert.equal(result.found, true);
 		assert.equal(result.usedFuzzyMatch, true);
-		assert.equal(result.contentForReplacement, "const title = \"Hello\";\n");
+		assert.equal(result.index, 0);
+		assert.equal(result.matchLength, "const title = “Hello”;\n".length);
+		assert.equal(result.contentForReplacement, "const title = “Hello”;\n");
 	});
 
 	it("renders numbered diffs with the first changed line", () => {
@@ -80,6 +82,29 @@ describe("edit-diff", () => {
 		if (!("error" in result)) {
 			assert.equal(result.firstChangedLine, 1);
 			assert.match(result.diff, /\+1 const title = "Hi";/);
+		}
+	});
+
+	it("preserves unrelated original unicode text when previewing fuzzy replacements", async (t) => {
+		const dir = mkdtempSync(join(tmpdir(), "edit-diff-test-"));
+		t.after(() => {
+			rmSync(dir, { recursive: true, force: true });
+		});
+
+		const file = join(dir, "sample.ts");
+		writeFileSync(file, "const title = “Hello”; // keep dash —\n", "utf-8");
+
+		const result = await computeEditDiff(
+			file,
+			"\"Hello\"",
+			"\"Hi\"",
+			dir,
+		);
+
+		assert.ok(!("error" in result), "expected a diff result");
+		if (!("error" in result)) {
+			assert.match(result.diff, /\+1 const title = "Hi"; \/\/ keep dash —/);
+			assert.doesNotMatch(result.diff, /keep dash -/);
 		}
 	});
 });
