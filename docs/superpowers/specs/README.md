@@ -1,23 +1,26 @@
 # Auto-Mode Harness Specifications
 
-This directory contains three independent specifications that together define the next iteration of `gsd-2`'s auto-mode harness. They were split out of a single brainstorm document (`composed-lite-harness-brainstorm.md`, later renamed `phase-discipline-preset.md`) during the v6 rewrite on 2026-04-23, and extended in v7 (same date) with a B-min skeleton.
+This directory contains three independent specifications that together define the next iteration of `gsd-2`'s auto-mode harness. They were split out of a single brainstorm document (`composed-lite-harness-brainstorm.md`, later renamed `phase-discipline-preset.md`) during the v6 rewrite on 2026-04-23, extended in v7 (same date) with a B-min skeleton, and factually corrected in v7.1 (same date) after a receiving-code-review pass identified 8 errors.
 
 ## Scope
 
 | Spec | Subject | Status |
 |---|---|---|
-| [`phase-discipline-preset.md`](./phase-discipline-preset.md) | Multi-model cross-review preset + 8-phase milestone ordering skeleton on top of `auto-mode` | **v7 — accepted for implementation** (pending approval of this README) |
+| [`phase-discipline-preset.md`](./phase-discipline-preset.md) | Multi-model cross-review preset + 8-phase milestone ordering skeleton on top of `auto-mode` | **v7.1 — design draft with required kernel deltas.** Landing v1 requires Δ-K1 (PR-3a: `PreDispatchResult.action: "advise"` + `advisedUnitType` / `advisedUnitId`) before the extension (PR-3b) compiles. v7's claim that the existing pre-dispatch contract suffices was incorrect; see §16's v7.1 changelog entry for the 8 factual corrections |
 | [`2026-04-23-agents-md-docs-map-v1.md`](./2026-04-23-agents-md-docs-map-v1.md) | Extension-side `AGENTS.md` routing-table convention with section-aware loading; platform loader unchanged | **v1 — accepted** |
 | [`2026-04-23-cli-tool-restriction-chain.md`](./2026-04-23-cli-tool-restriction-chain.md) | Thread `--tools` restriction end-to-end through the CLI print/JSON subagent path so the built-in `Skill` tool can actually be excluded | **v1 — accepted** |
 
 ## Dependency graph
 
 ```
-phase-discipline-preset (v7)
-├─ Depends on:
+phase-discipline-preset (v7.1)
+├─ Depends on (existing, stable):
 │    • preferences-types.ts (PostUnitHookConfig, PreDispatchHookConfig)
-│    • rule-registry.ts (listRules)
-│    • auto-dispatch.ts pre-dispatch hook pipeline
+│    • rule-registry.ts (listRules, runPreDispatchHooks)
+├─ Requires kernel delta Δ-K1 (PR-3a):
+│    • types.ts: add "advise" action + advisedUnitType/advisedUnitId to PreDispatchResult
+│    • auto-dispatch.ts: +20 lines to honour "advise" advisory
+│    • rule-registry.ts: propagate "advise" action unchanged
 ├─ Consumes (via PR-2 extraction):
 │    • shared-harness/reviewer-core
 │    • shared-harness/review-model-picker
@@ -25,6 +28,9 @@ phase-discipline-preset (v7)
 └─ Interacts with (orthogonal specs):
     • AGENTS.md docs-map v1 (context injection order — see phase-discipline §4.5)
     • CLI tool-restriction chain (ensures reviewer subagents cannot invoke Skill)
+    • Existing adaptive preferences (reactive_execution / gate_evaluation / slice_parallel /
+      parallel / phases.skip_* / progressive_planning / mid_execution_escalation /
+      require_slice_discussion / enhanced_verification) — see phase-discipline §4.1 matrix
 
 AGENTS.md docs-map v1
 ├─ Depends on: auto-prompts.ts (buildResearch/Plan/ExecutePrompt)
@@ -38,18 +44,25 @@ CLI tool-restriction chain (M0)
 
 ## Recommended migration order
 
-Migration is delivered as 3 PRs on 3 clean branches cut from `origin/main` (or from `feat/composed-lite-runtime-owned` for PR-2 which extracts existing code). This is "PR-0 branch strategy" in `phase-discipline-preset.md` §9.
+Migration is delivered as 4 PRs on 4 clean branches (v7.1 split PR-3 into PR-3a + PR-3b after the review identified that Δ-K1 kernel delta is a separable, reviewable unit). See "PR-0 branch strategy" in `phase-discipline-preset.md` §9.
 
 | Order | PR | Branch | Gating | Scope |
 |---|---|---|---|---|
 | 1 | **PR-1** CLI tool-restriction chain | `feat/cli-tool-restriction-chain` from `main` | None — standalone | ~120 lines across 4 files (see CLI spec §2.2) |
 | 2 | **PR-2** shared-harness extraction | `feat/shared-harness-extraction` from `feat/composed-lite-runtime-owned` | After PR-1 | Extract 5 files into `src/resources/extensions/gsd/shared-harness/`; rewrite `composed-lite` as consumer |
-| 3 | **PR-3** phase-discipline preset + B-min skeleton | `feat/phase-discipline-preset-v1` from `main` (rebase onto PR-2 after it lands) | After PR-2 | ~30 main-side lines + ~280 extension-side lines across 6 files + README |
-| parallel | **PR-4** AGENTS.md docs-map v1 | `feat/agents-md-docs-map-v1` from `main` | None — orthogonal to PR-1/2/3 | See docs-map spec §6 / §8 |
+| 3 | **PR-3a** Δ-K1 kernel delta (new in v7.1) | `feat/phase-discipline-preset-v1` from `main` | After PR-2 | ~120 lines across 4 files: `types.ts` + `rule-registry.ts` + `auto-dispatch.ts` + new test. Adds `PreDispatchResult.action: "advise"` scheduler advisory. Independently reviewable without any `phase-discipline/` dependency |
+| 4 | **PR-3b** phase-discipline preset + B-min skeleton | `feat/phase-discipline-preset-v1` (continues) | After PR-3a | ~30 main-side lines + ~280 extension-side lines across 6 files + README. Consumes Δ-K1 from PR-3a |
+| parallel | **PR-4** AGENTS.md docs-map v1 | `feat/agents-md-docs-map-v1` from `main` | None — orthogonal to PR-1/2/3a/3b | See docs-map spec §6 / §8 |
 
-The current `feat/composed-lite-runtime-owned` branch is **not** a landing target for any of the above; it is kept as a Lab for composed-lite runtime hardening only. `phase-discipline-preset.md` §12 defines the v1.1–v1.4 capability-migration roadmap that retires this Lab.
+The current `feat/composed-lite-runtime-owned` branch is **not** a landing target for any of the above; it is kept as a Lab for composed-lite runtime hardening only. `phase-discipline-preset.md` §12 defines the v1.1–v1.4 capability-migration roadmap that retires this Lab at v1.4 — note that `main` has never carried the composed-lite runtime (0 files, verified 2026-04-23), so retirement is a branch-delete, not a `git rm`.
 
 ## Key interaction points
+
+### Why the kernel delta (Δ-K1) exists
+
+The 8-step scheduler skeleton (`profile-dispatch.ts`) needs to tell auto-mode "you picked unit X, but the phase-discipline sequence expects unit Y at this point". The current `PreDispatchResult` only supports `modify` (change the current unit's prompt), `skip` (skip the current unit), or `replace` (swap the unit type). None of these express "advise a different unit". PR-3a adds `action: "advise"` with `advisedUnitType` / `advisedUnitId`, and a single branch in `auto-dispatch.ts`'s main loop honours it when the advised unit is runnable (otherwise fall back to the original pick with a logWarning).
+
+See `phase-discipline-preset.md` §3.1a for the Δ-K1 vs Δ-K2 alternative analysis. Δ-K1 is additive — legacy hook authors see zero behaviour change — so the blast radius is narrow.
 
 ### Context-flow at `execute-task`
 

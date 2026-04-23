@@ -1,6 +1,6 @@
-# Auto-Mode Phase Discipline Preset (v7)
+# Auto-Mode Phase Discipline Preset (v7.1 — design draft with required kernel deltas)
 
-> **File note** — this file keeps its git history from `composed-lite-harness-brainstorm.md` (renamed 2026-04-23 after v5→v6 pivot; v7 rewrites on 2026-04-23 to add a B-min 8-step profile skeleton and close six review gaps). The v1–v5 history is compressed to §16's changelog with one-line entries. Two orthogonal specs were split out in the v6 rewrite:
+> **File note** — this file keeps its git history from `composed-lite-harness-brainstorm.md` (renamed 2026-04-23 after v5→v6 pivot). v7 added a B-min 8-step profile skeleton; v7.1 applied a receiving-code-review pass on the same day that identified 8 factual and structural issues (see §16 for full list). **The document is now a design draft — not accepted for implementation — because landing requires kernel deltas to `PreDispatchResult` that were incorrectly described as "existing" in v7.** The v1–v5 history is compressed to §16's changelog with one-line entries. Two orthogonal specs were split out in the v6 rewrite:
 >
 > - **AGENTS.md docs-map v1** → `docs/superpowers/specs/2026-04-23-agents-md-docs-map-v1.md`
 > - **CLI tool-restriction chain (M0)** → `docs/superpowers/specs/2026-04-23-cli-tool-restriction-chain.md`
@@ -9,7 +9,13 @@
 
 ## 0. Summary & scope
 
-**What we are building (v1 — B-min):** an opt-in preference `milestone_profile: "phase-discipline-8step"` that (a) turns on the same three `post_unit_hooks` as v6 (code-review / design-review / findings-to-memories) **and** (b) attaches a lightweight scheduler skeleton that forces an `auto-mode` milestone to traverse the 8 composed-lite phases in order, using unit types the scheduler already has. No new execution layer, no overlay, no separate runtime. v1 is the minimum skeleton that lets v2–v1.4 migrate composed-lite's remaining capabilities (admission, scout fan-out, impl-plan-YAML, verify-fuse) one by one without rework.
+**What we are building (v1 — B-min):** an opt-in preference `milestone_profile: "phase-discipline-8step"` that (a) turns on the same three `post_unit_hooks` as v6 (code-review / design-review / findings-to-memories) **and** (b) attaches a lightweight scheduler advisory skeleton that forces an `auto-mode` milestone to traverse the 8 composed-lite phases in order, using unit types the scheduler already has. No new execution layer, no overlay, no separate runtime. v1 is the minimum skeleton that lets v1.1–v1.4 migrate composed-lite's remaining capabilities (admission, scout fan-out, impl-plan-YAML, verify-fuse) one by one without rework.
+
+**Required kernel deltas for v1** *(v7.1 correction of v7's "reuse existing pipeline" claim)* — landing the B-min skeleton requires contract changes that v7 described as already existing but are in fact missing:
+
+- `PreDispatchResult` needs a scheduler-advisory field so a pre-dispatch hook can recommend a different `unitType` / `unitId` than the scheduler picked. Exact shape is in §3.1a (two candidate shapes, both minimal). Without this, the skeleton cannot bias ordering.
+- `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` do NOT currently take a `milestoneId` parameter — v1 does not add one; per-milestone opt-out is deferred to v1.1 and NOT included in v1 scope.
+- These kernel deltas are collected in PR-3a (§9); the `phase-discipline/` extension code is PR-3b, consuming PR-3a's new contract.
 
 **Why B-min over pure preset (v6's L1+L2 only):** v6's three hooks add cross-review to task / slice units but do not restore the composed-lite quality guarantees that come from *phase ordering* (admission before research, research before design, design before split, split before implementation, implementation before verification). Without the skeleton, adding admission or impl-plan-YAML in v1.1 would require revisiting the preference shape; with the skeleton, each capability slots in as a pre/post-unit hook under the existing profile. See §3.1a and §12.
 
@@ -56,7 +62,7 @@
 | `max_review_rounds` exhaustion → review deferred | `max_cycles` + exhaustion → hook yields, artifact carries findings |
 | Review findings injected into next task prompt | `artifact` auto-picked by `buildCarryForwardSection` |
 | Reviewer runs under own subagent | `runPreDispatchHooks` / `checkPostUnitHooks` already spawn hook execution state |
-| Per-reviewer retry semantics | `retry_on` + `retry_pattern` |
+| Per-reviewer retry semantics | `retry_on` (file-name match; `PostUnitHookConfig` has no `retry_pattern` field — v6/v7 referenced one that does not exist) |
 | Hook-on-hook prevention + idempotency + cycle-limit | `rule-registry.evaluatePostUnit` already implements |
 
 **The sole genuine gaps** (closed by v1):
@@ -66,7 +72,7 @@
 
 Both gaps are closed by 2 new optional fields on `PostUnitHookConfig` (+ 1 on `PreDispatchHookConfig`). Nothing else changes in the hook engine.
 
-**v7 adds one more narrow gap:** `auto-mode`'s scheduling is adaptive (good default), but has no way to say *"for this milestone, walk the 8 composed-lite phases in order"*. The B-min skeleton (§3.1a + §3.1b) closes that gap by adding a single `milestone_profile` preference and a `profile-dispatch.ts` pre-dispatch hook that biases the scheduler's next-unit choice when the profile is opted in. The scheduler internals remain untouched; the hook runs in the existing `runPreDispatchHooks` pipeline.
+**v7 adds one more narrow gap:** `auto-mode`'s scheduling is adaptive (good default), but has no way to say *"for this milestone, walk the 8 composed-lite phases in order"*. The B-min skeleton (§3.1a + §3.1b) closes that gap by adding a single `milestone_profile` preference and a `profile-dispatch.ts` pre-dispatch hook that biases the scheduler's next-unit choice when the profile is opted in. The scheduler internals (unit-selection heuristics) remain untouched; **but the pre-dispatch hook contract itself needs a scheduler-advisory field** — the current `PreDispatchResult` only supports `modify` / `skip` / `replace` of the already-chosen unit, not "advise a different unit". This is the required kernel delta of §3.1a, caught by the v7.1 receiving-code-review pass.
 
 ## 2. Confirmed facts about `main`'s baseline (verified 2026-04-23)
 
@@ -87,13 +93,28 @@ Both gaps are closed by 2 new optional fields on `PostUnitHookConfig` (+ 1 on `P
 
 **Consequence** — the "cmd-verify" hook v5 OQ-1 proposed is a duplicate capability; it is deleted in v6 (not deferred).
 
-### 2.3 `main` already contains 30 `composed-lite` files
+### 2.3 `composed-lite/` exists ONLY on the feat branch (v7.1 correction)
 
-`git ls-tree -r main -- src/resources/extensions/gsd/composed-lite` = 30 files including `runner.ts`, `state.ts`, `phases/p0-p7`, `review-harness.ts`, etc. These are **not** referenced by any `main` entrypoint: `registry.json` on `main` has no `composed-lite` template entry, and `commands-workflow-templates.ts:353`, `:598`, `commands/handlers/workflow.ts:157` have runtime-owned special-cases pointing to `composed-lite` that are **dead code paths** on `main` (no template → no dispatch). v6 does not touch these dead paths; they remain harmless.
+**v6 and v7 incorrectly claimed "`main` already contains 30 `composed-lite` files".** Re-verified 2026-04-23:
 
-### 2.4 `feat/composed-lite-runtime-owned` delta over `main`
+```
+$ git ls-tree -r origin/main --name-only -- src/resources/extensions/gsd/composed-lite | wc -l
+0
+$ git ls-tree -r feat/composed-lite-runtime-owned --name-only -- src/resources/extensions/gsd/composed-lite | wc -l
+34
+```
 
-19 files changed (+2008/-644), all inside `composed-lite/`. These are runtime hardening (anti-drift guards, `subagent-spawn/terminal`, `pending-review-findings`), not new capabilities. v6's PR-2 extracts 4 state-agnostic primitives up into `shared-harness/`; the remaining `composed-lite` runtime stays on `feat` as Lab.
+`main` does NOT contain the composed-lite runtime. The dispatcher special-cases referenced in v6 (`commands-workflow-templates.ts`, `commands/handlers/workflow.ts`) reference the **concept** of composed-lite but land zero runtime dispatch because `registry.json` on `main` has no composed-lite template entry AND the runtime files are not in the tree. These are not "dead code files" — they simply never existed on main.
+
+**Consequences for this spec:**
+
+- §12's retirement action no longer needs "`git rm -r composed-lite/` on `main`" — there is nothing on main to remove. The retirement action collapses to "archive `feat/composed-lite-runtime-owned` as tag + delete branch".
+- PR-2 (`shared-harness/` extraction) still happens on `feat/composed-lite-runtime-owned` because the source files only exist there. After PR-2 lands, `shared-harness/` arrives on `main` via normal PR merge; `composed-lite/` itself never arrives.
+- Upgrade friction for the Lab is bounded by the size of the feat branch, not by `main` carrying dead code.
+
+### 2.4 `feat/composed-lite-runtime-owned` contents
+
+34 files inside `src/resources/extensions/gsd/composed-lite/` including `runner.ts`, `state.ts`, `phases/p0-p7`, `review-harness.ts`, `audit-log.ts`, `subagent-spawn.ts`, `subagent-terminal.ts`, `pending-review-findings.ts`, plus preflight/anti-drift guards added during v3.x–v6 investigations. These are the runtime the v1.1–v1.4 capability migration will cannibalise — see §12.
 
 ## 3. Design (A + a' + Ω1 + Φa + L1+L2 + Π₈)
 
@@ -116,46 +137,115 @@ Locked decisions from the v6 brainstorm pass (2026-04-23), with one revision (a 
 milestone_profile?: "auto" | "phase-discipline-8step";
 ```
 
-`undefined` ≡ `"auto"` ≡ byte-identical legacy behaviour. `"phase-discipline-8step"` activates both (a) the three `post_unit_hooks` of §3.3 **and** (b) the 8-step scheduler skeleton of §3.1a. Per-milestone overrides use the existing `milestone_overrides` mechanism (no new code).
+`undefined` ≡ `"auto"` ≡ byte-identical legacy behaviour. `"phase-discipline-8step"` activates both (a) the three `post_unit_hooks` of §3.3 **and** (b) the 8-step scheduler advisory skeleton of §3.1a.
+
+**v1 does NOT support per-milestone opt-out** *(v7.1 correction of v7)*. v7 claimed "per-milestone overrides use the existing `milestone_overrides` mechanism (no new code)" — that mechanism does not exist in `src/` (verified via grep on 2026-04-23). v1 scope is global preference only; adding `milestoneId`-aware `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` plus a `milestone_overrides` YAML block would be another 2 kernel changes and is deferred to v1.1 (see §15 OQ-12).
 
 **v6's field `phase_discipline?: boolean | "phase-discipline-v1"` is dropped in v7.** Rationale: a single field expressing both *"which preset of hooks"* and *"which milestone ordering"* is cleaner than two fields, and no v1 preset exists without the skeleton. If a future user wants hooks without ordering, they can author their own hook list against the `cross_review` surface (§3.2) — that path is still open; it just does not have a named preset in v1.
 
-### 3.1a `milestone_profile: "phase-discipline-8step"` — the B-min skeleton
+### 3.1a `milestone_profile: "phase-discipline-8step"` — the B-min skeleton (REQUIRES KERNEL DELTA)
 
-When the profile is active, a single pre-dispatch hook `phase-discipline-profile-dispatch` runs inside the existing `runPreDispatchHooks()` pipeline and biases the scheduler's next-unit choice against the ordered sequence in §3.1b. The hook does not mutate `auto-dispatch.ts` internals; it returns a `preferredNextUnit` field that the existing pipeline already honours for user-authored pre-dispatch rules.
+When the profile is active, a single pre-dispatch hook `phase-discipline-profile-dispatch` runs inside `runPreDispatchHooks()` and advises the scheduler against the ordered sequence in §3.1b. v7 described this advisory as "already honoured by the existing pipeline"; v7.1 corrects that: **the current pre-dispatch contract cannot express advisory**. Landing v1 requires one of two minimal kernel deltas (Δ-K1 or Δ-K2 below); Δ-K1 is the recommended shape.
 
-Implementation surface (under `phase-discipline/`):
+#### Current kernel surface (verified 2026-04-23)
 
-- `profile-map.ts` — exports `PHASE_DISCIPLINE_8STEP_SEQUENCE: Array<{phase: string; unit: UnitType | UnitType[]; gating: "strict" | "soft"}>` — the authoritative 8-phase → auto-mode unit map of §3.1b.
-- `profile-dispatch.ts` — pre-dispatch hook body. On each invocation: (1) read current milestone's executed-unit log; (2) find the next unordered phase in the sequence whose gating unit has not yet run; (3) emit `preferredNextUnit` = that phase's unit; (4) if the phase's preceding phase is `strict` gated but has not produced the expected artifact (design doc for P2, task list for P3, verification evidence for P5), emit a diagnostic and set `preferredNextUnit` back to the prior phase. No state is persisted beyond what `runPreDispatchHooks()` already records.
+`@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/types.ts:413-447`:
 
-Behaviour specification:
+```ts
+interface PreDispatchHookConfig {
+  action: "modify" | "skip" | "replace";  // modify the prompt, skip the unit, or swap its type
+  // ...
+}
+interface PreDispatchResult {
+  action: "proceed" | "skip" | "replace";
+  prompt?: string;
+  unitType?: string;  // for "replace" only
+  model?: string;
+  firedHooks: string[];
+}
+```
 
-- **Strict gating** — the next unit cannot fire until the prior phase's expected artifact exists. v1 enforces strict gating on P2 → P3 (design doc before split), P3 → P4 (tasks before implementation), P4 → P5 (implementation evidence before verification). Gating blocks by emitting `preferredNextUnit = priorPhaseUnit` with a diagnostic; does not throw.
-- **Soft gating** — the scheduler still prefers the sequence's next unit but will not block if the scheduler itself chose something else (e.g. `reassess-roadmap`). v1 uses soft gating for P0, P1, P6, P7. This preserves auto-mode's adaptive recovery.
-- **Profile opt-out within a milestone** — a milestone-level `milestone_overrides[mid].milestone_profile = "auto"` disables the skeleton for that milestone only. Verified to work with existing `milestone_overrides` merge logic; no new code.
-- **Backoff on scheduler disagreement** — if `auto-dispatch.ts`'s own heuristic picks a different unit for 3 consecutive dispatch calls, `profile-dispatch.ts` emits `logWarning` (profile potentially wrong for this milestone) and yields; this surfaces configuration errors without infinite-looping.
+`runPreDispatchHooks()` (`rule-registry.ts:276-337`) runs **after** the scheduler has already chosen `{unitType, unitId, prompt}`. It can swap `unitType` (via `replace`) but cannot choose a different `unitId`, and cannot communicate "please pick a different unit next time" back upward.
 
-**What `profile-dispatch.ts` is NOT.** Not a scheduler replacement. Not a state machine owned outside `auto-dispatch.ts`. Not allowed to mutate completed-unit records. Not allowed to skip phases in v1 (adaptive skipping is OQ-5).
+#### Δ-K1 — recommended kernel delta (adds scheduler advisory) — PR-3a scope
+
+Extend `PreDispatchHookConfig.action` with `"advise"` and extend `PreDispatchResult` with optional next-unit fields:
+
+```ts
+interface PreDispatchHookConfig {
+  action: "modify" | "skip" | "replace" | "advise";  // + "advise"
+  // ...
+  advise_if_mismatch?: "prefer" | "block";  // prefer = rewrite this dispatch; block = also mark prior phase incomplete
+}
+interface PreDispatchResult {
+  action: "proceed" | "skip" | "replace" | "advise";
+  prompt?: string;
+  unitType?: string;
+  unitId?: string;         // new
+  advisedUnitType?: string; // new
+  advisedUnitId?: string;   // new
+  model?: string;
+  firedHooks: string[];
+}
+```
+
+When `runPreDispatchHooks()` returns `{action: "advise", advisedUnitType, advisedUnitId}`, `auto-dispatch.ts` re-enters its selection path with the advice as a hard preference: if the advised unit is runnable, run it; otherwise fall back to the original choice and log that the advice was not honoured. This is strictly one extra branch in `auto-dispatch.ts`'s main loop (~20 lines) and is additive — legacy pre-dispatch hooks keep the `modify/skip/replace` semantics.
+
+#### Δ-K2 — alternative kernel delta (scheduler-side profile awareness) — not recommended
+
+Add a `profile-aware` branch directly in `auto-dispatch.ts` that reads `milestone_profile` and consumes `PHASE_DISCIPLINE_8STEP_SEQUENCE`. Rejected because it couples scheduler to the `phase-discipline/` extension, violating Decision Ω1 (preset should not require extension-specific scheduler branches).
+
+#### Implementation surface (under `phase-discipline/`) assuming Δ-K1 lands
+
+- `profile-map.ts` — exports `PHASE_DISCIPLINE_8STEP_SEQUENCE: Array<{phase: string; unit: UnitType | UnitType[]; gating: "strict" | "soft"; completionArtifact?: string}>` — the 8-phase → auto-mode unit map of §3.1b. `completionArtifact` is a path glob relative to `.gsd/{mid}/{sid}/` used for strict gating verification.
+- `profile-dispatch.ts` — pre-dispatch hook body. On each invocation: (1) read current milestone's executed-unit log from existing `.gsd/{mid}/STATE.json`; (2) determine the next expected phase from the sequence; (3) if the scheduler's chosen `unitType` matches, return `{action: "proceed"}`; (4) if it does not match and the prior phase is strict-gated without its `completionArtifact`, return `{action: "advise", advisedUnitType: priorPhaseUnit}`; (5) if it does not match but all prior phases are satisfied, return `{action: "advise", advisedUnitType: expectedUnit}`. No state persisted beyond the existing `firedHooks` log.
+
+#### Behaviour specification
+
+- **Strict gating** — the next unit cannot fire until the prior phase's `completionArtifact` exists. v1 enforces strict gating on P4 → P5 only (implementation evidence before verification) because `execute-task` already produces `.gsd/{mid}/{sid}/tasks/*` files as a verifiable artifact on main. **P2 → P3 and P3 → P4 strict gating is deferred to v1.3** when the `impl-plan-YAML` schema validator lands — v1 cannot enforce them without an artifact contract (caught by v7.1 review).
+- **Soft gating** — the hook emits `action: "advise"` but does not block. `auto-dispatch.ts` honours the advice if the advised unit is runnable, otherwise logs the mismatch and proceeds with its original choice. v1 uses soft gating for P0, P1, P2, P3, P5, P6 (P7 is out-of-band — see §3.1b.2).
+- **Backoff on repeated scheduler disagreement** — if `auto-dispatch.ts` returns the same `unitType` for 3 consecutive dispatch calls after the hook has advised otherwise, `profile-dispatch.ts` emits `logWarning` and stops advising for that phase for the rest of the milestone; this surfaces configuration errors without infinite-looping.
+- **Per-milestone opt-out** — NOT supported in v1 (see §3.1 note). Users who need per-milestone scope disable the profile globally and author bespoke `post_unit_hooks` for the milestones they want covered.
+
+**What `profile-dispatch.ts` is NOT.** Not a scheduler replacement. Not a state machine owned outside `auto-dispatch.ts`. Not allowed to mutate completed-unit records. Not allowed to skip phases in v1 (adaptive skipping is OQ-5). Not allowed to dispatch out-of-band workflows like `extract-learnings` (which is not a dispatch unit — see §3.1b.2).
 
 ### 3.1b 8-phase → auto-mode unit map (authoritative)
 
-Every phase maps to an existing `auto-mode` unit type verified against `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/auto-dispatch.ts`. v1 adds no new unit types.
+v7 collapsed scheduler-owned dispatch units and out-of-band post-processing into one table, which made P7 look like it had a dispatch unit `extract-learnings` that does not exist. v7.1 splits them.
 
-| Phase | Composed-lite concept | auto-mode unit(s) | Gating | v1 attached hook(s) | v2 capability slot |
-|---|---|---|---|---|---|
-| P0 | Admission | `discuss-milestone` | soft | — | v1.1: admission-checklist hook on `discuss-milestone` |
-| P1 | Research | `research-milestone` → `research-slice` | soft | — | v1.2: scout-fan-out `PreDispatchHookConfig` action type |
-| P2 | Design | `plan-slice` → `refine-slice` | **strict** | `phase-discipline-design-review` (§3.3) | v1.2 design-doc artifact; v1.3 impl-plan-YAML schema |
-| P3 | Split | `plan-slice` task-decomposition pass (reuses `gsd_plan_slice`) | **strict** | — | v1.3: impl-plan-YAML schema validator hook |
-| P4 | Implementation | `execute-task` | **strict** | `phase-discipline-code-review` (§3.3) | — |
-| P5 | Verification | `validate-milestone` + `enhanced_verification` | **strict** | — (already auto-on) | v1.4: verify-fuse strict mode (fail → block, not carry-forward) |
-| P6 | Synthesis | `complete-slice` → `complete-milestone` | soft | `phase-discipline-findings-to-memories` (§3.3) | — |
-| P7 | Postmortem | `extract-learnings` → `rewrite-docs` | soft | — (uses existing mechanism) | — |
+#### 3.1b.1 Scheduler-owned phases (profile-dispatch can advise these)
 
-**Why all 8 phases already have units.** auto-mode is closer to composed-lite in capability than first impression suggests; the missing piece was ordering enforcement, not unit types. v1 provides that ordering; v1.1–v1.4 add the per-phase quality gates that composed-lite's runtime had hardcoded.
+All 6 rows verified against `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/auto-dispatch.ts`. v1 adds no new unit types.
 
-**What "strict gating on P2→P3→P4→P5" means in practice.** The scheduler will not dispatch `execute-task` until at least one slice's `refine-slice` has produced a plan with non-empty task list (the existing `gsd_plan_slice` schema already enforces this). It will not dispatch `validate-milestone` until at least one `execute-task` has recorded completion evidence. These are observable in existing `.gsd/{mid}/{sid}/` artifacts; no new artifact files are introduced.
+| Phase | Composed-lite concept | auto-mode dispatch unit(s) | Gating in v1 | `completionArtifact` glob | v1 attached hook(s) | Capability migration slot |
+|---|---|---|---|---|---|---|
+| P0 | Admission | `discuss-milestone` | soft | — | — | v1.1: admission-checklist post-unit hook |
+| P1 | Research | `research-milestone`, `research-slice` | soft | — | — | v1.2: scout-fan-out requires a new `PreDispatchHookConfig.action: "fan-out"` kernel delta |
+| P2 | Design | `plan-slice`, `refine-slice` | soft *(v7.1: was strict in v7; downgraded because no `completionArtifact` schema exists until v1.3)* | *(v1.3)* | `phase-discipline-design-review` (§3.3) | v1.3: impl-plan-YAML schema validator supplies the artifact |
+| P3 | Split | `plan-slice` task-decomposition pass (same unit type; reuses `gsd_plan_slice` tool) | soft *(v7.1: was strict in v7; same reason as P2)* | *(v1.3)* | — | v1.3: impl-plan-YAML validator |
+| P4 | Implementation | `execute-task` | **strict** | `.gsd/{mid}/{sid}/tasks/*/EVIDENCE.md` | `phase-discipline-code-review` (§3.3) | — |
+| P5 | Verification | `validate-milestone` (+ `enhanced_verification` machine check) | soft *(auto-on; no profile-dispatch action needed)* | — | — | v1.4: verify-fuse strict mode adds a block-on-fail hook |
+| P6 | Synthesis | `complete-slice`, `complete-milestone` | soft | — | `phase-discipline-findings-to-memories` on `complete-slice` (§3.3) | — |
+
+**P7 is intentionally NOT in this table.** auto-mode's `rewrite-docs` unit is a dispatch unit but it is triggered by `reassess-roadmap` heuristics, not by the phase-discipline skeleton. See §3.1b.2.
+
+#### 3.1b.2 Out-of-band post-processing (NOT dispatched by profile-dispatch)
+
+These happen inside existing hook prompts or as user commands. The profile-dispatch skeleton does not advise them; they are listed here only because composed-lite's phase model included them and readers will ask.
+
+| Composed-lite P7 concept | auto-mode equivalent | How triggered in v1 |
+|---|---|---|
+| Postmortem — memory promotion | `capture_thought` calls inside the existing `phase-discipline-findings-to-memories` post-unit hook at `complete-slice` | Already covered by v1 preset (§3.3) |
+| Postmortem — docs rewrite | `rewrite-docs` dispatch unit | Triggered by auto-mode's own reassess heuristic, or manually via `/gsd` command. v1 does not force it |
+| Postmortem — cross-milestone learnings | `extract-learnings` **was listed as a dispatch unit in v7 — it is not one** (verified `grep -n 'extract-learnings' auto-dispatch.ts` = 0). Instead: the existing `phase-discipline-findings-to-memories` hook uses `capture_thought` which `loadMemoryBlock` reads in the next milestone's research units. ADR-013 channel. | Already covered by v1 preset; no new unit needed |
+
+#### 3.1b.3 Why strict gating is narrower in v1 than v7 claimed
+
+**Strict gating on P4 → P5 is the only one v1 can enforce.** `execute-task` writes verifiable evidence to `.gsd/{mid}/{sid}/tasks/{tid}/EVIDENCE.md` (or equivalent; the exact path is confirmed by PR-3b against `auto-post-unit.ts`). `validate-milestone` can check this before running.
+
+**P2 → P3 and P3 → P4 strict gating are deferred to v1.3.** v7 claimed these could be strict based on "the existing `gsd_plan_slice` schema already enforces non-empty task list". That is partially true — the tool schema enforces non-empty task arrays at call time — but there is no stable artifact path that `profile-dispatch.ts` can check without duplicating plan-slice's internal state. v1.3 adds the impl-plan-YAML artifact at `.gsd/{mid}/{sid}/PLAN.yaml` which makes strict gating checkable. Until then, P2/P3 run soft-gated.
+
+**Profile-dispatch still advises ordering for soft-gated phases.** Soft does not mean "silent" — it means the hook still emits `action: "advise"` when the scheduler's pick is out of sequence, but `auto-dispatch.ts` can override the advice if its heuristic disagrees (e.g. it picks `reassess-roadmap` after a slice fails UAT). This preserves auto-mode's adaptive recovery.
 
 ### 3.2 New `PostUnitHookConfig` fields (only 3 additions)
 
@@ -251,20 +341,35 @@ phase-discipline/
 | `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences-types.ts` | Add `milestone_profile?: "auto" \| "phase-discipline-8step"` to `GSDPreferencesFields`; add `provider?`, `cross_review?`, `cross_review_models?` to `PostUnitHookConfig`; add `provider?` to `PreDispatchHookConfig` |
 | `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences.ts` | In `resolvePostUnitHooks()` / `resolvePreDispatchHooks()`: if `prefs.milestone_profile === "phase-discipline-8step"`, delegate to `phase-discipline/merge.ts` for preset injection (both post-unit hooks and the single pre-dispatch hook from §3.1a). User-authored hooks with same `name` take precedence per §3.2.1 |
 
-**Not modified in v1**: `auto-post-unit.ts` (metrics wiring is v1.1; see R-2); `rule-registry.ts` (no new rule shape); `auto-dispatch.ts` (the pre-dispatch hook reads existing state and returns `preferredNextUnit`; no scheduler internals changed).
+**Modified in v1**: `auto-dispatch.ts` gains ~20 lines to honour `PreDispatchResult.action === "advise"` (PR-3a, Δ-K1 in §3.1a); `types.ts` gains the new `advise` action constant + the new optional fields on `PreDispatchResult`.
+
+**Not modified in v1**: `auto-post-unit.ts` (metrics wiring is v1.1; see R-2); `rule-registry.ts` (no new *rule* shape — `runPreDispatchHooks()` only learns to propagate the new `advise` action unchanged); scheduler unit-selection heuristics (the advisory is consumed at the point where the scheduler has already picked; if the advice is honoured, the loop re-enters selection with the advised unit as a hard preference).
 
 ## 4. Data flow
 
 ```
 auto-mode rule-registry.listRules()
          │
-         ├─ dispatch rules          (unchanged)
-         ├─ post_unit_hooks         ◄── preferences.resolvePostUnitHooks()
-         │                               ↑
-         │                               merge(userHooks, presetHooksIfOptedIn)
-         ├─ pre_dispatch_hooks      (v1 has no preset addition)
+         ├─ dispatch rules            (unchanged)
+         ├─ post_unit_hooks           ◄── preferences.resolvePostUnitHooks()
+         │                                 ↑
+         │                                 merge(userHooks, presetHooksIfOptedIn)
+         ├─ pre_dispatch_hooks        ◄── preferences.resolvePreDispatchHooks()
+         │                                 ↑
+         │                                 merge(userHooks, presetHooksIfOptedIn)
+         │                                   includes phase-discipline-profile-dispatch when
+         │                                   milestone_profile === "phase-discipline-8step"
          │
-         └─ hook fires:
+         ├─ pre-dispatch fires (PR-3a kernel delta required):
+         │      │
+         │      ├─ profile-dispatch reads STATE.json + profile-map → returns
+         │      │     {action: "proceed"}             when scheduler pick matches sequence
+         │      │     {action: "advise", advisedUnitType, advisedUnitId}
+         │      │                                    when scheduler pick is out-of-sequence
+         │      │     {action: "skip"|"modify"|"replace"} are legacy paths
+         │      └─ auto-dispatch.ts honours "advise" if runnable; otherwise logWarning + proceed
+         │
+         └─ post-unit hook fires after the unit completes:
               │
               ├─ cross_review ≤ 1 → existing single-reviewer path (byte-identical)
               │
@@ -278,7 +383,28 @@ auto-mode rule-registry.listRules()
                                       f. existing auto-mode retry_on path picks up file
 ```
 
-The `rule-registry` / `auto-post-unit` / `preferences` layers **never learn** about "reviewer" as a concept. They see a regular post-unit hook that happens to take longer and produce richer output. All fan-out logic is local to `phase-discipline/reviewer-hook.ts`.
+The `rule-registry` / `auto-post-unit` / `preferences` layers **never learn** about "reviewer" or "phase-discipline" as concepts after PR-3a's kernel delta. They see: (a) a regular pre-dispatch hook that happens to emit `"advise"`; (b) regular post-unit hooks that happen to take longer and produce richer output. All fan-out and sequence logic is local to `phase-discipline/{profile-dispatch,reviewer-hook}.ts`.
+
+### 4.1 Profile compatibility matrix (new in v7.1)
+
+v7.1 fills a gap flagged by review: `milestone_profile` had no documented interaction with the existing adaptive/parallel/reactive preferences. Those preferences all live under `GSDPreferences` (`@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences-types.ts`). v1 behaviour:
+
+| Preference | Shape | Interaction under `milestone_profile: "phase-discipline-8step"` | Reason |
+|---|---|---|---|
+| `reactive_execution` | `{ enabled?: boolean; ... }` graph-derived parallel tasks within a slice | **Compatible.** Continues to work during P4. `profile-dispatch` only cares about which *phase* is active, not about task-level parallelism inside `execute-task`. | Graph-parallelism lives below the phase boundary |
+| `gate_evaluation` | `{ enabled?: boolean; ... }` parallel quality-gate eval during slice planning | **Compatible.** Runs during P2/P3 (slice planning). Profile-dispatch advises on phase *ordering*, not on whether gate-eval fires. | Same horizontal/vertical split |
+| `slice_parallel` | `{ enabled?: boolean; max_workers?: number }` slice-level parallelism within a milestone | **Conditional compatibility with a WARN.** Slice-parallel means multiple slices in P2–P6 simultaneously. The 8-step sequence is defined *per slice*. v1 treats the milestone as "walk 8 phases in the aggregate" — if ALL active slices have entered P4, the profile allows P5. This requires `profile-dispatch` to read all active slices (existing `STATE.activeSlices[]`), not just `activeSlice`. If `slice_parallel.max_workers > 1` AND `milestone_profile === "phase-discipline-8step"`, `profile-dispatch.ts` emits a one-time `logWarning` at milestone start explaining the aggregate semantics. v1 does NOT auto-disable either. |
+| `parallel` | `ParallelConfig` dispatch-level parallelism | **Compatible with the same aggregate-phase semantics** as `slice_parallel` above | Same |
+| `phases.skip_research` / `skip_reassess` / `skip_slice_research` / `skip_milestone_validation` | `PhaseSkipPreferences` | **v1 honours user skip flags over the profile.** If the user has `skip_milestone_validation: true`, P5 soft-gate becomes a no-op (advice yields immediately). A one-time `logWarning` at milestone start explains the interaction. | User intent wins over preset ordering |
+| `progressive_planning` (ADR-011 Phase 1) | `phases.progressive_planning?: boolean` | **Compatible.** Progressive planning means "plan S01 in full and S02+ as sketches just-in-time". Profile-dispatch still walks the 8 phases per slice. No special handling. | Orthogonal concerns |
+| `mid_execution_escalation` (ADR-011 Phase 2) | `phases.mid_execution_escalation?: boolean` | **Compatible.** Escalation artifacts are written during P4 and consumed by the user; profile-dispatch does not observe them. | Orthogonal |
+| `require_slice_discussion` | `phases.require_slice_discussion?: boolean` | **Compatible.** The pause it enforces happens before P2 and is orthogonal to profile-dispatch sequencing. | Orthogonal |
+| `enhanced_verification` / `enhanced_verification_pre` / `_post` / `_strict` | booleans | **Compatible.** These run as part of P5 already; profile-dispatch does not touch them. | P5 already covers |
+| `milestone_overrides` | does not exist on main (v7.1 correction) | **N/A.** Per-milestone profile opt-out is v1.1 (OQ-12). |
+
+**Interaction-warning emission rules.** The warnings above are emitted once per milestone, at the first `profile-dispatch` invocation for that milestone. They carry the `milestoneId` and the specific preference name so operators can grep for them in logs. The warnings are **not** fatal — v1 does not auto-disable any preference — because the user explicitly opted into both surfaces.
+
+**What this matrix does NOT cover in v1.** Interactions of `milestone_profile` with *custom user-authored pre-dispatch hooks*. If a user's own pre-dispatch hook returns `action: "skip"` or `"replace"` before `profile-dispatch` runs, that user hook wins by hook ordering (see §3.2.1). Profile-dispatch does not attempt to re-assert sequence after a user skip. Discovering edge cases here is why PR-3b includes integration tests (§10) that exercise custom pre-dispatch hook + profile together.
 
 ### 4.5 Docs-map ↔ preset context-flow contract (v7)
 
@@ -448,8 +574,10 @@ This keeps the existing `retry_on` file-name matching in `rule-registry` unchang
 | `max_cycles` exhausted with `issues`/`fail` | Write non-`-retry` artifact → no rerun; findings-carry hook at `complete-slice` promotes to memories |
 | User-authored hook with same `name` as preset | User takes precedence per §3.2.1; `merge.ts` emits `logWarning` on shadow + a second `logWarning` if `cross_review` field is missing from the shadowing hook |
 | `prefs.milestone_profile` = unknown string | Treated as `"auto"`; `logWarning` |
-| `profile-dispatch` disagrees with scheduler 3 consecutive times | Yields to scheduler; `logWarning` per §3.1a |
-| `milestone_overrides[mid].milestone_profile = "auto"` under opted-in top-level profile | Profile disabled for that milestone only; no post-unit hooks from preset either |
+| `profile-dispatch` disagrees with scheduler 3 consecutive times | Stops advising for that phase for the rest of the milestone; `logWarning` per §3.1a |
+| `profile-dispatch` advises a `unitType` the scheduler cannot run (e.g. no slice active) | `logWarning`; `auto-dispatch.ts` falls back to its original pick; no retry |
+| User wants per-milestone profile opt-out | NOT supported in v1; see §3.1 note + OQ-12 |
+| Multiple active slices with `milestone_profile` enabled | `profile-dispatch` applies the sequence in aggregate (see §4.1 `slice_parallel` row); `logWarning` at milestone start explains semantics |
 | `cross_review` = 1 or unset | Byte-identical legacy single-reviewer path |
 | `cross_review` > 5 | Silently clamped to 5 (R-8 safeguard) |
 | All reviewers same provider (cross_review_models or picker edge case) | Runs anyway; `logWarning` emitted at hook spawn |
@@ -468,10 +596,10 @@ Current `feat/composed-lite-runtime-owned` mixes two semantically orthogonal tra
 |---|---|---|---|
 | `feat/cli-tool-restriction-chain` | `origin/main` | PR-1 code per `2026-04-23-cli-tool-restriction-chain.md` | Independent of other PRs; can land first |
 | `feat/shared-harness-extraction` | `feat/composed-lite-runtime-owned` | PR-2 extraction from composed-lite/ into shared-harness/ | Composed-lite runtime hardening commits stay behind on `feat/composed-lite-runtime-owned` as Lab state |
-| `feat/phase-discipline-preset-v1` | `origin/main` | This spec (v7) + `docs/superpowers/specs/README.md` + PR-3 code after PR-2 lands | The PR-3 code rebase must wait until PR-2 lands on main |
+| `feat/phase-discipline-preset-v1` | `origin/main` | This spec (v7.1) + `docs/superpowers/specs/README.md` + PR-3a + PR-3b code after PR-2 lands | PR-3 code rebase must wait until PR-2 lands on main; PR-3a must land before PR-3b |
 | `feat/composed-lite-runtime-owned` | (unchanged) | Kept as Lab. No phase-discipline work added here. Retired at v1.4 per §12 | Frozen for new feature work; rebase-only maintenance |
 
-**Effect on this document.** v7 itself lands on `feat/phase-discipline-preset-v1` first (as a pure docs change) so implementation can start from a clean slate. No more spec edits go onto `feat/composed-lite-runtime-owned`.
+**Effect on this document.** v7.1 itself lands on `feat/phase-discipline-preset-v1` first (as a pure docs change) so implementation can start from a clean slate. No more spec edits go onto `feat/composed-lite-runtime-owned`.
 
 ### PR-1 — CLI tool-restriction chain (M0 only)
 
@@ -491,20 +619,37 @@ Split to its own spec: `docs/superpowers/specs/2026-04-23-cli-tool-restriction-c
 
 **ESLint `no-restricted-paths`** enforces: `shared-harness/*` cannot import `composed-lite/` or `phase-discipline/`. Rule is added in the PR-2 landing commit.
 
-### PR-3 — `phase-discipline/` preset + B-min skeleton + preferences extension
+### PR-3a — Kernel delta Δ-K1 (new in v7.1)
 
-**`main`-side edits (2 files)**:
+**Scope** (on `feat/phase-discipline-preset-v1`, merges to `main` before PR-3b):
+
+| File | Change | Size |
+|---|---|---|
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/types.ts` | Add `"advise"` to `PreDispatchHookConfig.action`; add `advise_if_mismatch?` field; add `unitId?` / `advisedUnitType?` / `advisedUnitId?` to `PreDispatchResult`; add `"advise"` to `PreDispatchResult.action` | ~15 lines |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/rule-registry.ts` | `runPreDispatchHooks()` propagates `action: "advise"` return value unchanged (currently would mis-handle it) | ~5 lines |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/auto-dispatch.ts` | One new branch in main dispatch loop: if `preDispatchResult.action === "advise"` AND `advisedUnitType` is runnable, re-enter selection with advised unit as hard preference; else `logWarning` + proceed with original pick | ~20 lines |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/tests/pre-dispatch-advise.test.ts` | New unit tests: advise honoured when runnable; advise ignored with warn when not runnable; legacy `modify/skip/replace` paths unchanged | ~80 lines |
+
+**Why PR-3a is separable.** `Δ-K1` is a pure kernel extension with no `phase-discipline/` dependency. It can be reviewed on its own merits (is the pre-dispatch contract well-specified? does `auto-dispatch.ts` honour the advice safely?) without coupling to the preset's policy decisions. Users who author custom pre-dispatch hooks benefit immediately from the advise capability, separate from phase-discipline.
+
+**Why PR-3a cannot be skipped.** Without `Δ-K1`, `profile-dispatch.ts` has no way to express ordering advice — only `modify` / `skip` / `replace` on the current unit. v7 incorrectly claimed the existing contract sufficed; v7.1 corrects this.
+
+### PR-3b — `phase-discipline/` preset + B-min skeleton + preferences extension
+
+**`main`-side edits (2 files, ~30 lines)**:
 
 | File | Change |
 |---|---|
-| `preferences-types.ts` | Add `milestone_profile?: "auto" \| "phase-discipline-8step"` field; add `provider? / cross_review? / cross_review_models?` to `PostUnitHookConfig`; add `provider?` to `PreDispatchHookConfig` |
-| `preferences.ts` | `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` call `phase-discipline/merge.ts` when `milestone_profile === "phase-discipline-8step"` |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences-types.ts` | Add `milestone_profile?: "auto" \| "phase-discipline-8step"` field; add `provider? / cross_review? / cross_review_models?` to `PostUnitHookConfig`; add `provider?` to `PreDispatchHookConfig` |
+| `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/preferences.ts` | `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` call `phase-discipline/merge.ts` when `milestone_profile === "phase-discipline-8step"` |
 
-**New `phase-discipline/` directory** (6 files + README as in §3.4 — includes `profile-map.ts` and `profile-dispatch.ts` for the B-min skeleton).
+**New `phase-discipline/` directory** (6 files + README as in §3.4 — `preset.ts`, `reviewer-hook.ts`, `findings-carry.ts`, `merge.ts`, `profile-map.ts`, `profile-dispatch.ts`, README).
 
-**Rollout order** — PR-1 lands standalone (no dependency). PR-2 lands after PR-1 (makes `shared-harness/` available). PR-3 lands after PR-2 (consumes `shared-harness/`). v1.1 through v1.4 each add capability on top of PR-3 without changing the branch layout; see §12.
+**`profile-dispatch.ts` consumes the Δ-K1 contract from PR-3a** — without PR-3a merged first, PR-3b fails to compile (typecheck catches it).
 
-**PR-3 size estimate** — ~30 lines in `preferences-types.ts` + `preferences.ts`, ~280 lines in `phase-discipline/` directory (6 files + README + tests), ~0 platform changes. 100% additive.
+**Rollout order** — PR-1 standalone → PR-2 after PR-1 → PR-3a after PR-2 → PR-3b after PR-3a. v1.1–v1.4 each add capability on top of PR-3b without changing the branch layout; see §12.
+
+**PR-3a + PR-3b combined size estimate** — ~120 lines kernel delta (PR-3a) + ~30 lines preferences (PR-3b main-side) + ~280 lines extension (PR-3b extension-side) = ~430 lines total across both PRs. Note: v7's "~30 + ~280 = ~310 lines, 100% additive" claim was wrong — missed PR-3a kernel lines.
 
 ## 10. Testing strategy
 
@@ -512,8 +657,10 @@ Split to its own spec: `docs/superpowers/specs/2026-04-23-cli-tool-restriction-c
 |---|---|---|
 | Unit — `shared-harness` | `reviewer-core.runReview` contract; mock subagent-spawn verifies single-reviewer path; partial-JSON parse robustness | `src/resources/extensions/gsd/shared-harness/tests/*.test.ts` |
 | Unit — `phase-discipline` | `reviewer-hook` fan-out (N=2, N=3, N=5 clamp, single-reviewer fallback); merge logic (union dedupe, worst assessment); `findings-carry` artifact→capture_thought mapping; `merge.ts` preset-inject + user-override logWarning + missing-cross_review default (§3.2.1); observability log schema (§6.2) | `src/resources/extensions/gsd/phase-discipline/tests/*.test.ts` |
-| Unit — `profile-dispatch` (v7) | Given fixture milestone state, assert `preferredNextUnit` matches expected phase; strict-gating blocks P3 without design doc; soft-gating yields on scheduler disagreement after 3 tries; `milestone_overrides[mid].milestone_profile="auto"` disables skeleton locally | `src/resources/extensions/gsd/phase-discipline/tests/profile-dispatch.test.ts` |
-| Integration — preset-in-auto-mode | Temp repo with `prefs.milestone_profile = "phase-discipline-8step"`; run one milestone; assert unit order follows §3.1b sequence; assert preset hooks appear in `rule-registry.listRules()`; confirm `milestone_profile = "auto"` case is byte-identical to pre-v7 | `src/tests/phase-discipline-integration.test.ts` (new) |
+| Unit — PR-3a Δ-K1 kernel delta | pre-dispatch `advise` honoured when unit runnable; `advise` ignored with warn when not runnable; legacy `modify/skip/replace` paths unchanged; `unitId` override in `advise` propagates to `HookDispatchResult` | `src/resources/extensions/gsd/tests/pre-dispatch-advise.test.ts` (new) |
+| Unit — `profile-dispatch` (v7.1) | Given fixture `STATE.json`, assert `advisedUnitType` matches expected next phase; P4→P5 strict-gating blocks when `EVIDENCE.md` missing; P2/P3 soft-gating advises but does not block; 3-consecutive-disagreement backoff stops advising; aggregate semantics under multiple active slices (§4.1 `slice_parallel`) | `src/resources/extensions/gsd/phase-discipline/tests/profile-dispatch.test.ts` |
+| Integration — preset-in-auto-mode | Temp repo with `prefs.milestone_profile = "phase-discipline-8step"`; run one milestone; assert unit order follows §3.1b.1 sequence; assert preset hooks appear in `rule-registry.listRules()`; confirm `milestone_profile = "auto"` case is byte-identical to pre-v7.1 (pre-PR-3a) | `src/tests/phase-discipline-integration.test.ts` (new) |
+| Compatibility matrix — §4.1 interactions | For each row: set preference + `milestone_profile`; assert (a) expected interaction behaviour; (b) one-time warning emitted; (c) v1 does NOT auto-disable either | `src/tests/phase-discipline-compat.test.ts` (new) |
 | Regression — hook engine | Existing post-unit-hooks / rule-registry / preferences tests remain green | existing paths, unchanged |
 | E2E — `composed-lite` Lab (PR-2 gate) | 3 real runs pre- and post-extraction → byte-identical `.gsd/composed-lite/artifacts/*.md` sha256 and audit log seq segments | `tests/live-regression/composed-lite-extraction.ts` (new) |
 
@@ -524,17 +671,17 @@ Split to its own spec: `docs/superpowers/specs/2026-04-23-cli-tool-restriction-c
 **Why v7 tracks upstream cleanly:**
 
 - `phase-discipline/` depends only on the stable `post_unit_hooks` / `pre_dispatch_hooks` API surface. If `gsd-2` upstream changes `preferences` architecture, the preset re-merges into whatever new shape the API takes.
-- `profile-dispatch.ts` (v7) returns `preferredNextUnit` via the existing pre-dispatch hook contract; it does not reach into `auto-dispatch.ts` internals. If the scheduler's unit-selection algorithm changes upstream, `profile-dispatch.ts` keeps working because its output is a *preference*, not an override.
+- `profile-dispatch.ts` returns `{action: "advise", advisedUnitType}` via the PR-3a kernel delta; it does not reach into `auto-dispatch.ts` scheduler heuristics. If the scheduler's unit-selection algorithm changes upstream, `profile-dispatch.ts` keeps working because its output is a *preference*, not an override.
 - `shared-harness/` has 5 files with narrow interfaces. ESLint `no-restricted-paths` prevents bidirectional pollution with `composed-lite/`.
-- `main`-side footprint is 2 files × ~15–30 lines; upstream rebases rarely conflict at this scope.
+- `main`-side footprint after PR-3a + PR-3b is 4 files × (15–30 lines each) = ~80 lines; upstream rebases rarely conflict at this scope.
 - No schema extensions to `STATE.json` / `SLICE-STATE.json` / `.gsd/preferences.yaml` top-level beyond one enum field (`milestone_profile`).
 - No runtime version protocol between `shared-harness/` and its consumers (TypeScript types cover compat; see §0 rejected list).
 
 **Where upgrade friction remains:**
 
-- `composed-lite` Lab on `feat` needs periodic rebase against `main` until v1.4 capability parity. Post-PR-2 the rebase footprint is `composed-lite/runner.ts` + `phases/` + `state.ts` + `audit-log.ts` (~24 files), down from 30 today. See §12 for the retirement plan.
+- `composed-lite` Lab on `feat` needs periodic rebase against `main` until v1.4 capability parity. Post-PR-2 the rebase footprint is most of the 34 files (only `review-model-picker.ts` moves out; `subagent-spawn.ts` / `subagent-terminal.ts` are re-exported in place; `review-harness.ts` becomes a thin adapter). The bulk reduction from Lab retirement is v1.4 → full branch deletion, not PR-2.
 - `shared-harness/reviewer-core.ts` is the one place where `composed-lite` and `phase-discipline` share surface; changes here need backward-compat or coordinated rebase.
-- `auto-dispatch.ts` pre-dispatch hook pipeline is the contract surface for `profile-dispatch.ts`. If this pipeline changes shape upstream (e.g. the hook return value gains new fields), `profile-dispatch.ts` must adopt — single-file coupling, narrow risk.
+- The `PreDispatchResult.advise` contract (from Δ-K1) is the kernel surface for `profile-dispatch.ts`. If this contract grows new fields upstream, `profile-dispatch.ts` must adopt — single-file coupling, narrow risk (R-11).
 
 ## 12. Capability migration path — v1.1 through v1.4 → composed-lite deletion
 
@@ -548,13 +695,14 @@ v7 replaces v6's time-based Lab retirement conditions (T1/T2/T3) with a **capabi
 | **v1.3** | Impl-plan YAML schema validator | P2 → P3 boundary | Tighten `gsd_plan_slice` schema to require `rollback_hint`, `acceptance`, `files[]` per task; post-unit hook validates | composed-lite `phases/p3-split.ts` |
 | **v1.4** | Verify-fuse strict mode | P5 | Preference `verify_fuse_on_fail?: boolean`; when true, `validate-milestone` failure blocks milestone close instead of carry-forward | composed-lite `phases/p5-verification.ts` + `phases/p6-synthesis.ts` |
 
-**Retirement action at v1.4 capability parity:**
+**Retirement action at v1.4 capability parity** *(simplified in v7.1 because `main` never carried the composed-lite runtime — see §2.3)*:
 
-1. `git rm -r src/resources/extensions/gsd/composed-lite/` on `main` (removing the 30 dead-code files).
-2. Archive `feat/composed-lite-runtime-owned` as tag `composed-lite-lab-final`.
-3. Delete `feat/composed-lite-runtime-owned` branch.
-4. Remove the 4 dispatcher special-cases (`commands-workflow-templates.ts`, `commands/handlers/workflow.ts`) identified in v3.5 Appendix E.2.
-5. Remove `audit-log.ts` hash-chain machinery from composed-lite or graduate it to `shared-harness/` if another consumer appears by then.
+1. Archive `feat/composed-lite-runtime-owned` as tag `composed-lite-lab-final`.
+2. Delete `feat/composed-lite-runtime-owned` branch.
+3. Remove the dispatcher special-cases on `main` that reference composed-lite-as-template (`commands-workflow-templates.ts`, `commands/handlers/workflow.ts`); these are small and survive as no-ops until then.
+4. If `audit-log.ts` hash-chain machinery has another consumer by then, graduate it to `shared-harness/`; otherwise delete with the Lab.
+
+(v7's step 1 "`git rm -r composed-lite/` on `main`" is removed because `main` has zero composed-lite files to begin with.)
 
 **Why capability parity instead of time-based retirement.**
 
@@ -566,7 +714,7 @@ v7 replaces v6's time-based Lab retirement conditions (T1/T2/T3) with a **capabi
 
 **v1 does not trigger retirement.** v1 only ensures Lab maintenance cost stays bounded and proves the B-min skeleton works before the v1.1–v1.4 capability ports begin.
 
-## 13. Risks (v7)
+## 13. Risks (v7.1)
 
 | # | Risk | Mitigation |
 |---|---|---|
@@ -576,10 +724,12 @@ v7 replaces v6's time-based Lab retirement conditions (T1/T2/T3) with a **capabi
 | **R-4** | `shared-harness/` import boundary erosion | ESLint `no-restricted-paths` added in PR-2 landing commit; CI runs on every PR |
 | **R-5** | Memory-store pollution from findings carry-forward | `phase-discipline-findings-to-memories` caps at 5 `gotcha` entries per slice; deduped by summary |
 | **R-8** | `cross_review` × `max_cycles` × slice count multiplicatively amplifies cost | `cross_review` clamps to ≤ 5; default `max_cycles=2` not 3; v1.1 may add `cross_review_sample` |
-| **R-9** *(v7 update)* | Feat Lab long-term fork maintenance | §12 capability migration path (v1.1→v1.4) replaces v6's time-based retirement; PR-2 reduces rebase footprint to 24 of 30 files with zero conflict on the extracted 6 |
+| **R-9** *(updated v7.1)* | Feat Lab long-term fork maintenance | §12 capability migration path (v1.1→v1.4) replaces v6's time-based retirement; PR-2 removes `review-model-picker.ts` from the Lab-only surface but the bulk (~33 of 34 files) still rebases with main until v1.4. Rebase conflicts are bounded because the scheduler / preferences API is the only moving target and PR-3a adds to it rather than restructuring it |
 | **R-10** | Users configure `cross_review_models` with all same provider | Not rejected; `reviewer-hook` emits `logWarning` listing reviewer providers so operator notices |
-| **R-11** *(new v7)* | B-min skeleton's `profile-dispatch` pre-dispatch hook breaks when upstream `auto-dispatch.ts` changes hook contract | `profile-dispatch.ts` is 1 file with 1 contract surface (the pre-dispatch hook return shape). Breakage is a single-file rebase; unit test coverage in §10 catches it before landing. If upstream changes frequency becomes a real pain, promote `profile-map.ts` to a data file consumed by auto-dispatch natively (v1.5 candidate, not committed) |
+| **R-11** *(updated v7.1)* | `profile-dispatch` pre-dispatch hook breaks if `PreDispatchResult.advise` contract (Δ-K1) changes upstream | `profile-dispatch.ts` is 1 file with 1 contract surface. Single-file rebase; unit test coverage in §10 catches. If Δ-K1 evolves, we update `profile-dispatch.ts` in lockstep. Promoting `profile-map.ts` to a data file consumed by auto-dispatch natively is a v1.5 candidate only if Δ-K1 churn becomes a real pain. |
 | **R-12** *(new v7)* | v1 observability log (§6.2) writes many small JSON files, inflating `.gsd/` directory size | Per-invocation file is ≤ 4KB typical; `.gsd/{mid}/{sid}/.phase-discipline/` dir for a busy milestone with 50 tasks × 2 hooks × 2 cycles = 200 files, ~800KB. Acceptable. Rotation / compression deferred to v1.1 if real measurement shows worse |
+| **R-13** *(new v7.1)* | PR-3a kernel delta (Δ-K1) lands on main but proves misdesigned once real user-authored `advise` hooks exist | Δ-K1 is additive: legacy hook authors see zero behaviour change. If the advise semantics prove insufficient (e.g. need to advise a non-existent future unit), v1.x can extend the field shape; v1 consumers are only `phase-discipline/` itself. Mitigating factor: PR-3a's test coverage exercises both the honoured path and the fallback path, and is reviewed independently of the preset (§9). |
+| **R-14** *(new v7.1)* | v1 strict gating is narrower than v7 advertised (only P4→P5); users may expect P2/P3 discipline from v1 that actually arrives in v1.3 | Spec language in §3.1b.3 explicitly documents the gating narrowing and points at v1.3. `§0 What v1 covers` lists P4→P5 as the only strict gate. Release notes for v1 must repeat this. No code-level mitigation possible — the artifact contract for P2/P3 simply does not exist yet. |
 
 ## 14. Alternatives considered
 
@@ -608,11 +758,13 @@ Each OQ names the primary source of evidence needed to promote it from open to d
 - **OQ-9** *(v7)* — Reviewer verdict override mechanism. Shape TBD (file-based, prompt-based, or new `gsd_memory_graph` category). Evidence needed: at least one real case where a `critical` finding was a false positive and the user had to work around the preset. Placeholder only; not a v1.1 commitment.
 - **OQ-10** *(v7)* — Full stdout/stderr capture for preset reviewers (§6.2 "Deliberate omissions"). Matches composed-lite's `.gsd/composed-lite/logs/raw/*.jsonl` scheme. Deferred because `subagent-spawn` already supports it; turning it on is ~5 lines once someone needs the evidence.
 - **OQ-11** *(v7)* — Phase-discipline preset docs-map L1 inheritance. Currently reviewers do not call `loadAgentsSection(hint)` (§4.5). If a hook prompt frequently needs the same L1 file, explore hook-prompt-level routing. Evidence needed: repeated `read_file(".gsd/docs-map/...")` pattern in hook outputs.
+- **OQ-12** *(new v7.1)* — Per-milestone profile opt-out. Add `milestone_overrides[mid].milestone_profile` YAML block + make `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` `milestoneId`-aware. Deferred from v1 because it requires 2 more preferences signature changes; v1 covers global opt-in only. Evidence: users who want to run profile on some milestones but not others in the same project.
 
 ## 16. Change log
 
 | Version | Date | Summary |
 |---|---|---|
+| **v7.1** | 2026-04-23 | Post-review factual correction pass. 8 issues flagged by receiving-code-review were verified against current `main` and all 8 accepted. Key corrections: (1) §2.3/§2.4 — `main` contains **0** composed-lite files, not 30 (v6/v7 error); (2) §3.1a — pre-dispatch hook contract does NOT support `preferredNextUnit`; landing v1 requires kernel delta Δ-K1 (`PreDispatchResult.action: "advise"` + `advisedUnitType` / `advisedUnitId`); (3) §3.1 — `milestone_overrides` does not exist; v1 drops per-milestone opt-out claim (deferred to OQ-12); (4) §3.1b split into 3.1b.1 (scheduler-owned phases) + 3.1b.2 (out-of-band workflows); `extract-learnings` is not a dispatch unit; (5) §3.1b.3 — strict gating narrowed from P2→P3→P4→P5 to P4→P5 only (others lack `completionArtifact` contract until v1.3); (6) §4 data flow no longer claims "v1 has no pre-dispatch preset addition"; (7) §4.1 new profile compatibility matrix for `reactive_execution` / `gate_evaluation` / `slice_parallel` / `parallel` / `phases.skip_*` / `progressive_planning` / `mid_execution_escalation` / `require_slice_discussion` / `enhanced_verification`; (8) §1 retry_pattern tombstoned (does not exist). PR-3 split into PR-3a (Δ-K1 kernel delta, ~120 lines in types.ts + rule-registry.ts + auto-dispatch.ts + tests) and PR-3b (preset + extension, ~310 lines). Status downgraded from "accepted for implementation" to "design draft with required kernel deltas" — the spec is ready to drive PR-3a scoping discussion but not yet to be implemented verbatim. Added R-13 (kernel delta post-land misdesign risk) and R-14 (strict-gating narrowing expectation-management). Added OQ-12 (per-milestone opt-out). |
 | **v7** | 2026-04-23 | B-min skeleton addition following receiving-code-review evaluation of v6. Core additions: (1) `milestone_profile: "auto" \| "phase-discipline-8step"` preference (§3.1) replaces v6's `phase_discipline?` boolean; (2) `profile-map.ts` + `profile-dispatch.ts` B-min skeleton (§3.1a, §3.1b) enforces 8-phase ordering via pre-dispatch hook; (3) §3.2.1 hook-conflict resolution rules (name shadowing + missing `cross_review` defaults to 1); (4) §4.5 docs-map ↔ preset context-flow contract locks reviewer subagent context inheritance; (5) §6.2 observability v1 — `.gsd/{mid}/{sid}/.phase-discipline/*.json` per-hook structured log; (6) §9 PR-0 branch strategy moves phase-discipline work off `feat/composed-lite-runtime-owned` onto `feat/phase-discipline-preset-v1` cut from main; (7) §12 replaces v6's time-based T1/T2/T3 retirement with v1.1–v1.4 capability migration roadmap (admission, scout fan-out, impl-plan-YAML, verify-fuse). R-2 severity reduced with v1 interim visibility; R-3 tightened via §3.2.1; added R-11 (profile-dispatch upstream contract risk) and R-12 (observability log dir size). New OQs: OQ-5 adaptive skip, OQ-8 merge-lint CI, OQ-9 verdict override (rejected), OQ-10 reviewer stdout/stderr capture, OQ-11 reviewer docs-map inheritance. Rejected: `SHARED_HARNESS_API_VERSION` runtime version protocol. Decisions locked: **A + a' + Ω1 + Φa + L1+L2 + Π₈**. |
 | **v6** | 2026-04-23 | Ground-up rewrite following L1+L2 / Approach A brainstorm. Split AGENTS.md docs-map → own spec; split CLI tool-restriction chain → own spec. Dropped `reviewer_model?` (reuse `model?`). Dropped `impl-plan-schema-validate` + `cmd-verify` + `findings-store` + `verification-executor` as duplicates of `enhanced_verification`. `shared-harness` is 5 files (not 6); `phase-discipline` is 4 files (not 5, v7 re-expands to 6). Added §12 Feat Lab retirement conditions (later replaced by v7's capability roadmap). Added R-8/R-9/R-10. Preset renamed `"composed-lite-slice"` → `"phase-discipline-v1"` (later renamed to `"phase-discipline-8step"` in v7). Net spec drops ~70 lines while covering more decisions with cleaner boundaries. Decisions locked (v6): **A + a + Ω1 + Φa + L1+L2**. |
 | **v5** | 2026-04-23 | Overlay retirement; preset-on-hook-engine selected; `composed-lite` runtime stays on `feat`; 6-file shared-harness extraction; 3-PR plan. Superseded by v6 (one-line summary retained; full prose removed). |
