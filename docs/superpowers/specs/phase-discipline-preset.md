@@ -74,6 +74,8 @@ Both gaps are closed by 2 new optional fields on `PostUnitHookConfig` (+ 1 on `P
 
 **v7 adds one more narrow gap:** `auto-mode`'s scheduling is adaptive (good default), but has no way to say *"for this milestone, walk the 8 composed-lite phases in order"*. The B-min skeleton (§3.1a + §3.1b) closes that gap by adding a single `milestone_profile` preference and a `profile-dispatch.ts` pre-dispatch hook that biases the scheduler's next-unit choice when the profile is opted in. The scheduler internals (unit-selection heuristics) remain untouched; **but the pre-dispatch hook contract itself needs a scheduler-advisory field** — the current `PreDispatchResult` only supports `modify` / `skip` / `replace` of the already-chosen unit, not "advise a different unit". This is the required kernel delta of §3.1a, caught by the v7.1 receiving-code-review pass.
 
+**Explicit non-goal statement** *(added 2026-04-23 after third receiving-code-review)* — `"phase-discipline-8step"` in v1 is **not** a fully enforced 8-phase workflow, and is **not** composed-lite parity. It is an **8-phase ordered skeleton with partial hard gating (P4→P5 only)**. Phases P0/P1/P2/P3/P5/P6 are soft-gated (advisory only); `auto-dispatch.ts` can override the advice. P7 is out-of-band. Readers expecting composed-lite discipline parity should wait for v1.4 — see §12 capability-migration roadmap.
+
 ## 2. Confirmed facts about `main`'s baseline (verified 2026-04-23)
 
 ### 2.1 Hook engine is already first-class
@@ -191,6 +193,43 @@ interface PreDispatchResult {
 
 When `runPreDispatchHooks()` returns `{action: "advise", advisedUnitType, advisedUnitId}`, `auto-dispatch.ts` re-enters its selection path with the advice as a hard preference: if the advised unit is runnable, run it; otherwise fall back to the original choice and log that the advice was not honoured. This is strictly one extra branch in `auto-dispatch.ts`'s main loop (~20 lines) and is additive — legacy pre-dispatch hooks keep the `modify/skip/replace` semantics.
 
+##### Integration with `DISPATCH_RULES` *(added 2026-04-23 after third receiving-code-review)*
+
+The third receiving-code-review pass flagged that `auto-dispatch.ts` is a **rule-driven selector** (`DISPATCH_RULES: DispatchRule[]` linear-match array at `@/Users/sheng/tencent/gsd-2/src/resources/extensions/gsd/auto-dispatch.ts:197`), not a generic scheduler that natively accepts "force this unit". The ~20-line estimate above assumes a specific integration path, spelled out here to prevent semantic drift during PR-3a implementation:
+
+**Chosen path: insert a prefix rule.** PR-3a adds exactly one new entry at index 0 of `DISPATCH_RULES`:
+
+```ts
+{
+  name: "honour-phase-discipline-advice",
+  match: async (ctx) => {
+    const advice = ctx.advisedUnit; // new field on DispatchContext, populated from runPreDispatchHooks()
+    if (!advice) return null;
+    // Reuse existing stock rules' runnable judgement — no new judgement code.
+    const stockRule = DISPATCH_RULES_BY_UNIT_TYPE[advice.unitType];
+    if (!stockRule) return null;
+    const stockAction = await stockRule.match({ ...ctx, advisedUnit: undefined });
+    if (!stockAction || stockAction.action !== "dispatch") {
+      logWarning(`phase-discipline advised ${advice.unitType} but it is not runnable; falling back`);
+      return null;
+    }
+    // Honour advice by returning the stock rule's own DispatchAction verbatim; overwrite unitId only if the caller provided one.
+    return advice.unitId ? { ...stockAction, unitId: advice.unitId, matchedRule: "honour-phase-discipline-advice" } : { ...stockAction, matchedRule: "honour-phase-discipline-advice" };
+  },
+},
+```
+
+**Key design decisions (answers to evaluator questions from the 3rd review):**
+
+- **"runnable" judgement** — reuse the stock `DispatchRule.match()` for the advised `unitType`. No new judgement function exists; "runnable" is defined as "the stock rule for this unit type would match the current `ctx` if it were evaluated normally."
+- **Multiple candidate `unitId` for a given `unitType`** — `profile-dispatch.ts` emits only `advisedUnitType` in v1 (never `advisedUnitId`); the stock rule owns `unitId` construction (via `state.activeSlice.id`, `basePath`, etc.). `advisedUnitId` on `PreDispatchResult` is reserved for v1.1+ use cases (e.g. scout-fan-out in v1.2 where a specific slice is targeted).
+- **Honour-advice is NOT short-circuit** — it is simply a `DispatchRule` with the highest priority. If the prefix rule returns `null` (advised unit not runnable), the remaining `DISPATCH_RULES` evaluate normally with the original `ctx`, preserving `auto-mode`'s adaptive behaviour.
+- **`advisedUnitId` validation** — when v1.1+ callers do set `advisedUnitId`, the prefix rule overwrites the stock rule's computed `unitId` as-is. Any illegal id surfaces as a downstream failure at unit execution; the contract does not validate ids at the scheduler layer (keeps scheduler pure).
+- **`DISPATCH_RULES_BY_UNIT_TYPE`** — new index map built once at module load by iterating `DISPATCH_RULES` and grouping by the `unitType` emitted by each rule's first `dispatch` match. Rules with no fixed `unitType` (e.g. the pause-for-escalation rule at index 0) are excluded from the map (their semantics are "interrupt", not "dispatch a named unit").
+- **Line count** — "~20 lines" refers to the prefix rule itself. Total PR-3a delta: +25 lines in `auto-dispatch.ts` (prefix rule + index map), +12 lines in `types.ts` (`"advise"` action + `advisedUnitType` / `advisedUnitId`), +8 lines in `rule-registry.ts` (propagate `advise` through `evaluatePreDispatch`), ~80 lines in new test file. Net ~125 lines, consistent with README estimate.
+
+**Rejected alternative: hard hint on preferences.** The third-review evaluator suggested adding `preferredUnitType/preferredUnitId` to `ctx` and letting existing rules optionally consult it. Rejected because (a) it requires editing every stock rule to consult the preference, (b) it couples rules to a preset-level concept, (c) it complicates testing (every rule's `match` now has an implicit branch). The prefix-rule approach keeps the advisory mechanism localised to a single new rule and leaves stock rules byte-identical.
+
 #### Δ-K2 — alternative kernel delta (scheduler-side profile awareness) — not recommended
 
 Add a `profile-aware` branch directly in `auto-dispatch.ts` that reads `milestone_profile` and consumes `PHASE_DISCIPLINE_8STEP_SEQUENCE`. Rejected because it couples scheduler to the `phase-discipline/` extension, violating Decision Ω1 (preset should not require extension-specific scheduler branches).
@@ -282,6 +321,16 @@ When a user-authored `post_unit_hook` has the same `name` as a preset hook, merg
 3. **`cross_review` default when user hook omits it.** If the shadowing user hook has no `cross_review` field, `mergePresetIntoHooks()` treats it as `cross_review: 1` (single-reviewer legacy path). An additional `logWarning` says `user hook "{name}" lacks cross_review; defaulting to single-reviewer (preset wanted {preset_value})`. Rationale: silently inheriting `cross_review=2` from the preset would spawn extra subagents the user did not author.
 4. **`provider`, `model`, `retry_on`, `max_cycles` all default to user's explicit value or their documented `PostUnitHookConfig` defaults**, never to preset values.
 5. **Ordering when user provides hooks in addition to (not shadowing) preset.** Both sets run; order is preset hooks first, user hooks second within the same `after: [...]` trigger. Documented in `phase-discipline/README.md`.
+
+**Validation order in `mergePresetIntoHooks()`** *(added 2026-04-23 after third receiving-code-review — locks in the "merge vs validate" sequence):*
+
+1. Load raw user `.gsd/preferences.yaml` via existing path; no schema validation yet.
+2. Validate raw user config against `GSDPreferences` schema — fail fast on type errors / required fields.
+3. If `milestone_profile === "phase-discipline-8step"`, call `mergePresetIntoHooks(userHooks, presetHooks)` producing the merged hook list per rules 1–5 above (name-shadow semantics; `cross_review` default fill for shadowing hooks happens here).
+4. Re-validate the merged hook list — each merged `PostUnitHookConfig` / `PreDispatchHookConfig` must satisfy the same schema as a user-authored hook. Failure here indicates a preset bug, not user error.
+5. `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` return the validated merged list; this is the only list `rule-registry.listRules()` ever sees.
+
+**Invariant.** Step 4 guarantees that downstream consumers (`rule-registry`, `runPreDispatchHooks`, reviewer fan-out) never encounter a half-constructed preset hook. Schema violations in the preset are fatal at preference-load time, not at hook-fire time.
 
 **Migration guidance for authors upgrading across v7 → v7.x** — if a preset hook gains a new field in a minor release, existing shadowing user hooks will miss that field; CI should run `phase-discipline/merge.ts` dry-run against committed `.gsd/preferences.yaml` and emit a warning at PR time (this lint is OQ-8 in §15).
 
@@ -460,6 +509,34 @@ merged.overall_assessment = worst(r.overall_assessment for r in reviewers)
 - ≥ 1 success → merge what succeeded, log `reviewer_unavailable` for each failure, do not abort the hook
 - All fail → return `reviewer_unavailable` to hook engine; existing `retry_on` path may trigger one retry; persistent failure writes `reviewer_unavailable.md` artifact and carries forward flagged `unchecked`
 
+**Reviewer execution status enum** *(added 2026-04-23 after third receiving-code-review — canonical status names consumed by `reviewer-hook.ts` and logged to §6.2 `.phase-discipline/*.json`):*
+
+| Status | When emitted | Artifact effect (v1) |
+|---|---|---|
+| `success` | Reviewer returned a parseable review with an `overall` verdict | Normal union-merge path |
+| `timeout` | Subagent exceeded `GSD_PHASE_DISCIPLINE_REVIEWER_TIMEOUT_MS` (default `180000`) | Counted as failure; emit `logWarning` with duration |
+| `parse-failure` | Reviewer completed but output did not match §6 markdown template | Counted as failure; raw stdout captured to `.phase-discipline/{hook}-{tid}-reviewer{N}-raw.log` only if §6.2 observability opted in |
+| `auth-failure` | Provider returned HTTP 401 / permission error | Counted as failure; emit `logError` (not `logWarning`) — these rarely self-resolve |
+| `rate-limit` | Provider returned HTTP 429 | Counted as failure; emit `logWarning` with retry-after if header present |
+| `reviewer-unavailable` | Catch-all for any other non-zero exit or network error | Counted as failure; emit `logWarning` |
+
+**All-fail artifact shape** — when every reviewer returns a non-`success` status, `reviewer-hook.ts` writes `.gsd/{mid}/{sid}/{hookName}-{tid}.md` with:
+
+```md
+# Code Review — {taskId}
+reviewer: {model1}, {model2}  [cross_review=2, merge=union]
+overall: reviewer_unavailable
+
+## Reviewer status
+- model1 ({provider1}): auth-failure — HTTP 401 at 2026-04-23T05:13:22Z
+- model2 ({provider2}): timeout — 180000ms exceeded
+
+## Summary
+All reviewers failed for this task. Findings carry forward flagged `unchecked`; see R-2 / R-8.
+```
+
+The `overall: reviewer_unavailable` literal is what `retry_on` matches against for the all-fail retry behaviour specified above.
+
 **Clamp** — `cross_review > 5` is silently clamped to 5 (R-8 cost safeguard).
 
 ## 6. Artifact format & retry naming
@@ -612,7 +689,7 @@ Current `feat/composed-lite-runtime-owned` mixes two semantically orthogonal tra
 |---|---|---|---|
 | `feat/cli-tool-restriction-chain` | `origin/main` | PR-1 code per `2026-04-23-cli-tool-restriction-chain.md` | Independent of other PRs; can land first |
 | `feat/shared-harness-extraction` | `feat/composed-lite-runtime-owned` | PR-2 extraction from composed-lite/ into shared-harness/ | Composed-lite runtime hardening commits stay behind on `feat/composed-lite-runtime-owned` as Lab state |
-| `feat/phase-discipline-preset-v1` | `origin/main` | This spec (v7.1) + `docs/superpowers/specs/README.md` + PR-3a + PR-3b code after PR-2 lands | PR-3 code rebase must wait until PR-2 lands on main; PR-3a must land before PR-3b |
+| `feat/phase-discipline-preset-v1` | `origin/main` | This spec (v7.1) + `docs/superpowers/specs/README.md` + PR-3a + PR-3b code | **PR-3a has no code dependency on PR-2 or PR-1** — it only edits `main`'s kernel (`types.ts`, `rule-registry.ts`, `auto-dispatch.ts`) and can land in parallel. **PR-3b depends on all three** (`PR-1` for reviewer `--tools read` enforcement; `PR-2` for `shared-harness` imports; `PR-3a` for the `"advise"` action shape) |
 | `feat/composed-lite-runtime-owned` | (unchanged) | Kept as Lab. No phase-discipline work added here. Retired at v1.4 per §12 | Frozen for new feature work; rebase-only maintenance |
 
 **Effect on this document.** v7.1 itself lands on `feat/phase-discipline-preset-v1` first (as a pure docs change) so implementation can start from a clean slate. No more spec edits go onto `feat/composed-lite-runtime-owned`.
@@ -663,7 +740,15 @@ Split to its own spec: `docs/superpowers/specs/2026-04-23-cli-tool-restriction-c
 
 **`profile-dispatch.ts` consumes the Δ-K1 contract from PR-3a** — without PR-3a merged first, PR-3b fails to compile (typecheck catches it).
 
-**Rollout order** — PR-1 standalone → PR-2 after PR-1 → PR-3a after PR-2 → PR-3b after PR-3a. v1.1–v1.4 each add capability on top of PR-3b without changing the branch layout; see §12.
+**Rollout order** *(corrected 2026-04-23 after third receiving-code-review; v7.1 had an incorrect "PR-3a after PR-2" serialisation)*:
+
+- **Parallel track 1** — PR-1 (CLI tool-restriction). Standalone. No code dependency on any other PR.
+- **Parallel track 2** — PR-2 (shared-harness extraction). Standalone. Branches from `feat/composed-lite-runtime-owned`; no dependency on main's PR-1/PR-3a.
+- **Parallel track 3** — PR-3a (Δ-K1 kernel delta). Standalone. Only edits main's `types.ts` / `rule-registry.ts` / `auto-dispatch.ts`; no consumers on main before PR-3b, so ship-and-leave-dormant is safe.
+- **Parallel track 4** — PR-4 (AGENTS.md docs-map v1). Orthogonal; see separate spec.
+- **Merge point** — PR-3b (phase-discipline preset + skeleton). Blocked on `{PR-1, PR-2, PR-3a}` all merged to main. PR-3b is the only PR with a genuine three-way dependency.
+
+v1.1–v1.4 each add capability on top of PR-3b without changing the branch layout; see §12.
 
 **PR-3a + PR-3b combined size estimate** — ~120 lines kernel delta (PR-3a) + ~30 lines preferences (PR-3b main-side) + ~280 lines extension (PR-3b extension-side) = ~430 lines total across both PRs. Note: v7's "~30 + ~280 = ~310 lines, 100% additive" claim was wrong — missed PR-3a kernel lines.
 
@@ -780,7 +865,7 @@ Each OQ names the primary source of evidence needed to promote it from open to d
 
 | Version | Date | Summary |
 |---|---|---|
-| **v7.1** | 2026-04-23 | Post-review factual correction pass. 8 issues flagged by receiving-code-review were verified against current `main` and all 8 accepted. Key corrections: (1) §2.3/§2.4 — `main` contains **0** composed-lite files, not 30 (v6/v7 error); (2) §3.1a — pre-dispatch hook contract does NOT support `preferredNextUnit`; landing v1 requires kernel delta Δ-K1 (`PreDispatchResult.action: "advise"` + `advisedUnitType` / `advisedUnitId`); (3) §3.1 — `milestone_overrides` does not exist; v1 drops per-milestone opt-out claim (deferred to OQ-12); (4) §3.1b split into 3.1b.1 (scheduler-owned phases) + 3.1b.2 (out-of-band workflows); `extract-learnings` is not a dispatch unit; (5) §3.1b.3 — strict gating narrowed from P2→P3→P4→P5 to P4→P5 only (others lack `completionArtifact` contract until v1.3); (6) §4 data flow no longer claims "v1 has no pre-dispatch preset addition"; (7) §4.1 new profile compatibility matrix for `reactive_execution` / `gate_evaluation` / `slice_parallel` / `parallel` / `phases.skip_*` / `progressive_planning` / `mid_execution_escalation` / `require_slice_discussion` / `enhanced_verification`; (8) §1 retry_pattern tombstoned (does not exist). PR-3 split into PR-3a (Δ-K1 kernel delta, ~120 lines in types.ts + rule-registry.ts + auto-dispatch.ts + tests) and PR-3b (preset + extension, ~310 lines). Status downgraded from "accepted for implementation" to "design draft with required kernel deltas" — the spec is ready to drive PR-3a scoping discussion but not yet to be implemented verbatim. Added R-13 (kernel delta post-land misdesign risk) and R-14 (strict-gating narrowing expectation-management). Added OQ-12 (per-milestone opt-out). **Post-action-plan addendum (2026-04-23 later same day):** a second receiving-code-review pass re-verified all 8 corrections against current `src/` source (not `dist-test/` / `dist/`) and confirmed them accurate. Three documents-only additions followed: (a) `specs/README.md` gained an "Implementation sequencing hard constraints" section with explicit No-Go / Go tables, (b) this spec's §9 gained §9.0 "Implementation readiness gate" with a 5-row anchor-verification table and a hard `PR-3b-after-PR-3a` ordering constraint, (c) `composed-lite-harness-brainstorm.md` received a top-of-file DEPRECATED banner pointing readers at the 4 authoritative specs. No technical decisions changed; this addendum is prescriptive guidance for implementers. §9 title also corrected from "3 independent PRs" to "4 independent PRs" (v7.1 already split PR-3 → PR-3a + PR-3b but the title had not been updated). |
+| **v7.1** | 2026-04-23 | Post-review factual correction pass. 8 issues flagged by receiving-code-review were verified against current `main` and all 8 accepted. Key corrections: (1) §2.3/§2.4 — `main` contains **0** composed-lite files, not 30 (v6/v7 error); (2) §3.1a — pre-dispatch hook contract does NOT support `preferredNextUnit`; landing v1 requires kernel delta Δ-K1 (`PreDispatchResult.action: "advise"` + `advisedUnitType` / `advisedUnitId`); (3) §3.1 — `milestone_overrides` does not exist; v1 drops per-milestone opt-out claim (deferred to OQ-12); (4) §3.1b split into 3.1b.1 (scheduler-owned phases) + 3.1b.2 (out-of-band workflows); `extract-learnings` is not a dispatch unit; (5) §3.1b.3 — strict gating narrowed from P2→P3→P4→P5 to P4→P5 only (others lack `completionArtifact` contract until v1.3); (6) §4 data flow no longer claims "v1 has no pre-dispatch preset addition"; (7) §4.1 new profile compatibility matrix for `reactive_execution` / `gate_evaluation` / `slice_parallel` / `parallel` / `phases.skip_*` / `progressive_planning` / `mid_execution_escalation` / `require_slice_discussion` / `enhanced_verification`; (8) §1 retry_pattern tombstoned (does not exist). PR-3 split into PR-3a (Δ-K1 kernel delta, ~120 lines in types.ts + rule-registry.ts + auto-dispatch.ts + tests) and PR-3b (preset + extension, ~310 lines). Status downgraded from "accepted for implementation" to "design draft with required kernel deltas" — the spec is ready to drive PR-3a scoping discussion but not yet to be implemented verbatim. Added R-13 (kernel delta post-land misdesign risk) and R-14 (strict-gating narrowing expectation-management). Added OQ-12 (per-milestone opt-out). **Post-action-plan addendum (2026-04-23 later same day):** a second receiving-code-review pass re-verified all 8 corrections against current `src/` source (not `dist-test/` / `dist/`) and confirmed them accurate. Three documents-only additions followed: (a) `specs/README.md` gained an "Implementation sequencing hard constraints" section with explicit No-Go / Go tables, (b) this spec's §9 gained §9.0 "Implementation readiness gate" with a 5-row anchor-verification table and a hard `PR-3b-after-PR-3a` ordering constraint, (c) `composed-lite-harness-brainstorm.md` received a top-of-file DEPRECATED banner pointing readers at the 4 authoritative specs. No technical decisions changed; this addendum is prescriptive guidance for implementers. §9 title also corrected from "3 independent PRs" to "4 independent PRs" (v7.1 already split PR-3 → PR-3a + PR-3b but the title had not been updated). **Third-review addendum (2026-04-23 after a third receiving-code-review pass):** a third reviewer evaluated whether the v7.1 spec was ready to drive implementation plans and accepted 4 of 4 substantive suggestions. Five spec-level edits followed: (1) **PR dependency graph corrected** — `PR-3a` has NO code dependency on `PR-2`; README migration-order table + §9 branch-strategy table + §9.1 Rollout order all rewritten to reflect that PR-1 / PR-2 / PR-3a / PR-4 are four parallel tracks and PR-3b is the sole three-way merge point. The v7.1 "PR-3a after PR-2" serialisation was a workflow-convenience choice misencoded as a hard dependency. (2) **§3.1a Integration with `DISPATCH_RULES`** — new subsection pins down the honour-advise implementation path as a prefix `DispatchRule` at index 0 of `DISPATCH_RULES`, reusing existing stock-rule `match()` for runnable judgement rather than inventing a new judgement function. Answers evaluator questions about runnable judgement, multi-candidate `unitId`, short-circuit-vs-re-evaluation, and line-count realism (net ~125 lines). Includes a rejected-alternative bullet for the evaluator-suggested "hard hint on preferences" approach. (3) **§1 explicit non-goal statement** — `"phase-discipline-8step"` in v1 is explicitly not composed-lite parity; it is "8-phase ordered skeleton with partial hard gating (P4→P5 only)". Prevents post-ship scope-expectation disputes. (4) **§3.2.1 Validation order** — locks `mergePresetIntoHooks()` sequence as load-raw → validate → merge → re-validate → resolve; downstream consumers never see a half-constructed preset hook. Answers evaluator question on "validation before or after merge". (5) **§5 Reviewer execution status enum** — canonical 6-status enum (`success` / `timeout` / `parse-failure` / `auth-failure` / `rate-limit` / `reviewer-unavailable`) + concrete all-fail artifact shape with `overall: reviewer_unavailable` marker for `retry_on` matching. Answers evaluator question on "parse failure / auth failure / timeout unified status enum". No new technical decisions introduced; all five are clarifications / contract-tightenings that were implied but not written. Third review's meta-conclusion "可以推进到实施计划阶段，但不适合直接开始实现" remains correct — these edits make the spec implementation-plan-ready (v1 scope frozen, v1.1+ slots documented). |
 | **v7** | 2026-04-23 | B-min skeleton addition following receiving-code-review evaluation of v6. Core additions: (1) `milestone_profile: "auto" \| "phase-discipline-8step"` preference (§3.1) replaces v6's `phase_discipline?` boolean; (2) `profile-map.ts` + `profile-dispatch.ts` B-min skeleton (§3.1a, §3.1b) enforces 8-phase ordering via pre-dispatch hook; (3) §3.2.1 hook-conflict resolution rules (name shadowing + missing `cross_review` defaults to 1); (4) §4.5 docs-map ↔ preset context-flow contract locks reviewer subagent context inheritance; (5) §6.2 observability v1 — `.gsd/{mid}/{sid}/.phase-discipline/*.json` per-hook structured log; (6) §9 PR-0 branch strategy moves phase-discipline work off `feat/composed-lite-runtime-owned` onto `feat/phase-discipline-preset-v1` cut from main; (7) §12 replaces v6's time-based T1/T2/T3 retirement with v1.1–v1.4 capability migration roadmap (admission, scout fan-out, impl-plan-YAML, verify-fuse). R-2 severity reduced with v1 interim visibility; R-3 tightened via §3.2.1; added R-11 (profile-dispatch upstream contract risk) and R-12 (observability log dir size). New OQs: OQ-5 adaptive skip, OQ-8 merge-lint CI, OQ-9 verdict override (rejected), OQ-10 reviewer stdout/stderr capture, OQ-11 reviewer docs-map inheritance. Rejected: `SHARED_HARNESS_API_VERSION` runtime version protocol. Decisions locked: **A + a' + Ω1 + Φa + L1+L2 + Π₈**. |
 | **v6** | 2026-04-23 | Ground-up rewrite following L1+L2 / Approach A brainstorm. Split AGENTS.md docs-map → own spec; split CLI tool-restriction chain → own spec. Dropped `reviewer_model?` (reuse `model?`). Dropped `impl-plan-schema-validate` + `cmd-verify` + `findings-store` + `verification-executor` as duplicates of `enhanced_verification`. `shared-harness` is 5 files (not 6); `phase-discipline` is 4 files (not 5, v7 re-expands to 6). Added §12 Feat Lab retirement conditions (later replaced by v7's capability roadmap). Added R-8/R-9/R-10. Preset renamed `"composed-lite-slice"` → `"phase-discipline-v1"` (later renamed to `"phase-discipline-8step"` in v7). Net spec drops ~70 lines while covering more decisions with cleaner boundaries. Decisions locked (v6): **A + a + Ω1 + Φa + L1+L2**. |
 | **v5** | 2026-04-23 | Overlay retirement; preset-on-hook-engine selected; `composed-lite` runtime stays on `feat`; 6-file shared-harness extraction; 3-PR plan. Superseded by v6 (one-line summary retained; full prose removed). |

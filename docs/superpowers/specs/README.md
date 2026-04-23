@@ -48,11 +48,11 @@ Migration is delivered as 4 PRs on 4 clean branches (v7.1 split PR-3 into PR-3a 
 
 | Order | PR | Branch | Gating | Scope |
 |---|---|---|---|---|
-| 1 | **PR-1** CLI tool-restriction chain | `feat/cli-tool-restriction-chain` from `main` | None — standalone | ~120 lines across 4 files (see CLI spec §2.2) |
-| 2 | **PR-2** shared-harness extraction | `feat/shared-harness-extraction` from `feat/composed-lite-runtime-owned` | After PR-1 | Extract 5 files into `src/resources/extensions/gsd/shared-harness/`; rewrite `composed-lite` as consumer |
-| 3 | **PR-3a** Δ-K1 kernel delta (new in v7.1) | `feat/phase-discipline-preset-v1` from `main` | After PR-2 | ~120 lines across 4 files: `types.ts` + `rule-registry.ts` + `auto-dispatch.ts` + new test. Adds `PreDispatchResult.action: "advise"` scheduler advisory. Independently reviewable without any `phase-discipline/` dependency |
-| 4 | **PR-3b** phase-discipline preset + B-min skeleton | `feat/phase-discipline-preset-v1` (continues) | After PR-3a | ~30 main-side lines + ~280 extension-side lines across 6 files + README. Consumes Δ-K1 from PR-3a |
-| parallel | **PR-4** AGENTS.md docs-map v1 | `feat/agents-md-docs-map-v1` from `main` | None — orthogonal to PR-1/2/3a/3b | See docs-map spec §6 / §8 |
+| 1a | **PR-1** CLI tool-restriction chain | `feat/cli-tool-restriction-chain` from `main` | None — standalone | ~120 lines across 4 files (see CLI spec §2.2) |
+| 1b | **PR-2** shared-harness extraction | `feat/shared-harness-extraction` from `feat/composed-lite-runtime-owned` | None — standalone (parallel to PR-1 / PR-3a / PR-4) | Extract 5 files into `src/resources/extensions/gsd/shared-harness/`; rewrite `composed-lite` as consumer |
+| 1c | **PR-3a** Δ-K1 kernel delta *(corrected 2026-04-23 — no PR-2 dependency)* | `feat/phase-discipline-preset-v1` from `main` | None — standalone (parallel to PR-1 / PR-2 / PR-4) | ~125 lines across 4 files: `types.ts` + `rule-registry.ts` + `auto-dispatch.ts` + new test. Adds `PreDispatchResult.action: "advise"` scheduler advisory + `honour-phase-discipline-advice` prefix DispatchRule. Independently reviewable; no `phase-discipline/` consumer on main before PR-3b lands |
+| 1d | **PR-4** AGENTS.md docs-map v1 | `feat/agents-md-docs-map-v1` from `main` | None — orthogonal to PR-1/2/3a/3b | See docs-map spec §6 / §8 |
+| 2 | **PR-3b** phase-discipline preset + B-min skeleton | `feat/phase-discipline-preset-v1` (continues) | After PR-1 **AND** PR-2 **AND** PR-3a | ~30 main-side lines + ~280 extension-side lines across 6 files + README. Imports `"advise"` from PR-3a; imports `shared-harness/*` from PR-2; depends on PR-1 for reviewer `--tools read` enforcement |
 
 The current `feat/composed-lite-runtime-owned` branch is **not** a landing target for any of the above; it is kept as a Lab for composed-lite runtime hardening only. `phase-discipline-preset.md` §12 defines the v1.1–v1.4 capability-migration roadmap that retires this Lab at v1.4 — note that `main` has never carried the composed-lite runtime (0 files, verified 2026-04-23), so retirement is a branch-delete, not a `git rm`.
 
@@ -80,10 +80,11 @@ And the Go list (all verified as safe to start immediately on separate branches)
 
 | Action | Gate | Notes |
 |---|---|---|
-| Start PR-1 (CLI tool-restriction forward port) | **Go** | Forward-ports the existing `feat/composed-lite-runtime-owned` implementation for 4 files; see CLI spec §2.2 |
-| Start PR-2 (shared-harness extraction) | **Go** after PR-1 | Pure refactor; no semantic change |
-| Start PR-3a (Δ-K1 kernel delta) | **Go** after PR-2 | Standalone, independently reviewable; see `phase-discipline-preset.md` §3.1a |
-| Start PR-4 (AGENTS.md docs-map v1) | **Go** parallel | Orthogonal to PR-1/2/3a/3b |
+| Start PR-1 (CLI tool-restriction forward port) | **Go** — parallel | Forward-ports the existing `feat/composed-lite-runtime-owned` implementation for 4 files; see CLI spec §2.2 |
+| Start PR-2 (shared-harness extraction) | **Go** — parallel *(corrected 2026-04-23 — no PR-1 dependency)* | Pure refactor; no semantic change; runs on `feat/composed-lite-runtime-owned`-derived branch; no kernel or CLI touch |
+| Start PR-3a (Δ-K1 kernel delta) | **Go** — parallel *(corrected 2026-04-23 — no PR-2 dependency)* | Standalone kernel change on `main`; see `phase-discipline-preset.md` §3.1a including the new "Integration with `DISPATCH_RULES`" subsection for the honour-advice prefix-rule design |
+| Start PR-4 (AGENTS.md docs-map v1) | **Go** — parallel | Orthogonal to PR-1/2/3a/3b |
+| Start PR-3b (phase-discipline preset) | **No-Go until PR-1 AND PR-2 AND PR-3a all merged to `main`** | Only PR with a genuine three-way dependency; see `phase-discipline-preset.md` §9.0 readiness gate |
 
 ## Key interaction points
 
