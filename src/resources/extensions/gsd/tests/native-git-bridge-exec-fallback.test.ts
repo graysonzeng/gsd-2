@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { nativeIsRepo, nativeCommit, nativeResetHard } from "../native-git-bridge.js";
+import { extractSourceRegion } from "./test-helpers.ts";
 
 // ─── Static analysis ──────────────────────────────────────────────────────
 // Verify the fallback paths of the three affected functions do not call the
@@ -28,7 +29,7 @@ const SRC_PATH = join(import.meta.dirname, "..", "native-git-bridge.ts");
 function extractFunctionBody(src: string, fnName: string): string {
   const idx = src.indexOf(`export function ${fnName}`);
   if (idx === -1) throw new Error(`${fnName} not found in source`);
-  return src.slice(idx, idx + 1500);
+  return extractSourceRegion(src, `export function ${fnName}`);
 }
 
 function hasRawExecSync(body: string): boolean {

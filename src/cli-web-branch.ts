@@ -160,6 +160,10 @@ export function parseCliArgs(argv: string[]): CliFlags {
   return flags
 }
 
+export function buildHeadlessAutoArgs(flags: Pick<CliFlags, 'messages' | 'model'>): string[] {
+  return flags.model ? ['--model', flags.model, ...flags.messages] : [...flags.messages]
+}
+
 export { getProjectSessionsDir } from './project-sessions.js'
 
 export function migrateLegacyFlatSessions(baseSessionsDir: string, projectSessionsDir: string): void {

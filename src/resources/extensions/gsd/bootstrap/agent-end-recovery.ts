@@ -7,6 +7,7 @@ import {
   maybeHandleEmptyIntentTurn,
   resetEmptyTurnCounter,
 } from "../guided-flow.js";
+import { clearPathCache } from "../paths.js";
 import { getAutoDashboardData, getAutoModeStartModel, isAutoActive, pauseAuto, setCurrentDispatchedModelId } from "../auto.js";
 import { getNextFallbackModel, resolveModelWithFallbacksForUnit } from "../preferences.js";
 import { pauseAutoForProviderError } from "../provider-error-pause.js";
@@ -76,6 +77,16 @@ export async function handleAgentEnd(
   event: { messages: any[] },
   ctx: ExtensionContext,
 ): Promise<void> {
+  // #4648 — Invalidate the directory-listing cache before any artifact-existence
+  // checks. The LLM may have written milestone files (CONTEXT.md, ROADMAP.md,
+  // PROJECT.md, REQUIREMENTS.md) via tool calls during the turn that just
+  // ended. `paths.ts` caches readdir() results without a TTL, so without this
+  // flush, `resolveMilestoneFile` returns the pre-write listing and the guards
+  // below (`checkAutoStartAfterDiscuss` and `maybeHandleReadyPhraseWithoutFiles`)
+  // falsely report files as missing — producing a spurious "ready signal
+  // rejected" loop even though the files are on disk.
+  clearPathCache();
+
   if (checkAutoStartAfterDiscuss()) {
     clearDiscussionFlowState();
     return;

@@ -51,7 +51,7 @@ import { getEligibleSlices } from "../slice-parallel-eligibility.js";
 import { startSliceParallel } from "../slice-parallel-orchestrator.js";
 import { isDbAvailable, getMilestoneSlices } from "../gsd-db.js";
 import type { MinimalModelRegistry } from "../context-budget.js";
-import { ensurePlanV2Graph } from "../uok/plan-v2.js";
+import { ensurePlanV2Graph, isMissingFinalizedContextResult } from "../uok/plan-v2.js";
 import { resolveUokFlags } from "../uok/flags.js";
 import { UokGateRunner } from "../uok/gate-runner.js";
 import { resetEvidence, loadEvidenceFromDisk } from "../safety/evidence-collector.js";
@@ -421,27 +421,41 @@ export async function runPreDispatch(
     const compiled = ensurePlanV2Graph(s.basePath, state);
     if (!compiled.ok) {
       const reason = compiled.reason ?? "Plan v2 compilation failed";
+      if (isMissingFinalizedContextResult(compiled)) {
+        await runPreDispatchGate({
+          gateId: "plan-v2-gate",
+          gateType: "policy",
+          outcome: "pass",
+          failureClass: "none",
+          rationale: "plan v2 missing context recovery deferred to dispatch",
+          findings: reason,
+          milestoneId: state.activeMilestone?.id ?? undefined,
+        });
+      } else {
+        await runPreDispatchGate({
+          gateId: "plan-v2-gate",
+          gateType: "policy",
+          outcome: "manual-attention",
+          failureClass: "manual-attention",
+          rationale: "plan v2 compile gate failed",
+          findings: reason,
+          milestoneId: state.activeMilestone?.id ?? undefined,
+        });
+        ctx.ui.notify(`Plan gate failed-closed: ${reason}\n\nIf this keeps happening, try: /gsd doctor heal`, "error");
+        await deps.pauseAuto(ctx, pi);
+        return { action: "break", reason: "plan-v2-gate-failed" };
+      }
+    }
+    if (compiled.ok) {
       await runPreDispatchGate({
         gateId: "plan-v2-gate",
         gateType: "policy",
-        outcome: "manual-attention",
-        failureClass: "manual-attention",
-        rationale: "plan v2 compile gate failed",
-        findings: reason,
+        outcome: "pass",
+        failureClass: "none",
+        rationale: "plan v2 compile gate passed",
         milestoneId: state.activeMilestone?.id ?? undefined,
       });
-      ctx.ui.notify(`Plan gate failed-closed: ${reason}\n\nIf this keeps happening, try: /gsd doctor heal`, "error");
-      await deps.pauseAuto(ctx, pi);
-      return { action: "break", reason: "plan-v2-gate-failed" };
     }
-    await runPreDispatchGate({
-      gateId: "plan-v2-gate",
-      gateType: "policy",
-      outcome: "pass",
-      failureClass: "none",
-      rationale: "plan v2 compile gate passed",
-      milestoneId: state.activeMilestone?.id ?? undefined,
-    });
   }
   deps.syncCmuxSidebar(prefs, state);
   let mid = state.activeMilestone?.id;
@@ -1781,9 +1795,23 @@ export async function runUnitPhase(
 
   if (unitResult.status === "cancelled") {
     const errorCategory = unitResult.errorContext?.category;
-    // Provider-error pause: pauseAuto already handled cleanup and scheduled
-    // recovery. Don't hard-stop — just break out of the loop (#2762).
+    // Provider-error pause: agent_end recovery normally pauses before this
+    // branch. Provider readiness failures happen before dispatch, so pause here
+    // if nothing upstream already did.
     if (errorCategory === "provider") {
+      if (!s.paused) {
+        const detail = unitResult.errorContext?.message ?? `Provider unavailable for ${unitType} ${unitId}`;
+        await pauseAutoForProviderError(
+          ctx.ui,
+          detail,
+          () => deps.pauseAuto(ctx, pi),
+          {
+            isRateLimit: false,
+            isTransient: Boolean(unitResult.errorContext?.isTransient),
+            retryAfterMs: unitResult.errorContext?.retryAfterMs,
+          },
+        );
+      }
       await emitCancelledUnitEnd(ic, unitType, unitId, unitStartSeq, unitResult.errorContext);
       debugLog("autoLoop", { phase: "exit", reason: "provider-pause", isTransient: unitResult.errorContext?.isTransient });
       return { action: "break", reason: "provider-pause" };

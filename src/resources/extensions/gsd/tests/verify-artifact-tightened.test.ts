@@ -15,6 +15,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { extractSourceRegion } from "./test-helpers.ts";
 
 const src = readFileSync(
   resolve(process.cwd(), 'src', 'resources', 'extensions', 'gsd', 'auto-recovery.ts'),
@@ -28,7 +29,7 @@ describe('verifyExpectedArtifact legacy branch tightened (#3607)', () => {
     assert.ok(legacyIdx !== -1, 'LEGACY comment must exist')
 
     // Check the code within a reasonable window after the LEGACY comment
-    const legacyBlock = src.slice(legacyIdx, legacyIdx + 600)
+    const legacyBlock = extractSourceRegion(src, 'LEGACY: Pre-migration fallback')
 
     assert.ok(
       !legacyBlock.includes('hdRe'),
@@ -40,7 +41,7 @@ describe('verifyExpectedArtifact legacy branch tightened (#3607)', () => {
     const legacyIdx = src.indexOf('LEGACY: Pre-migration fallback')
     assert.ok(legacyIdx !== -1)
 
-    const legacyBlock = src.slice(legacyIdx, legacyIdx + 600)
+    const legacyBlock = extractSourceRegion(src, 'LEGACY: Pre-migration fallback')
 
     assert.ok(
       legacyBlock.includes('cbRe'),
@@ -58,7 +59,7 @@ describe('verifyExpectedArtifact legacy branch tightened (#3607)', () => {
     const legacyIdx = src.indexOf('LEGACY: Pre-migration fallback')
     assert.ok(legacyIdx !== -1)
 
-    const legacyBlock = src.slice(legacyIdx, legacyIdx + 1000)
+    const legacyBlock = extractSourceRegion(src, 'LEGACY: Pre-migration fallback')
 
     // The else branch: no plan file means cannot verify
     assert.ok(
@@ -71,7 +72,7 @@ describe('verifyExpectedArtifact legacy branch tightened (#3607)', () => {
     const legacyIdx = src.indexOf('LEGACY: Pre-migration fallback')
     assert.ok(legacyIdx !== -1)
 
-    const legacyBlock = src.slice(legacyIdx, legacyIdx + 1000)
+    const legacyBlock = extractSourceRegion(src, 'LEGACY: Pre-migration fallback')
 
     assert.ok(
       legacyBlock.includes('DB available but task row not found'),
@@ -80,7 +81,7 @@ describe('verifyExpectedArtifact legacy branch tightened (#3607)', () => {
 
     // The comment should be followed by a return false
     const commentIdx = legacyBlock.indexOf('DB available but task row not found')
-    const afterComment = legacyBlock.slice(commentIdx, commentIdx + 200)
+    const afterComment = extractSourceRegion(legacyBlock, 'DB available but task row not found')
     assert.ok(
       afterComment.includes('return false'),
       'missing task row when DB available must return false',

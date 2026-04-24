@@ -8,7 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createTestContext } from "./test-helpers.ts";
+import {createTestContext, extractSourceRegion } from "./test-helpers.ts";
 
 const { assertTrue, report } = createTestContext();
 
@@ -22,7 +22,7 @@ console.log("\n=== #2337: Worktree teardown preserves submodule state ===");
 const removeWorktreeIdx = src.indexOf("export function removeWorktree");
 assertTrue(removeWorktreeIdx > 0, "worktree-manager.ts exports removeWorktree");
 
-const fnBody = src.slice(removeWorktreeIdx, removeWorktreeIdx + 6000);
+const fnBody = extractSourceRegion(src, "export function removeWorktree");
 
 // ── Test 2: The function checks for submodules before force removal ─────
 

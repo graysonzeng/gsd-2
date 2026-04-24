@@ -5,6 +5,9 @@ import {
   formatSlicePRBody,
   formatTaskIssueBody,
   formatSummaryComment,
+  formatSwarmLanePRBody,
+  formatSwarmReleaseChecklistBody,
+  SWARM_LANE_LABELS,
 } from "../templates.ts";
 
 describe("templates", () => {
@@ -105,6 +108,62 @@ describe("templates", () => {
     it("handles empty data gracefully", () => {
       const comment = formatSummaryComment({});
       assert.equal(typeof comment, "string");
+    });
+  });
+
+  describe("swarm delivery routines", () => {
+    it("formats lane PR bodies with impact, risks, rollback, and evidence", () => {
+      const body = formatSwarmLanePRBody({
+        lane: {
+          id: "writer",
+          branch: "lane/single-writer",
+          owner: "@owner",
+          latestCommit: "abc1234",
+          changedContracts: ["WriterToken"],
+          testEvidence: ["npm run typecheck:extensions"],
+        },
+        impactArea: "Single-writer UOK metadata.",
+        transitionRisks: ["Writer token lifecycle regression"],
+        rollbackPlan: ["Disable writer sequence enrichment"],
+        linkedIssue: 123,
+      });
+
+      assert.ok(body.includes("`lane/writer`"));
+      assert.ok(body.includes("Single-writer UOK metadata."));
+      assert.ok(body.includes("- [ ] Writer token lifecycle regression"));
+      assert.ok(body.includes("- [ ] Disable writer sequence enrichment"));
+      assert.ok(body.includes("- [ ] npm run typecheck:extensions"));
+      assert.ok(body.includes("Closes #123"));
+    });
+
+    it("formats release checklist bodies from lane state", () => {
+      const body = formatSwarmReleaseChecklistBody({
+        integrationBranch: "integration/uok-swarm",
+        lanes: [
+          { id: "workflow", branch: "lane/workflow-engine", owner: "@a", latestCommit: "1111111" },
+          { id: "state", branch: "lane/state-machine", blockers: ["matrix gap"] },
+        ],
+        parityReport: "No critical mismatches.",
+        rollbackDrill: "Passed fallback drill.",
+        requiredChecks: ["unit", "integration"],
+      });
+
+      assert.ok(body.includes("`integration/uok-swarm`"));
+      assert.ok(body.includes("| `lane/workflow` | `lane/workflow-engine` | @a | `1111111` | ready |"));
+      assert.ok(body.includes("| `lane/state` | `lane/state-machine` |  |  | blocked |"));
+      assert.ok(body.includes("- [ ] UOK parity report attached or linked"));
+      assert.ok(body.includes("- [ ] unit"));
+      assert.ok(body.includes("Passed fallback drill."));
+    });
+
+    it("declares expected swarm lane labels for generated GitHub routines", () => {
+      assert.deepEqual(Object.values(SWARM_LANE_LABELS), [
+        "lane/workflow",
+        "lane/state",
+        "lane/writer",
+        "lane/uok",
+        "lane/github",
+      ]);
     });
   });
 });

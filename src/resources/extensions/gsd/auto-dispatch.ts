@@ -33,7 +33,8 @@ import { parseRoadmap } from "./parsers-legacy.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { logWarning, logError } from "./workflow-logger.js";
 import { join } from "node:path";
-import { hasImplementationArtifacts, classifyMilestoneSummaryContent } from "./auto-recovery.js";
+import { hasImplementationArtifacts } from "./auto-recovery.js";
+import { classifyMilestoneSummaryContent } from "./milestone-summary-classifier.js";
 import { shouldBlockMilestoneClose } from "./phase-discipline/verify-fuse.js";
 import {
   buildDiscussMilestonePrompt,
@@ -59,6 +60,7 @@ import {
 import { resolveModelWithFallbacksForUnit } from "./preferences-models.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { selectReactiveDispatchBatch } from "./uok/execution-graph.js";
+import { EXECUTION_ENTRY_PHASES, hasFinalizedMilestoneContext } from "./uok/plan-v2.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -282,6 +284,38 @@ export const DISPATCH_RULES: DispatchRule[] = [
     },
   },
   {
+    // #4671 — Recovery path for execution-entry phases with missing CONTEXT.md.
+    //
+    // Once `deriveStateFromDb` returns an execution-entry phase (executing /
+    // summarizing / validating-milestone / completing-milestone), the
+    // pre-planning guard at `pre-planning (no context) → discuss-milestone`
+    // no longer fires. The plan-v2 gate correctly detects the missing context
+    // but can only block — it cannot redispatch. Without this rule the
+    // milestone is stuck until `/gsd doctor heal` repairs it (and heal
+    // historically missed this check too).
+    //
+    // Fire BEFORE the execution-entry phase rules so we redispatch to
+    // `discuss-milestone` instead of hitting the plan-v2 gate.
+    name: "execution-entry phase (no context) → discuss-milestone",
+    match: async ({ state, mid, midTitle, basePath, structuredQuestionsAvailable }) => {
+      if (!EXECUTION_ENTRY_PHASES.has(state.phase)) return null;
+      // Align with the plan-v2 gate's lookup semantics: whitespace-only counts
+      // as missing, and an auto worktree may fall back to GSD_PROJECT_ROOT.
+      if (hasFinalizedMilestoneContext(basePath, mid)) return null;
+      return {
+        action: "dispatch",
+        unitType: "discuss-milestone",
+        unitId: mid,
+        prompt: await buildDiscussMilestonePrompt(
+          mid,
+          midTitle,
+          basePath,
+          structuredQuestionsAvailable,
+        ),
+      };
+    },
+  },
+  {
     name: "summarizing → complete-slice",
     match: async ({ state, mid, midTitle, basePath }) => {
       if (state.phase !== "summarizing") return null;
@@ -457,6 +491,26 @@ export const DISPATCH_RULES: DispatchRule[] = [
         unitType: "plan-milestone",
         unitId: mid,
         prompt: await buildPlanMilestonePrompt(mid, midTitle, basePath),
+      };
+    },
+  },
+  {
+    name: "planning (require_slice_discussion) → pause for discussion (#3454)",
+    match: async ({ state, mid, basePath, prefs }) => {
+      if (state.phase !== "planning") return null;
+      if (!prefs?.phases?.require_slice_discussion) return null;
+      if (!state.activeSlice) return null;
+      // Only pause if the slice has no context file yet (discussion not done).
+      // resolveSliceFile returns null when the file does not exist on disk,
+      // but cachedReaddir could return a stale hit — verify with existsSync
+      // so the guard is defence-in-depth and the contract is explicit at the
+      // call site.
+      const sliceContextFile = resolveSliceFile(basePath, mid, state.activeSlice.id, "CONTEXT");
+      if (sliceContextFile && existsSync(sliceContextFile)) return null; // discussion already done, proceed
+      return {
+        action: "stop" as const,
+        reason: `Slice ${state.activeSlice.id} requires discussion before planning (require_slice_discussion is enabled). Run /gsd discuss to discuss this slice, then /gsd auto to resume.`,
+        level: "info" as const,
       };
     },
   },
@@ -924,7 +978,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
 
       const existingSummary = resolveMilestoneFile(basePath, mid, "SUMMARY");
       let summaryOutcome: "success" | "failure" | "unknown" = "unknown";
-      if (existingSummary && isDbAvailable()) {
+      if (existingSummary) {
         const summaryContent = await loadFile(existingSummary);
         if (summaryContent) {
           summaryOutcome = classifyMilestoneSummaryContent(summaryContent);
@@ -1034,11 +1088,15 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // - success summary: reconcile DB and skip re-dispatch
       // - failure summary: pause/fail-closed
       // - unknown summary: pause/fail-closed
-      if (existingSummary && isDbAvailable()) {
-        const milestone = getMilestone(mid);
-        const status = milestone?.status ?? "missing";
+      if (existingSummary) {
+        const milestone = isDbAvailable() ? getMilestone(mid) : null;
+        const status = milestone?.status ?? (isDbAvailable() ? "missing" : "unavailable");
 
         if (summaryOutcome === "success") {
+          if (!isDbAvailable()) {
+            logWarning("dispatch", `Milestone ${mid} SUMMARY indicates completion while DB is unavailable — skipping duplicate complete-milestone dispatch`);
+            return { action: "skip" };
+          }
           try {
             updateMilestoneStatus(mid, "complete", new Date().toISOString());
             logWarning("dispatch", `Milestone ${mid} SUMMARY indicates completion while DB status was "${status}" — reconciled DB to complete (#4658)`);

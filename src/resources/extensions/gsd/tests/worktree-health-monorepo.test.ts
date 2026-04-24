@@ -8,7 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createTestContext } from "./test-helpers.ts";
+import {createTestContext, extractSourceRegion } from "./test-helpers.ts";
 
 const { assertTrue, report } = createTestContext();
 
@@ -22,7 +22,7 @@ console.log("\n=== #2347: Worktree health check supports monorepos ===");
 const healthCheckIdx = src.indexOf("Worktree health check");
 assertTrue(healthCheckIdx > 0, "auto/phases.ts has worktree health check section");
 
-const healthCheckRegion = src.slice(healthCheckIdx, healthCheckIdx + 2000);
+const healthCheckRegion = extractSourceRegion(src, "Worktree health check");
 
 // ── Test 2: The check walks parent directories for project markers ──────
 

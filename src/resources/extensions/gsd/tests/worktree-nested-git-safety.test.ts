@@ -13,7 +13,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createTestContext } from "./test-helpers.ts";
+import {createTestContext, extractSourceRegion } from "./test-helpers.ts";
 
 const { assertTrue, report } = createTestContext();
 
@@ -27,7 +27,7 @@ console.log("\n=== #2616: Worktree cleanup detects nested .git directories ===")
 const removeWorktreeIdx = src.indexOf("export function removeWorktree");
 assertTrue(removeWorktreeIdx > 0, "worktree-manager.ts exports removeWorktree");
 
-const fnBody = src.slice(removeWorktreeIdx, removeWorktreeIdx + 5000);
+const fnBody = extractSourceRegion(src, "export function removeWorktree");
 
 const detectsNestedGit =
   fnBody.includes("nested") && fnBody.includes(".git") ||

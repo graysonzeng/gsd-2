@@ -10,7 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createTestContext } from "./test-helpers.ts";
+import {createTestContext, extractSourceRegion } from "./test-helpers.ts";
 
 const { assertTrue, report } = createTestContext();
 
@@ -27,7 +27,14 @@ console.log("\n=== #2330: Merge conflict stops auto loop ===");
 const methodStart = resolverSrc.indexOf("Worktree-mode merge:");
 assertTrue(methodStart > 0, "worktree-resolver has _mergeWorktreeMode method");
 
-const methodBody = resolverSrc.slice(methodStart, methodStart + 6000);
+// Slice from the _mergeWorktreeMode docblock to the next method boundary
+// (Branch-mode merge:) so that docblock/body growth doesn't silently drop
+// the `throw err` out of the search window.
+const methodEnd = resolverSrc.indexOf("Branch-mode merge:", methodStart);
+const methodBody = resolverSrc.slice(
+  methodStart,
+  methodEnd > 0 ? methodEnd : methodStart + 8000,
+);
 const rethrowsConflict =
   methodBody.includes("MergeConflictError") &&
   methodBody.includes("throw err");
@@ -51,7 +58,7 @@ const instanceofIdx = phasesSrc.indexOf("instanceof MergeConflictError");
 assertTrue(instanceofIdx > 0, "auto/phases.ts has instanceof MergeConflictError check");
 
 if (instanceofIdx > 0) {
-  const afterHandler = phasesSrc.slice(instanceofIdx, instanceofIdx + 500);
+  const afterHandler = extractSourceRegion(phasesSrc, "instanceof MergeConflictError");
   const stopsLoop =
     afterHandler.includes("stopAuto") ||
     afterHandler.includes('action: "break"') ||

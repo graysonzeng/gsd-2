@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { extractSourceRegion } from "./test-helpers.ts";
 
 const sourcePath = join(import.meta.dirname, "..", "auto-start.ts");
 const source = readFileSync(sourcePath, "utf-8");
@@ -53,7 +54,7 @@ test("bootstrapAutoSession checks manual session override before preferences", (
   );
 
   // Preferred model should still be part of fallback resolution.
-  const snapshotBlock = source.slice(snapshotIdx, snapshotIdx + 400);
+  const snapshotBlock = extractSourceRegion(source, "const startModelSnapshot = manualSessionOverride");
   assert.ok(
     snapshotBlock.includes("validatedPreferredModel") || snapshotBlock.includes("preferredModel"),
     "startModelSnapshot must still consider preferredModel for built-in providers",
@@ -64,7 +65,7 @@ test("bootstrapAutoSession prioritizes current session model over PREFERENCES.md
   const snapshotIdx = source.indexOf("const startModelSnapshot = manualSessionOverride");
   assert.ok(snapshotIdx > -1, "auto-start.ts should build startModelSnapshot");
 
-  const snapshotBlock = source.slice(snapshotIdx, snapshotIdx + 500);
+  const snapshotBlock = extractSourceRegion(source, "const startModelSnapshot = manualSessionOverride");
   const currentIdx = snapshotBlock.indexOf("currentSessionModel");
   const preferredIdx = snapshotBlock.indexOf("validatedPreferredModel");
 
@@ -97,7 +98,7 @@ test("bootstrapAutoSession prefers session model over PREFERENCES.md when provid
   const preferredIdx = source.indexOf("const preferredModel = ");
   assert.ok(preferredIdx > -1, "auto-start.ts should build preferredModel");
 
-  const preferredBlock = source.slice(preferredIdx, preferredIdx + 200);
+  const preferredBlock = extractSourceRegion(source, "const preferredModel = ");
   assert.ok(
     preferredBlock.includes("sessionProviderIsCustom"),
     "preferredModel must be gated on sessionProviderIsCustom so PREFERENCES.md is skipped for custom providers",

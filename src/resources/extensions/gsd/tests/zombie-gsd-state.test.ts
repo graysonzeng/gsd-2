@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { createTestContext } from "./test-helpers.ts";
+import {createTestContext, extractSourceRegion } from "./test-helpers.ts";
 
 const { assertTrue, assertMatch, assertNoMatch, report } = createTestContext();
 
@@ -26,7 +26,7 @@ assertTrue(smartEntryIdx >= 0, "guided-flow.ts defines showSmartEntry");
 
 // Extract the region between showSmartEntry and the first showProjectInit call
 // This is where the init wizard gate lives.
-const afterSmartEntry = smartEntryIdx >= 0 ? guidedFlowSrc.slice(smartEntryIdx, smartEntryIdx + 3000) : "";
+const afterSmartEntry = smartEntryIdx >= 0 ? extractSourceRegion(guidedFlowSrc, "export async function showSmartEntry(") : "";
 
 // The gate must NOT be a bare `!existsSync(gsdRoot(basePath))` check.
 // It must also verify that bootstrap artifacts (PREFERENCES.md or milestones/) exist.
@@ -48,7 +48,7 @@ assertTrue(
 // Find the specific init wizard gate pattern — the detection preamble block.
 const detectionPreambleIdx = afterSmartEntry.indexOf("Detection preamble");
 const detectionRegion = detectionPreambleIdx >= 0
-  ? afterSmartEntry.slice(detectionPreambleIdx, detectionPreambleIdx + 600)
+  ? extractSourceRegion(afterSmartEntry, "Detection preamble")
   : afterSmartEntry.slice(0, 1500);
 
 // The gate condition must reference PREFERENCES.md or milestones (bootstrap artifacts)

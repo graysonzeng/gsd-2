@@ -16,7 +16,7 @@
  * isolated unit testing.
  */
 
-import { createTestContext } from "./test-helpers.ts";
+import {createTestContext, extractSourceRegion } from "./test-helpers.ts";
 import {
   withTimeout,
   FINALIZE_PRE_TIMEOUT_MS,
@@ -163,7 +163,7 @@ function getRunFinalizeBody(phasesSource: string): string {
   assertTrue(preVerIdx > 0, "postUnitPreVerification should appear in runFinalize");
 
   // The first withTimeout should wrap postUnitPreVerification (not postUnitPostVerification)
-  const firstWithTimeout = fnBody.slice(preTimeoutIdx, preTimeoutIdx + 200);
+  const firstWithTimeout = extractSourceRegion(fnBody, "withTimeout(");
   assertTrue(
     firstWithTimeout.includes("postUnitPreVerification"),
     "first withTimeout in runFinalize should wrap postUnitPreVerification",

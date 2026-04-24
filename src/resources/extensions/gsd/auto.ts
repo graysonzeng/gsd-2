@@ -169,6 +169,7 @@ import {
   buildLoopRemediationSteps,
   reconcileMergeState,
 } from "./auto-recovery.js";
+import { classifyMilestoneSummaryContent } from "./milestone-summary-classifier.js";
 import { resolveDispatch, DISPATCH_RULES } from "./auto-dispatch.js";
 import { getErrorMessage } from "./error-utils.js";
 import { recoverFailedMigration } from "./migrate-external.js";
@@ -486,6 +487,11 @@ export function isAutoActive(): boolean {
   return s.active;
 }
 
+/** Test-only seam for validating auto-mode guards (#4704). Do not use in production code. */
+export function _setAutoActiveForTest(active: boolean): void {
+  s.active = active;
+}
+
 export function isAutoPaused(): boolean {
   return s.paused;
 }
@@ -790,6 +796,43 @@ export async function stopAuto(
   if (!s.active && !s.paused) return;
   const loadedPreferences = loadEffectiveGSDPreferences(s.basePath || undefined)?.preferences;
   const reasonSuffix = reason ? ` — ${reason}` : "";
+
+  // #4764 — telemetry: record the exit reason and whether the current milestone
+  // was merged before we entered stopAuto. This is the producer-side signal for
+  // the #4761 orphan class: milestoneMerged=false + currentMilestoneId present
+  // is exactly the pattern that strands work.
+  try {
+    const { emitAutoExit } = await import("./worktree-telemetry.js");
+    type AutoExitReason =
+      | "pause" | "stop" | "blocked" | "merge-conflict" | "merge-failed"
+      | "slice-merge-conflict" | "all-complete" | "no-active-milestone" | "other";
+    // Normalize the free-form reason to a closed set so the telemetry
+    // aggregator buckets stably. Raw detail is preserved in the phases.ts
+    // notification and the notify'd error string.
+    const rawReason = reason ?? "stop";
+    const normalizedReason: AutoExitReason = rawReason.startsWith("Blocked:")
+      ? "blocked"
+      : rawReason.startsWith("Merge conflict")
+        ? "merge-conflict"
+        : rawReason.startsWith("Merge error") || rawReason.startsWith("Merge failed")
+          ? "merge-failed"
+          : rawReason.startsWith("slice-merge-conflict")
+            ? "slice-merge-conflict"
+            : rawReason === "All milestones complete"
+              ? "all-complete"
+              : rawReason === "No active milestone"
+                ? "no-active-milestone"
+                : rawReason === "stop" || rawReason === "pause"
+                  ? rawReason
+                  : "other";
+    emitAutoExit(s.originalBasePath || s.basePath, {
+      reason: normalizedReason,
+      milestoneId: s.currentMilestoneId ?? undefined,
+      milestoneMerged: s.milestoneMergedInPhases === true,
+    });
+  } catch (err) {
+    logWarning("engine", `auto-exit telemetry failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   try {
     // ── Step 1: Timers and locks ──
@@ -1416,7 +1459,15 @@ export async function startAuto(
           // Validate the milestone still exists and isn't already complete (#1664).
           const mDir = resolveMilestonePath(base, meta.milestoneId);
           const summaryFile = resolveMilestoneFile(base, meta.milestoneId, "SUMMARY");
-          if (!mDir || summaryFile) {
+          let summaryIsTerminal = false;
+          if (summaryFile) {
+            try {
+              summaryIsTerminal = classifyMilestoneSummaryContent(readFileSync(summaryFile, "utf-8")) !== "failure";
+            } catch {
+              summaryIsTerminal = false;
+            }
+          }
+          if (!mDir || summaryIsTerminal) {
             try { unlinkSync(pausedPath); } catch (err) {
               if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
                 logWarning("session", `pause file cleanup failed: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });

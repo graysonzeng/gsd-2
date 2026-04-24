@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { extractSourceRegion } from "./test-helpers.ts";
 import {
   resolveAgentEnd,
   resolveAgentEndCancelled,
@@ -11,6 +12,7 @@ import {
   autoLoop,
   detectStuck,
   _resetPendingResolve,
+  _hasPendingResolveForTest,
   _setActiveSession,
   isSessionSwitchInFlight,
   type UnitResult,
@@ -434,6 +436,7 @@ test("runUnit cancels before dispatch when provider is not request-ready (#4555)
     /Provider anthropic is not request-ready/,
   );
   assert.equal(pi.calls.length, 0, "sendMessage must not be called when provider is not ready");
+  assert.equal(_hasPendingResolveForTest(), false, "provider cancellation must clear the pending resolver");
 });
 
 test("runUnit cancels before dispatch using currentUnitModel provider when set (#4555)", async () => {
@@ -648,7 +651,7 @@ test("auto/phases.ts: selectAndApplyModel called exactly once and before updateP
   // Extract the runUnitPhase function body
   const fnStart = src.indexOf("export async function runUnitPhase");
   assert.ok(fnStart > 0, "runUnitPhase should exist in phases.ts");
-  const fnBody = src.slice(fnStart, fnStart + 16000);
+  const fnBody = extractSourceRegion(src, "export async function runUnitPhase");
 
   // selectAndApplyModel must appear exactly once
   const allOccurrences = [...fnBody.matchAll(/selectAndApplyModel\(/g)];
@@ -901,6 +904,45 @@ test("autoLoop exits on terminal complete state", async (t) => {
   assert.ok(
     !deps.callLog.includes("resolveDispatch"),
     "should not dispatch when complete",
+  );
+});
+
+test("autoLoop pauses when provider readiness cancels before dispatch", async () => {
+  _resetPendingResolve();
+
+  const notifications: Array<{ message: string; level?: string }> = [];
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  ctx.ui.notify = (message: string, level?: string) => {
+    notifications.push({ message, level });
+  };
+  ctx.model = { provider: "anthropic", id: "claude-opus-4-6" };
+  ctx.modelRegistry = {
+    getProviderAuthMode: () => "api-key",
+    isProviderRequestReady: () => false,
+  };
+
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+  const deps = makeMockDeps({
+    selectAndApplyModel: async () => ({
+      routing: null,
+      appliedModel: { provider: "anthropic", id: "claude-opus-4-6" },
+    }),
+  });
+
+  await autoLoop(ctx, pi, s, deps);
+
+  assert.equal(pi.calls.length, 0, "provider readiness cancellation must not dispatch a message");
+  assert.ok(deps.callLog.includes("pauseAuto"), "provider readiness cancellation should pause auto-mode");
+  assert.ok(!deps.callLog.includes("stopAuto"), "provider readiness cancellation should not hard-stop auto-mode");
+  assert.ok(
+    !deps.callLog.includes("postUnitPreVerification"),
+    "post-unit verification must not run after pre-dispatch provider cancellation",
+  );
+  assert.ok(
+    notifications.some(n => /Provider anthropic is not request-ready/.test(n.message)),
+    "provider pause should notify with the readiness failure",
   );
 });
 
@@ -1552,9 +1594,7 @@ test("auto.ts startAuto dispatches through the UOK kernel wrapper with explicit 
   // Find the startAuto function body
   const fnIdx = src.indexOf("export async function startAuto");
   assert.ok(fnIdx > -1, "startAuto must exist in auto.ts");
-  const fnEnd = src.indexOf("\n// ─── ", fnIdx + 100);
-  const fnBlock =
-    fnEnd > -1 ? src.slice(fnIdx, fnEnd) : src.slice(fnIdx, fnIdx + 5000);
+  const fnBlock = extractSourceRegion(src, "export async function startAuto", "\n// ─── ");
   assert.ok(
     fnBlock.includes("runAutoLoopWithUok("),
     "startAuto must dispatch through runAutoLoopWithUok()",
@@ -1576,9 +1616,7 @@ test("startAuto calls selfHealRuntimeRecords before autoLoop (#1727)", { skip: "
   );
   const fnIdx = src.indexOf("export async function startAuto");
   assert.ok(fnIdx > -1, "startAuto must exist in auto.ts");
-  const fnEnd = src.indexOf("\n// ─── ", fnIdx + 100);
-  const fnBlock =
-    fnEnd > -1 ? src.slice(fnIdx, fnEnd) : src.slice(fnIdx, fnIdx + 5000);
+  const fnBlock = extractSourceRegion(src, "export async function startAuto", "\n// ─── ");
 
   // Both autoLoop call sites must be preceded by selfHealRuntimeRecords
   const healIdx = fnBlock.indexOf("selfHealRuntimeRecords");
@@ -1603,7 +1641,7 @@ test("startAuto guards against concurrent invocation (#2923)", () => {
   const fnIdx = src.indexOf("export async function startAuto");
   assert.ok(fnIdx > -1, "startAuto must exist in auto.ts");
   // The guard must appear before any other logic in the function body
-  const fnBody = src.slice(fnIdx, fnIdx + 500);
+  const fnBody = extractSourceRegion(src, "export async function startAuto");
   const activeGuard = fnBody.indexOf("if (s.active)");
   assert.ok(activeGuard > -1, "startAuto must check s.active to prevent concurrent auto-loops");
   const returnIdx = fnBody.indexOf("return;", activeGuard);
@@ -1664,9 +1702,16 @@ test("auto-timeout-recovery.ts calls resolveAgentEnd instead of dispatchNextUnit
     !src.includes("await dispatchNextUnit"),
     "auto-timeout-recovery.ts must not call dispatchNextUnit",
   );
+  // After PR #4716, advance branches go through bumpAndResolveSynthetic()
+  // (which bumps the turn epoch and calls resolveAgentEnd atomically).
+  // Either direct resolveAgentEnd() or the helper satisfies the invariant:
+  // the loop must be re-iterated on timeout recovery.
+  const reIteratesLoop =
+    src.includes("resolveAgentEnd(") ||
+    src.includes("bumpAndResolveSynthetic(");
   assert.ok(
-    src.includes("resolveAgentEnd("),
-    "auto-timeout-recovery.ts must call resolveAgentEnd to re-iterate the loop on timeout recovery",
+    reIteratesLoop,
+    "auto-timeout-recovery.ts must call resolveAgentEnd (directly or via bumpAndResolveSynthetic) to re-iterate the loop on timeout recovery",
   );
 });
 

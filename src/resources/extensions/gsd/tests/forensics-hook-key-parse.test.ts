@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractSourceRegion } from "./test-helpers.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const gsdDir = join(__dirname, "..");
@@ -43,7 +44,7 @@ describe("forensics hook compound key parsing (#2826)", () => {
   it("detectMissingArtifacts delegates to splitCompletedKey", () => {
     const fnStart = forensicsSrc.indexOf("function detectMissingArtifacts(");
     assert.ok(fnStart !== -1, "detectMissingArtifacts must exist in forensics.ts");
-    const fnBody = forensicsSrc.slice(fnStart, fnStart + 1000);
+    const fnBody = extractSourceRegion(forensicsSrc, "function detectMissingArtifacts(");
     assert.ok(
       fnBody.includes("splitCompletedKey("),
       "detectMissingArtifacts must call splitCompletedKey() rather than inline the split logic",
