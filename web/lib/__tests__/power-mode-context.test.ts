@@ -9,6 +9,7 @@ import {
   getPowerModeAutoPresentation,
   summarizeContextError,
 } from "../power-mode-context.ts"
+import { reconcileActiveToolExecution } from "../gsd-workspace-store.tsx"
 
 function makeState(overrides: Record<string, unknown> = {}) {
   return {
@@ -86,6 +87,76 @@ describe("power-mode context helpers", () => {
     assert.deepEqual(presentation, { label: "Complete", tone: "muted" })
   })
 
+  test("maps active when bridge reports authoritative activity for a non-complete phase", () => {
+    const presentation = getPowerModeAutoPresentation(
+      { active: false, paused: false } as never,
+      { active: { phase: "validating-milestone" } } as never,
+      { sessionState: { isStreaming: true } } as never,
+    )
+
+    assert.deepEqual(presentation, { label: "Active", tone: "success" })
+  })
+
+  test("does not map phase-only state to active without authoritative bridge activity", () => {
+    const presentation = getPowerModeAutoPresentation(
+      { active: false, paused: false } as never,
+      { active: { phase: "validating-milestone" } } as never,
+      { sessionState: { isStreaming: false, activeToolExecution: null } } as never,
+    )
+
+    assert.deepEqual(presentation, { label: "Inactive", tone: "muted" })
+  })
+
+  test("reconciles stale active tool to the authoritative bridge tool after reconnect", () => {
+    const next = reconcileActiveToolExecution(
+      { id: "stale-tool", name: "grep_search", args: { path: "src" } },
+      {
+        sessionState: {
+          isStreaming: false,
+          activeToolExecution: {
+            toolCallId: "live-tool",
+            toolName: "read_file",
+            args: { file_path: "/tmp/demo.ts" },
+          },
+        },
+      } as never,
+    )
+
+    assert.deepEqual(next, {
+      id: "live-tool",
+      name: "read_file",
+      args: { file_path: "/tmp/demo.ts" },
+    })
+  })
+
+  test("clears stale active tool when bridge reports no in-flight tool and not streaming", () => {
+    const next = reconcileActiveToolExecution(
+      { id: "stale-tool", name: "grep_search", args: { path: "src" } },
+      {
+        sessionState: {
+          isStreaming: false,
+          activeToolExecution: null,
+        },
+      } as never,
+    )
+
+    assert.equal(next, null)
+  })
+
+  test("preserves current active tool while bridge is still streaming but has no authoritative tool yet", () => {
+    const next = reconcileActiveToolExecution(
+      { id: "live-tool", name: "grep_search", args: { path: "src" } },
+      {
+        sessionState: {
+          isStreaming: true,
+          activeToolExecution: null,
+        },
+      } as never,
+    )
+
+    assert.deepEqual(next, { id: "live-tool", name: "grep_search", args: { path: "src" } })
+  })
+
   test("truncates long context errors", () => {
     const summary = summarizeContextError("provider temporarily unavailable because upstream request budget was exceeded", 32)
     assert.equal(summary, "provider temporarily unavailabl…")
@@ -124,7 +195,7 @@ describe("power-mode context helpers", () => {
       activeToolExecution: { id: "live-1", name: "grep_search", args: { path: "src" } },
     }))
 
-    assert.deepEqual(timeline.map((item) => item.kind), ["thinking", "message", "tool", "message", "active-tool"])
+    assert.deepEqual(timeline.map((item) => item.kind), ["thinking", "message", "tool", "turn-divider", "message", "active-tool"])
   })
 
   test("adds waiting tail only for active silent runs after threshold", () => {
@@ -148,7 +219,7 @@ describe("power-mode context helpers", () => {
       },
     }))
 
-    assert.deepEqual(timeline.map((item) => item.kind), ["status", "status", "status", "waiting-tail"])
+    assert.deepEqual(timeline.map((item) => item.kind), ["status", "status", "status"])
     assert.equal(timeline[0]?.kind === "status" ? timeline[0].content : null, "Phase: planning · Unit: M003")
     assert.equal(timeline[1]?.kind === "status" ? timeline[1].content : null, "Validating milestone output")
   })
@@ -164,5 +235,207 @@ describe("power-mode context helpers", () => {
     assert.equal(summary.unitId, "M003")
     assert.equal(summary.activeToolLabel, "grep_search")
     assert.equal(summary.latestStatusText, "Researching")
+  })
+
+  test("interleaves user prompts with each completed turn using index-parallel pairing", () => {
+    const timeline = deriveAutoModeTimeline(makeState({
+      completedTurnSegments: [
+        [{ kind: "text", content: "reply one" }],
+        [{ kind: "text", content: "reply two" }],
+      ],
+      currentTurnSegments: [{ kind: "thinking", content: "working" }],
+      chatUserMessages: [
+        { id: "u1", role: "user", content: "first prompt", complete: true, timestamp: 1 },
+        { id: "u2", role: "user", content: "second prompt", complete: true, timestamp: 2 },
+        { id: "u3", role: "user", content: "third prompt", complete: true, timestamp: 3 },
+      ],
+    }))
+
+    // Waiting-tail may append depending on phase/now threshold; not our concern here.
+    const kindsWithoutTail = timeline
+      .map((item) => item.kind)
+      .filter((kind) => kind !== "waiting-tail")
+    assert.deepEqual(kindsWithoutTail, [
+      "prompt",
+      "message",
+      "turn-divider",
+      "prompt",
+      "message",
+      "turn-divider",
+      "prompt",
+      "thinking",
+    ])
+    const promptTexts = timeline
+      .filter((item): item is Extract<typeof item, { kind: "prompt" }> => item.kind === "prompt")
+      .map((item) => item.content)
+    assert.deepEqual(promptTexts, ["first prompt", "second prompt", "third prompt"])
+  })
+
+  test("skips empty and non-user chat messages when pairing prompts", () => {
+    const timeline = deriveAutoModeTimeline(makeState({
+      completedTurnSegments: [[{ kind: "text", content: "reply one" }]],
+      chatUserMessages: [
+        { id: "a1", role: "assistant", content: "ignored", complete: true, timestamp: 1 },
+        { id: "u1", role: "user", content: "   ", complete: true, timestamp: 2 },
+        { id: "u2", role: "user", content: "real prompt", complete: true, timestamp: 3 },
+      ],
+    }))
+
+    const firstPrompt = timeline.find((item) => item.kind === "prompt")
+    assert.equal(firstPrompt?.kind === "prompt" ? firstPrompt.content : null, "real prompt")
+  })
+
+  test("turn-divider carries per-turn segment stats", () => {
+    const timeline = deriveAutoModeTimeline(makeState({
+      completedTurnSegments: [[
+        { kind: "thinking", content: "plan" },
+        { kind: "thinking", content: "replan" },
+        { kind: "text", content: "reply" },
+        { kind: "tool", tool: { id: "t1", name: "read_file", args: {}, result: {} } },
+        { kind: "tool", tool: { id: "t2", name: "bash", args: {}, result: {} } },
+      ]],
+    }))
+
+    const divider = timeline.find((item) => item.kind === "turn-divider")
+    assert.ok(divider && divider.kind === "turn-divider")
+    assert.equal(divider.toolCount, 2)
+    assert.equal(divider.messageCount, 1)
+    assert.equal(divider.thinkingCount, 2)
+  })
+
+  test("does NOT surface statusTexts or widgetContents in the structured timeline", () => {
+    const timeline = deriveAutoModeTimeline(makeState({
+      completedTurnSegments: [[{ kind: "text", content: "reply" }]],
+      statusTexts: { run: "Researching", build: "Compiling" },
+      widgetContents: {
+        progress: { lines: ["Step 1/3"], placement: "aboveEditor" },
+      },
+    }))
+
+    const statusKinds = timeline.filter((item) => item.kind === "status")
+    assert.equal(statusKinds.length, 0, "status rows must not appear in structured timeline")
+  })
+
+  test("surfaces completedUnits as unit-done rows when structured items are present", () => {
+    const timeline = deriveAutoModeTimeline(makeState({
+      completedTurnSegments: [[{ kind: "text", content: "reply" }]],
+      boot: {
+        project: { cwd: "/tmp/demo" },
+        onboarding: { locked: false, bridgeAuthRefresh: { phase: "idle" }, lastValidation: null },
+        bridge: { updatedAt: "2026-04-24T16:00:00.000Z" },
+        workspace: { active: { milestoneId: "M003", phase: "planning" } },
+        auto: {
+          active: false,
+          paused: false,
+          completedUnits: [
+            { type: "MILESTONE", id: "M001", startedAt: 1000, finishedAt: 61000 },
+            { type: "SLICE", id: "S01", startedAt: 70000, finishedAt: 70500 },
+          ],
+        },
+      },
+      live: {
+        workspace: { active: { milestoneId: "M003", phase: "planning" } },
+        auto: {
+          active: false,
+          paused: false,
+          completedUnits: [
+            { type: "MILESTONE", id: "M001", startedAt: 1000, finishedAt: 61000 },
+            { type: "SLICE", id: "S01", startedAt: 70000, finishedAt: 70500 },
+          ],
+        },
+      },
+    }))
+
+    const unitRows = timeline.filter((item): item is Extract<typeof item, { kind: "unit-done" }> => item.kind === "unit-done")
+    assert.equal(unitRows.length, 2)
+    assert.equal(unitRows[0]?.unitType, "MILESTONE")
+    assert.equal(unitRows[0]?.unitId, "M001")
+    assert.equal(unitRows[0]?.durationMs, 60000)
+    assert.equal(unitRows[1]?.durationMs, 500)
+  })
+
+  test("prepends bridge and client error rows when present", () => {
+    const timeline = deriveAutoModeTimeline(makeState({
+      completedTurnSegments: [[{ kind: "text", content: "reply" }]],
+      lastBridgeError: { message: "bridge exploded", at: "2026-04-24T16:00:00.000Z", phase: "ready" },
+      lastClientError: "fetch failed",
+    }))
+
+    const firstTwo = timeline.slice(0, 2)
+    assert.equal(firstTwo[0]?.kind, "error")
+    assert.equal(firstTwo[1]?.kind, "error")
+    assert.match(firstTwo[0]?.kind === "error" ? firstTwo[0].content : "", /^bridge: /)
+    assert.match(firstTwo[1]?.kind === "error" ? firstTwo[1].content : "", /^client: /)
+  })
+
+  test("derives new runtime summary fields for cost/session/streaming/turn", () => {
+    const summary = deriveAutoModeRuntimeSummary(makeState({
+      boot: {
+        project: { cwd: "/tmp/demo" },
+        onboarding: { locked: false, bridgeAuthRefresh: { phase: "idle" }, lastValidation: null },
+        bridge: {
+          updatedAt: "2026-04-24T16:00:00.000Z",
+          activeSessionId: "abcdef1234567890",
+          sessionState: {
+            sessionId: "abcdef1234567890",
+            model: { id: "claude-sonnet-4.5", provider: "anthropic" },
+            isStreaming: true,
+            isCompacting: false,
+          },
+        },
+        workspace: { active: { milestoneId: "M003", phase: "planning" } },
+        auto: {
+          active: true,
+          paused: false,
+          totalCost: 1.234,
+          totalTokens: 12345,
+          elapsed: 65000,
+          completedUnits: [{ type: "MILESTONE", id: "M001", startedAt: 1, finishedAt: 2 }],
+          rtkSavings: { commands: 2, inputTokens: 1000, outputTokens: 2000 },
+        },
+      },
+      live: {
+        workspace: { active: { milestoneId: "M003", phase: "planning" } },
+        auto: {
+          active: true,
+          paused: false,
+          totalCost: 1.234,
+          totalTokens: 12345,
+          elapsed: 65000,
+          completedUnits: [{ type: "MILESTONE", id: "M001", startedAt: 1, finishedAt: 2 }],
+          rtkSavings: { commands: 2, inputTokens: 1000, outputTokens: 2000 },
+        },
+      },
+      completedTurnSegments: [[{ kind: "text", content: "reply" }]],
+      currentTurnSegments: [{ kind: "thinking", content: "working" }],
+      streamingAssistantText: "hello",
+      statusTexts: { a: "x", b: "y" },
+      widgetContents: { w: { lines: ["line"] } },
+      pendingUiRequests: [{ id: "p1", method: "ask", title: "needs input" }],
+    }))
+
+    assert.equal(summary.totalCost, 1.234)
+    assert.equal(summary.totalTokens, 12345)
+    assert.equal(summary.elapsedMs, 65000)
+    assert.equal(summary.milestoneId, "M003")
+    assert.equal(summary.modelLabel, "claude-sonnet-4.5")
+    assert.equal(summary.sessionIdShort, "abcdef12")
+    assert.equal(summary.isStreaming, true)
+    assert.equal(summary.isCompacting, false)
+    assert.equal(summary.rtkSavedTokens, 3000)
+    assert.equal(summary.completedUnitsCount, 1)
+    assert.equal(summary.completedTurns, 1)
+    assert.equal(summary.hasInFlightTurn, true)
+    assert.equal(summary.pendingUiCount, 1)
+    assert.equal(summary.statusTextCount, 2)
+    assert.equal(summary.widgetCount, 1)
+  })
+
+  test("hasInFlightTurn is false when the current turn is idle", () => {
+    const summary = deriveAutoModeRuntimeSummary(makeState({
+      completedTurnSegments: [[{ kind: "text", content: "reply" }]],
+    }))
+    assert.equal(summary.hasInFlightTurn, false)
+    assert.equal(summary.completedTurns, 1)
   })
 })

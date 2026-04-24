@@ -1382,12 +1382,19 @@ export class BridgeService {
     if (this.process && this.snapshot.phase === "ready") return;
     if (this.startPromise) return await this.startPromise;
 
-    this.startPromise = this.startInternal();
+    this.startPromise = this.startInternal().finally(() => {
+      this.startPromise = null;
+    });
     try {
       await this.startPromise;
     } finally {
       this.startPromise = null;
     }
+  }
+
+  async refreshSnapshot(): Promise<void> {
+    if (!this.process || this.snapshot.phase !== "ready") return;
+    await this.queueStateRefresh();
   }
 
   async sendInput(input: BridgeInput): Promise<RpcResponse | null> {
@@ -2145,6 +2152,7 @@ export async function collectSelectiveLiveStatePayload(
 
   try {
     await bridge.ensureStarted();
+    await bridge.refreshSnapshot();
   } catch {
     // Selective live state still returns the latest bridge failure snapshot for inspection.
   }
@@ -2239,6 +2247,7 @@ export async function collectBootPayload(projectCwd?: string): Promise<BridgeBoo
 
   try {
     await bridge.ensureStarted();
+    await bridge.refreshSnapshot();
   } catch {
     // Boot still returns the bridge failure snapshot for inspection.
   }

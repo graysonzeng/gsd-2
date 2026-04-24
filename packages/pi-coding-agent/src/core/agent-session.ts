@@ -263,6 +263,7 @@ export class AgentSession {
 	private _cumulativeInputTokens = 0;
 	private _cumulativeOutputTokens = 0;
 	private _cumulativeToolCalls = 0;
+	private _activeToolExecution: { toolCallId: string; toolName: string; args?: Record<string, unknown> } | null = null;
 
 	/** Cost of the most recent assistant response (for per-prompt display). */
 	private _lastTurnCost = 0;
@@ -627,6 +628,7 @@ export class AgentSession {
 			this._turnIndex = 0;
 			await this._extensionRunner.emit({ type: "agent_start" });
 		} else if (event.type === "agent_end") {
+			this._activeToolExecution = null;
 			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
 			// `stop` fires on true quiescence: the agent cleanly completed and is now
 			// waiting for the user. Use the last assistant message's stopReason to
@@ -677,6 +679,11 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_start") {
+			this._activeToolExecution = {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				args: event.args,
+			};
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
 				toolCallId: event.toolCallId,
@@ -694,6 +701,9 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_end") {
+			if (this._activeToolExecution?.toolCallId === event.toolCallId) {
+				this._activeToolExecution = null;
+			}
 			const extensionEvent: ToolExecutionEndEvent = {
 				type: "tool_execution_end",
 				toolCallId: event.toolCallId,
@@ -778,6 +788,11 @@ export class AgentSession {
 		return this.agent.state.isStreaming;
 	}
 
+	/** Current authoritative in-flight tool execution, if any */
+	get activeToolExecution(): { toolCallId: string; toolName: string; args?: Record<string, unknown> } | null {
+		return this._activeToolExecution ? { ...this._activeToolExecution } : null;
+	}
+
 	/** Current effective system prompt (includes any per-turn extension modifications) */
 	get systemPrompt(): string {
 		return this.agent.state.systemPrompt;
@@ -825,7 +840,6 @@ export class AgentSession {
 			}
 		}
 		this.agent.setTools(tools);
-
 
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
@@ -1596,6 +1610,7 @@ export class AgentSession {
 	// message_end/agent_end events fire and the #4216 finalization code
 	// can run before we unsubscribe from the event bus.
 	await this.abort();
+	this._activeToolExecution = null;
 
 		// #3731: If the caller aborted (e.g. runUnit() timed out and restored cwd to
 		// project root), discard this session before capturing process.cwd() and
@@ -2462,6 +2477,7 @@ export class AgentSession {
 	// message_end/agent_end events fire and the #4216 finalization code
 	// can run before we unsubscribe from the event bus.
 	await this.abort();
+	this._activeToolExecution = null;
 	this._disconnectFromAgent();
 	this._steeringMessages = [];
 		this._followUpMessages = [];

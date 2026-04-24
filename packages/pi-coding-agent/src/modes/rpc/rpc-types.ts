@@ -105,6 +105,12 @@ export interface RpcSlashCommand {
 // RPC State
 // ============================================================================
 
+export interface RpcActiveToolExecution {
+	toolCallId: string;
+	toolName: string;
+	args?: Record<string, unknown>;
+}
+
 export interface RpcSessionState {
 	model?: Model<any>;
 	thinkingLevel: ThinkingLevel;
@@ -119,6 +125,7 @@ export interface RpcSessionState {
 	autoRetryEnabled: boolean;
 	retryInProgress: boolean;
 	retryAttempt: number;
+	activeToolExecution?: RpcActiveToolExecution | null;
 	messageCount: number;
 	pendingMessageCount: number;
 	/** Whether extension loading has completed. Commands from `get_commands` may be incomplete until true. */

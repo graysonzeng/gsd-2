@@ -113,6 +113,11 @@ export interface WorkspaceSessionState {
   autoRetryEnabled: boolean
   retryInProgress: boolean
   retryAttempt: number
+  activeToolExecution?: {
+    toolCallId: string
+    toolName: string
+    args?: Record<string, unknown>
+  } | null
   messageCount: number
   pendingMessageCount: number
 }
@@ -820,6 +825,38 @@ function cloneBootWithBridge(
     ...nextBoot,
     resumableSessions: overlayLiveBridgeSessionState(nextBoot.resumableSessions, nextBoot),
   }
+}
+
+export function getAuthoritativeActiveToolExecution(
+  bridge: BridgeRuntimeSnapshot | null | undefined,
+): ActiveToolExecution | null {
+  const active = bridge?.sessionState?.activeToolExecution
+  if (!active?.toolCallId || !active.toolName) return null
+  return {
+    id: active.toolCallId,
+    name: active.toolName,
+    args: active.args,
+  }
+}
+
+export function reconcileActiveToolExecution(
+  current: ActiveToolExecution | null,
+  bridge: BridgeRuntimeSnapshot | null | undefined,
+): ActiveToolExecution | null {
+  const authoritative = getAuthoritativeActiveToolExecution(bridge)
+  if (authoritative) {
+    return current && current.id === authoritative.id
+      ? {
+          ...current,
+          name: authoritative.name,
+          args: authoritative.args ?? current.args,
+        }
+      : authoritative
+  }
+  if (bridge?.sessionState?.isStreaming) {
+    return current
+  }
+  return null
 }
 
 function patchBootSessionState(
@@ -4178,6 +4215,7 @@ export class GSDWorkspaceStore {
           bootStatus: "ready",
           boot,
           live,
+          activeToolExecution: reconcileActiveToolExecution(this.state.activeToolExecution, boot.bridge),
           connectionState: boot.onboarding.locked
             ? "idle"
             : this.eventSource
@@ -4367,6 +4405,7 @@ export class GSDWorkspaceStore {
         auto?: AutoDashboardData
         workspace?: WorkspaceIndex
         resumableSessions?: BootResumableSession[]
+        bridge: BridgeRuntimeSnapshot
         error?: string
       } | null
 
@@ -4378,6 +4417,10 @@ export class GSDWorkspaceStore {
       const nextLive: WorkspaceLiveState = {
         ...this.state.live,
         freshness: { ...this.state.live.freshness },
+      }
+
+      if (payload.bridge) {
+        nextBoot = cloneBootWithBridge(nextBoot, payload.bridge) ?? nextBoot
       }
 
       if (requestedDomains.includes("auto") && payload.auto) {
@@ -4419,6 +4462,7 @@ export class GSDWorkspaceStore {
       this.patchState({
         ...(nextBoot ? { boot: nextBoot } : {}),
         live: nextLive,
+        activeToolExecution: reconcileActiveToolExecution(this.state.activeToolExecution, nextBoot?.bridge),
       })
     } catch (error) {
       const message = normalizeClientError(error)
@@ -5223,6 +5267,7 @@ export class GSDWorkspaceStore {
       boot: nextBoot,
       live: nextLive,
       lastBridgeError: bridge.lastError,
+      activeToolExecution: reconcileActiveToolExecution(this.state.activeToolExecution, bridge),
       sessionAttached: hasAttachedSession(bridge),
       commandSurface: {
         ...this.state.commandSurface,

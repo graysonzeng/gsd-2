@@ -593,6 +593,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 					autoRetryEnabled: session.autoRetryEnabled,
 					retryInProgress: session.isRetrying,
 					retryAttempt: session.retryAttempt,
+					activeToolExecution: session.activeToolExecution,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					extensionsReady,

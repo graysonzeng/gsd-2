@@ -400,6 +400,11 @@ describe("v1 backward compatibility — command shapes", () => {
 			autoRetryEnabled: false,
 			retryInProgress: false,
 			retryAttempt: 0,
+			activeToolExecution: {
+				toolCallId: "tool-1",
+				toolName: "read_file",
+				args: { file_path: "/tmp/demo.ts" },
+			},
 			messageCount: 0,
 			pendingMessageCount: 0,
 			extensionsReady: true,
@@ -407,6 +412,7 @@ describe("v1 backward compatibility — command shapes", () => {
 		// v1 state should not include any v2-specific fields
 		assert.equal((state as any).protocolVersion, undefined);
 		assert.equal((state as any).runId, undefined);
+		assert.equal(state.activeToolExecution?.toolCallId, "tool-1");
 	});
 
 	it("v1 prompt response has no runId", () => {

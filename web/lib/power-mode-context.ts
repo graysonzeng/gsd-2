@@ -7,6 +7,7 @@ import {
   getVisibleWorkspaceError,
   type ActiveToolExecution,
   type AutoDashboardData,
+  type BridgeRuntimeSnapshot,
   type CompletedToolExecution,
   type PendingUiRequest,
   type TurnSegment,
@@ -43,23 +44,48 @@ export interface InteractivePaneStatus {
 export type AutoModeTimelineItem =
   | { kind: "thinking"; id: string; content: string; streaming?: boolean }
   | { kind: "message"; id: string; content: string; streaming?: boolean }
+  | { kind: "prompt"; id: string; content: string; timestamp?: number }
   | { kind: "tool"; id: string; tool: CompletedToolExecution }
   | { kind: "active-tool"; id: string; tool: ActiveToolExecution }
   | { kind: "ui-request"; id: string; request: PendingUiRequest }
   | { kind: "status"; id: string; label: string; content: string; tone: PowerModeTone }
   | { kind: "error"; id: string; content: string }
   | { kind: "waiting-tail"; id: string; content: string }
+  | {
+      kind: "turn-divider"
+      id: string
+      turnIndex: number
+      toolCount: number
+      messageCount: number
+      thinkingCount: number
+    }
+  | { kind: "unit-done"; id: string; unitType: string; unitId: string; durationMs: number }
 
 export interface AutoModeRuntimeSummary {
   projectLabel: string
   autoPresentation: PowerModePresentation
   bridgePresentation: ReturnType<typeof getStatusPresentation>
   phase: string | null
+  milestoneId: string | null
   unitId: string | null
   scopeLabel: string
   activeToolLabel: string | null
   issueSummary: string | null
   latestStatusText: string | null
+  totalCost: number
+  totalTokens: number
+  elapsedMs: number
+  modelLabel: string | null
+  sessionIdShort: string | null
+  isStreaming: boolean
+  isCompacting: boolean
+  rtkSavedTokens: number
+  completedUnitsCount: number
+  completedTurns: number
+  hasInFlightTurn: boolean
+  pendingUiCount: number
+  statusTextCount: number
+  widgetCount: number
 }
 
 type AutoModeState = Pick<
@@ -80,7 +106,7 @@ type AutoModeState = Pick<
   | "statusTexts"
   | "widgetContents"
   | "liveTranscript"
->
+> & Partial<Pick<WorkspaceStoreState, "chatUserMessages">>
 
 const WAITING_TAIL_THRESHOLD_MS = 1_500
 
@@ -132,7 +158,11 @@ function shouldShowWaitingTail(state: AutoModeState, now: number, hasAnyItems: b
   const auto = getLiveAutoDashboard(state)
   const workspace = getLiveWorkspaceIndex(state)
   const phase = workspace?.active.phase ?? null
-  const autoInProgress = Boolean(auto?.active || auto?.paused || (phase && phase !== "complete"))
+  const autoInProgress = Boolean(
+    auto?.active ||
+    auto?.paused ||
+    ((phase && phase !== "complete") && hasAuthoritativeAutoActivity(state.boot?.bridge)),
+  )
   if (!autoInProgress) return false
 
   const updatedAt = state.boot?.bridge?.updatedAt ? Date.parse(state.boot.bridge.updatedAt) : NaN
@@ -141,12 +171,20 @@ function shouldShowWaitingTail(state: AutoModeState, now: number, hasAnyItems: b
   return true
 }
 
+function hasAuthoritativeAutoActivity(bridge: BridgeRuntimeSnapshot | null | undefined): boolean {
+  return Boolean(bridge?.sessionState?.isStreaming || bridge?.sessionState?.activeToolExecution)
+}
+
 export function getPowerModeAutoPresentation(
   auto: AutoDashboardData | null | undefined,
   workspace: WorkspaceIndex | null | undefined,
+  bridge?: BridgeRuntimeSnapshot | null,
 ): PowerModePresentation {
   if (auto?.active) return { label: "Active", tone: "success" }
   if (auto?.paused) return { label: "Paused", tone: "warning" }
+  if (workspace?.active.phase && workspace.active.phase !== "complete" && hasAuthoritativeAutoActivity(bridge)) {
+    return { label: "Active", tone: "success" }
+  }
   if (workspace?.active.phase === "complete") return { label: "Complete", tone: "muted" }
   return { label: "Inactive", tone: "muted" }
 }
@@ -207,31 +245,118 @@ export function deriveAutoModeRuntimeSummary(state: AutoModeState): AutoModeRunt
   const workspace = getLiveWorkspaceIndex(state)
   const auto = getLiveAutoDashboard(state)
   const phase = workspace?.active.phase ?? null
+  const milestoneId = workspace?.active.milestoneId ?? null
   const unitId = getCurrentUnitId(auto, workspace)
+
+  const bridge = state.boot?.bridge
+  const sessionState = bridge?.sessionState ?? null
+  const model = sessionState?.model
+  const modelLabel = model ? (model.id || model.providerId || model.provider || null) : null
+  const rawSessionId = sessionState?.sessionId ?? bridge?.activeSessionId ?? null
+  const sessionIdShort = typeof rawSessionId === "string" && rawSessionId.length > 0
+    ? (rawSessionId.length > 8 ? rawSessionId.slice(0, 8) : rawSessionId)
+    : null
+  const rtkSaved = auto?.rtkSavings
+  const rtkSavedTokens = typeof rtkSaved?.inputTokens === "number" && typeof rtkSaved?.outputTokens === "number"
+    ? rtkSaved.inputTokens + rtkSaved.outputTokens
+    : 0
+
   return {
     projectLabel: getProjectDisplayName(state.boot?.project.cwd),
-    autoPresentation: getPowerModeAutoPresentation(auto, workspace),
+    autoPresentation: getPowerModeAutoPresentation(auto, workspace, bridge),
     bridgePresentation: getStatusPresentation(state),
     phase,
+    milestoneId,
     unitId,
     scopeLabel: getCurrentScopeLabel(workspace),
     activeToolLabel: state.activeToolExecution?.name ?? null,
     issueSummary: summarizeContextError(getVisibleWorkspaceError(state)),
     latestStatusText: latestStatusText(state.statusTexts),
+    totalCost: auto?.totalCost ?? 0,
+    totalTokens: auto?.totalTokens ?? 0,
+    elapsedMs: auto?.elapsed ?? 0,
+    modelLabel,
+    sessionIdShort,
+    isStreaming: Boolean(sessionState?.isStreaming),
+    isCompacting: Boolean(sessionState?.isCompacting),
+    rtkSavedTokens,
+    completedUnitsCount: auto?.completedUnits?.length ?? 0,
+    completedTurns: state.completedTurnSegments.length,
+    hasInFlightTurn:
+      state.currentTurnSegments.length > 0 ||
+      state.streamingAssistantText.length > 0 ||
+      state.streamingThinkingText.length > 0 ||
+      Boolean(state.activeToolExecution),
+    pendingUiCount: state.pendingUiRequests.length,
+    statusTextCount: Object.keys(state.statusTexts).length,
+    widgetCount: Object.keys(state.widgetContents).length,
   }
+}
+
+function countTurnStats(segments: TurnSegment[]): { toolCount: number; messageCount: number; thinkingCount: number } {
+  let toolCount = 0
+  let messageCount = 0
+  let thinkingCount = 0
+  for (const seg of segments) {
+    if (seg.kind === "tool") toolCount += 1
+    else if (seg.kind === "text") messageCount += 1
+    else if (seg.kind === "thinking") thinkingCount += 1
+  }
+  return { toolCount, messageCount, thinkingCount }
 }
 
 export function deriveAutoModeTimeline(state: AutoModeState, now = Date.now()): AutoModeTimelineItem[] {
   const items: AutoModeTimelineItem[] = []
 
+  // Prepend structural errors (bridge / client) only when present.
+  const bridgeError = state.lastBridgeError?.message
+  if (typeof bridgeError === "string" && bridgeError.trim()) {
+    items.push({ kind: "error", id: "bridge-error", content: `bridge: ${bridgeError.trim()}` })
+  }
+  if (typeof state.lastClientError === "string" && state.lastClientError.trim()) {
+    items.push({ kind: "error", id: "client-error", content: `client: ${state.lastClientError.trim()}` })
+  }
+
+  const userPrompts = state.chatUserMessages?.filter((m) => m.role === "user" && m.content.trim()) ?? []
+
   state.completedTurnSegments.forEach((segments, turnIndex) => {
+    const prompt = userPrompts[turnIndex]
+    if (prompt) {
+      items.push({
+        kind: "prompt",
+        id: `prompt-${turnIndex}-${prompt.id}`,
+        content: prompt.content,
+        timestamp: prompt.timestamp,
+      })
+    }
     pushTurnSegments(items, segments, `turn-${turnIndex}`)
+    if (segments.length > 0) {
+      const stats = countTurnStats(segments)
+      items.push({
+        kind: "turn-divider",
+        id: `turn-divider-${turnIndex}`,
+        turnIndex,
+        ...stats,
+      })
+    }
   })
 
   if (items.length === 0 && state.liveTranscript.length > 0) {
     state.liveTranscript.forEach((block, index) => {
       if (!block.trim()) return
       items.push({ kind: "message", id: `transcript-${index}`, content: block })
+    })
+  }
+
+  // User prompt for the in-flight turn (if chatUserMessages has one more entry than completedTurnSegments)
+  const currentTurnPromptIndex = state.completedTurnSegments.length
+  const currentPrompt = userPrompts[currentTurnPromptIndex]
+  if (currentPrompt && (state.currentTurnSegments.length > 0 || state.activeToolExecution || state.streamingAssistantText.length > 0 || state.streamingThinkingText.length > 0)) {
+    items.push({
+      kind: "prompt",
+      id: `prompt-current-${currentPrompt.id}`,
+      content: currentPrompt.content,
+      timestamp: currentPrompt.timestamp,
     })
   }
 
@@ -253,7 +378,13 @@ export function deriveAutoModeTimeline(state: AutoModeState, now = Date.now()): 
     items.push({ kind: "ui-request", id: request.id, request })
   })
 
-  const hasStructuredItems = items.some((item) => item.kind !== "status" && item.kind !== "error" && item.kind !== "waiting-tail")
+  const hasStructuredItems = items.some((item) =>
+    item.kind !== "status" &&
+    item.kind !== "error" &&
+    item.kind !== "waiting-tail" &&
+    item.kind !== "prompt" &&
+    item.kind !== "turn-divider",
+  )
 
   if (!hasStructuredItems) {
     const summary = deriveAutoModeRuntimeSummary(state)
@@ -282,6 +413,17 @@ export function deriveAutoModeTimeline(state: AutoModeState, now = Date.now()): 
         label: `Widget · ${widget.key}`,
         content: widget.content,
         tone: "info",
+      })
+    })
+  } else {
+    const auto = getLiveAutoDashboard(state)
+    auto?.completedUnits?.forEach((unit) => {
+      items.push({
+        kind: "unit-done",
+        id: `unit-done-${unit.type}-${unit.id}-${unit.finishedAt}`,
+        unitType: unit.type,
+        unitId: unit.id,
+        durationMs: Math.max(0, unit.finishedAt - unit.startedAt),
       })
     })
   }
