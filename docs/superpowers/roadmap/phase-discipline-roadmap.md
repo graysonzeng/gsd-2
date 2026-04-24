@@ -176,8 +176,8 @@
 
 不做以下观测，前 4 版无法量化评估，也无法支撑 §4.4 的触发条件。
 
-- **OQ-7** hook-level cost metrics 接入 `UnitMetrics`
-- **OQ-10** reviewer stdout/stderr 捕获
+- ~~**OQ-7** hook-level cost metrics 接入 `UnitMetrics`~~ ✅ 已实现（`wallClockMs` + `reviewerMetrics` array）
+- ~~**OQ-10** reviewer stdout/stderr 捕获~~ ✅ 已实现（per-reviewer `-stdout.log` / `-stderr.log`）
 - **R-12** `.phase-discipline/` 目录膨胀监控
 - 真实 milestone 的 run log 至少保留一个滚动窗口
 
@@ -192,8 +192,8 @@
 
 按“最可能最先产生真实 evidence”排序：
 
-- **OQ-4** `reviewer_model_fallbacks`（很可能最先需要，补丁级）
-- **OQ-7 / OQ-10** 观测面（前置条件）
+- ~~**OQ-4** `reviewer_model_fallbacks`~~ ✅ 已实现（`model_fallbacks: string[]` on `PostUnitHookConfig`）
+- ~~**OQ-7 / OQ-10** 观测面（前置条件）~~ ✅ 已实现
 - **OQ-13** *(review-proposed, 未正式收录于 spec §15)* `GSD_COMPOSED_LITE_*` → `GSD_SHARED_HARNESS_*` 命名债（低风险长期清理）
 - **OQ-11** reviewer docs-map L1 继承
 - **OQ-8** CI lint `mergePresetIntoHooks` dry-run
@@ -210,11 +210,11 @@
 
 ## 10. phase-discipline 条线的 immediate next step
 
-1. 收口 PR-3b plan 的 blocking residue
-2. 执行 PR-3b
-3. 完成 v1 集成验收
-4. 启动观测面（OQ-7 / OQ-10）与 `OQ-4` 补丁
-5. 按 §3 DAG 选择下一块能力迁移（v1.1 / v1.3 / v1.4 任一可并行；v1.2 单独 track）
+1. ~~收口 PR-3b plan 的 blocking residue~~ ✅
+2. ~~执行 PR-3b~~ ✅
+3. ~~完成 v1 集成验收~~ ✅ (58/58 tests, typecheck clean)
+4. ~~启动观测面（OQ-7 / OQ-10）与 `OQ-4` 补丁~~ ✅
+5. **按 §3 DAG 选择下一块能力迁移** ← 当前步骤（推荐 v1.1 Admission，复杂度最低，且能产出第一批真实观测数据）
 
 ## 11. 变更记录
 
@@ -223,3 +223,4 @@
 | v0.1 | 2026-04-23 | 首版，基于对 v1 基座 / 升级兼容性 / v2 命名撤回 / OQ 排序的综合 review |
 | v0.2 | 2026-04-23 | Review-response 修订：§0 PR 状态改为执行假设；§2 补 validator residue 例外；补 v1 baseline 限制标注；§3.2 修正 Admission 依赖；§4.4 数字降为 heuristic；§5.2 scorecard 降级；OQ-13 标注 review-proposed |
 | v0.3 | 2026-04-24 | Review-response 精简修订：§1 拆分为 1.1 verified / 1.2 open residue（经 `src/` re-verify，`advise` runtime 路径已落地）；§2 去除已闭合的 blocking residue 项，改以 PR-3b pre-flight 为权威；§10 标题去绝对化；顶部补 DISCIPLINE authority 引用 |
+| v0.4 | 2026-04-24 | OQ-4/OQ-7/OQ-10 已实现，标记完成；§10 immediate next step 更新到“按 DAG 选择下一块能力迁移”；观测面与 OQ backlog 标记已闭合项 |
