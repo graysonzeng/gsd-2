@@ -270,6 +270,26 @@ export function convertResponsesTools(tools: Tool[], options?: ConvertResponsesT
 	}));
 }
 
+function formatResponseFailedError(event: ResponseStreamEvent): string {
+	const error = (event as {
+		response?: {
+			error?: {
+				message?: string;
+				code?: string;
+				type?: string;
+			};
+		};
+	}).response?.error;
+	const message = error?.message?.trim();
+	const code = error?.code?.trim();
+	const type = error?.type?.trim();
+	const prefix = [type, code].filter(Boolean).join(" ");
+	if (message && prefix) return `${prefix}: ${message}`;
+	if (message) return message;
+	if (prefix) return prefix;
+	return JSON.stringify(event);
+}
+
 // =============================================================================
 // Stream processing
 // =============================================================================
@@ -469,7 +489,7 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "error") {
 			throw new Error(`Error Code ${event.code}: ${event.message}` || "Unknown error");
 		} else if (event.type === "response.failed") {
-			throw new Error("Unknown error");
+			throw new Error(formatResponseFailedError(event));
 		}
 	}
 }
