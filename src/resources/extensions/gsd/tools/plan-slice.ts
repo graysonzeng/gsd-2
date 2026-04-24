@@ -25,6 +25,8 @@ export interface PlanSliceTaskInput {
   description: string;
   estimate: string;
   files: string[];
+  rollbackHint: string;
+  acceptance: string;
   verify: string;
   inputs: string[];
   expectedOutput: string[];
@@ -58,6 +60,83 @@ export interface PlanSliceResult {
   taskPlanPaths: string[];
 }
 
+function normalizeFrontmatterScalar(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function buildTaskPlanMarkdown(task: PlanSliceTaskInput): string {
+  const estimatedSteps = Math.max(1, task.description.trim().split(/\n+/).filter(Boolean).length || 1);
+  const estimatedFiles = task.files.length > 0
+    ? task.files.length
+    : task.expectedOutput.length > 0
+      ? task.expectedOutput.length
+      : task.inputs.length > 0
+        ? task.inputs.length
+        : 1;
+  const lines: string[] = [];
+  lines.push("---");
+  lines.push(`estimated_steps: ${estimatedSteps}`);
+  lines.push(`estimated_files: ${estimatedFiles}`);
+  lines.push("skills_used: []");
+  lines.push(`rollback_hint: ${normalizeFrontmatterScalar(task.rollbackHint)}`);
+  lines.push(`acceptance: ${normalizeFrontmatterScalar(task.acceptance)}`);
+  lines.push("files:");
+  for (const file of task.files) {
+    lines.push(`  - ${file}`);
+  }
+  lines.push("---");
+  lines.push("");
+  lines.push(`# ${task.taskId}: ${task.title}`);
+  lines.push("");
+  if (task.description.trim()) {
+    lines.push(task.description.trim());
+    lines.push("");
+  }
+  lines.push("## Inputs");
+  lines.push("");
+  if (task.inputs.length > 0) {
+    for (const input of task.inputs) {
+      lines.push(`- \`${input}\``);
+    }
+  } else {
+    lines.push("- None specified.");
+  }
+  lines.push("");
+  lines.push("## Expected Output");
+  lines.push("");
+  if (task.expectedOutput.length > 0) {
+    for (const output of task.expectedOutput) {
+      lines.push(`- \`${output}\``);
+    }
+  } else if (task.files.length > 0) {
+    for (const file of task.files) {
+      lines.push(`- \`${file}\``);
+    }
+  } else {
+    lines.push("- Update the implementation and proof artifacts needed for this task.");
+  }
+  lines.push("");
+  lines.push("## Verification");
+  lines.push("");
+  lines.push(task.verify.trim() || "- Verify the task outcome with the slice-level checks.");
+  lines.push("");
+  lines.push("## Acceptance");
+  lines.push("");
+  lines.push(task.acceptance.trim());
+  lines.push("");
+  lines.push("## Rollback Hint");
+  lines.push("");
+  lines.push(task.rollbackHint.trim());
+  lines.push("");
+  if ((task.observabilityImpact ?? "").trim()) {
+    lines.push("## Observability Impact");
+    lines.push("");
+    lines.push((task.observabilityImpact ?? "").trim());
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
 function validateTasks(value: unknown): PlanSliceTaskInput[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error("tasks must be a non-empty array");
@@ -74,6 +153,8 @@ function validateTasks(value: unknown): PlanSliceTaskInput[] {
     const description = obj.description;
     const estimate = obj.estimate;
     const files = obj.files;
+    const rollbackHint = obj.rollbackHint;
+    const acceptance = obj.acceptance;
     const verify = obj.verify;
     const inputs = obj.inputs;
     const expectedOutput = obj.expectedOutput;
@@ -85,9 +166,11 @@ function validateTasks(value: unknown): PlanSliceTaskInput[] {
     if (!isNonEmptyString(title)) throw new Error(`tasks[${index}].title must be a non-empty string`);
     if (!isNonEmptyString(description)) throw new Error(`tasks[${index}].description must be a non-empty string`);
     if (!isNonEmptyString(estimate)) throw new Error(`tasks[${index}].estimate must be a non-empty string`);
-    if (!Array.isArray(files) || files.some((item) => !isNonEmptyString(item))) {
+    if (!Array.isArray(files) || files.length === 0 || files.some((item) => !isNonEmptyString(item))) {
       throw new Error(`tasks[${index}].files must be an array of non-empty strings`);
     }
+    if (!isNonEmptyString(rollbackHint)) throw new Error(`tasks[${index}].rollbackHint must be a non-empty string`);
+    if (!isNonEmptyString(acceptance)) throw new Error(`tasks[${index}].acceptance must be a non-empty string`);
     if (!isNonEmptyString(verify)) throw new Error(`tasks[${index}].verify must be a non-empty string`);
     if (!Array.isArray(inputs) || inputs.some((item) => !isNonEmptyString(item))) {
       throw new Error(`tasks[${index}].inputs must be an array of non-empty strings`);
@@ -105,6 +188,8 @@ function validateTasks(value: unknown): PlanSliceTaskInput[] {
       description,
       estimate,
       files,
+      rollbackHint,
+      acceptance,
       verify,
       inputs,
       expectedOutput,
@@ -196,7 +281,7 @@ export async function handlePlanSlice(
           inputs: task.inputs,
           expectedOutput: task.expectedOutput,
           observabilityImpact: task.observabilityImpact ?? "",
-          fullPlanMd: task.fullPlanMd,
+          fullPlanMd: task.fullPlanMd ?? buildTaskPlanMarkdown(task),
         });
       }
 

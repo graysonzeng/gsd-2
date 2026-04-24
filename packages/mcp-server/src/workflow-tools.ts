@@ -871,6 +871,9 @@ const optionalNonEmptyString = (field: string) => nonEmptyString(field).optional
 const nonEmptyStringArray = (field: string) =>
   z.array(nonEmptyString(`${field}[]`));
 
+const nonEmptyNonEmptyStringArray = (field: string) =>
+  z.array(nonEmptyString(`${field}[]`)).min(1, `${field} must contain at least one item`);
+
 // Matches the executor's `isNonEmptyString` (trim + length>0) so Zod rejects
 // empty/whitespace fields at parse time. Without this, MCP callers pass "" for
 // the heavy planning fields, Zod accepts it, and the executor rejects one
@@ -952,7 +955,9 @@ const planSliceParams = {
     title: nonEmptyString("title"),
     description: nonEmptyString("description"),
     estimate: nonEmptyString("estimate"),
-    files: nonEmptyStringArray("files"),
+    files: nonEmptyNonEmptyStringArray("files"),
+    rollbackHint: nonEmptyString("rollbackHint"),
+    acceptance: nonEmptyString("acceptance"),
     verify: nonEmptyString("verify"),
     inputs: nonEmptyStringArray("inputs"),
     expectedOutput: nonEmptyStringArray("expectedOutput"),

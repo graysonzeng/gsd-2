@@ -68,6 +68,9 @@ export interface TaskPlanFrontmatter {
   estimated_steps?: number; // optional scope estimate for plan quality validator
   estimated_files?: number; // optional file-count estimate for scope warning heuristics
   skills_used: string[]; // installed skill slugs/names to hand off to execute-task prompts
+  rollback_hint?: string;
+  acceptance?: string;
+  files?: string[];
 }
 
 export interface TaskPlanFile {

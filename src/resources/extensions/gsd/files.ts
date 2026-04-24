@@ -240,6 +240,9 @@ function normalizeTaskPlanFrontmatter(frontmatter: Record<string, unknown>): Tas
   const estimatedStepsRaw = frontmatter.estimated_steps;
   const estimatedFilesRaw = frontmatter.estimated_files;
   const skillsUsedRaw = frontmatter.skills_used;
+  const rollbackHintRaw = frontmatter.rollback_hint;
+  const acceptanceRaw = frontmatter.acceptance;
+  const filesRaw = frontmatter.files;
 
   const parseOptionalNumber = (value: unknown): number | undefined => {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -257,10 +260,24 @@ function normalizeTaskPlanFrontmatter(frontmatter: Record<string, unknown>): Tas
     : typeof skillsUsedRaw === 'string' && skillsUsedRaw.trim()
       ? [skillsUsedRaw.trim()]
       : [];
+  const rollback_hint = typeof rollbackHintRaw === 'string' && rollbackHintRaw.trim()
+    ? rollbackHintRaw.trim()
+    : undefined;
+  const acceptance = typeof acceptanceRaw === 'string' && acceptanceRaw.trim()
+    ? acceptanceRaw.trim()
+    : undefined;
+  const files = Array.isArray(filesRaw)
+    ? filesRaw.map(v => String(v).trim()).filter(Boolean)
+    : typeof filesRaw === 'string' && filesRaw.trim()
+      ? [filesRaw.trim()]
+      : undefined;
 
   return {
     ...(estimated_steps !== undefined ? { estimated_steps } : {}),
     ...(estimated_files !== undefined ? { estimated_files } : {}),
+    ...(rollback_hint !== undefined ? { rollback_hint } : {}),
+    ...(acceptance !== undefined ? { acceptance } : {}),
+    ...(files !== undefined ? { files } : {}),
     skills_used,
   };
 }

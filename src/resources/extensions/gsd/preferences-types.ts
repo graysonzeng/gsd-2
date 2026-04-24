@@ -150,6 +150,7 @@ export const KNOWN_PREFERENCE_KEYS = new Set<string>([
   "context_window_override",
   "context_mode",
   "milestone_profile",
+  "verify_fuse_on_fail",
 ]);
 
 /**
@@ -480,6 +481,7 @@ export interface GSDPreferences {
    * behaviour.
    */
   milestone_profile?: MilestoneProfile;
+  verify_fuse_on_fail?: boolean;
 }
 
 export interface LoadedGSDPreferences {

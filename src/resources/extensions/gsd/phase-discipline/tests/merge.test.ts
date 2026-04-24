@@ -7,12 +7,37 @@ import { PHASE_DISCIPLINE_PRESET_HOOK_NAMES } from "../../phase-discipline/prese
 test("applyPhaseDisciplinePreset injects preset hooks when milestone_profile is enabled", () => {
   const result = applyPhaseDisciplinePreset({ milestone_profile: "phase-discipline-8step" });
 
-  assert.equal(result.preferences.post_unit_hooks?.length, 3);
+  assert.equal(result.preferences.post_unit_hooks?.length, 6);
   assert.equal(result.preferences.pre_dispatch_hooks?.length, 1);
   assert.equal(result.preferences.pre_dispatch_hooks?.[0]?.name, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch);
   assert.equal(result.preferences.pre_dispatch_hooks?.[0]?.builtin, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch);
-  assert.equal(result.preferences.post_unit_hooks?.[0]?.builtin, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.codeReview);
-  assert.equal(result.preferences.post_unit_hooks?.[1]?.builtin, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.designReview);
+  assert.ok(result.preferences.post_unit_hooks?.some((hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.admission));
+  assert.equal(
+    result.preferences.post_unit_hooks?.find(
+      (hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.admission,
+    )?.builtin,
+    undefined,
+  );
+  assert.ok(
+    result.preferences.post_unit_hooks?.some(
+      (hook) => hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.codeReview,
+    ),
+  );
+  assert.ok(
+    result.preferences.post_unit_hooks?.some(
+      (hook) => hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.designReview,
+    ),
+  );
+  assert.ok(
+    result.preferences.post_unit_hooks?.some(
+      (hook) => hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.implPlanValidator,
+    ),
+  );
+  assert.ok(
+    result.preferences.post_unit_hooks?.some(
+      (hook) => hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.verifyFuse,
+    ),
+  );
   assert.equal(result.warnings.length, 0);
 });
 
@@ -32,8 +57,12 @@ test("applyPhaseDisciplinePreset lets user hook shadow preset and warns on missi
     result.preferences.post_unit_hooks?.filter((hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.codeReview).length,
     1,
   );
-  assert.equal(result.preferences.post_unit_hooks?.[2]?.prompt, "custom review");
-  assert.equal(result.preferences.post_unit_hooks?.[2]?.builtin, undefined);
+  const mergedCodeReview = result.preferences.post_unit_hooks?.find(
+    (hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.codeReview,
+  );
+  assert.equal(mergedCodeReview?.prompt, "custom review");
+  assert.equal(mergedCodeReview?.builtin, undefined);
+  assert.ok(result.preferences.post_unit_hooks?.some((hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.admission));
   assert.ok(result.warnings.some((warning) => warning.includes("shadowed by user hook")));
   assert.ok(result.warnings.some((warning) => warning.includes("lacks cross_review")));
 });

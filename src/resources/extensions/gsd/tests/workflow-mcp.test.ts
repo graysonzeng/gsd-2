@@ -329,6 +329,8 @@ test("workflow MCP launch config reaches mutation tools over stdio", async () =>
               description: "Ensure the workflow executor bridge resolves in the child process.",
               estimate: "10m",
               files: ["src/resources/extensions/gsd/workflow-mcp.ts"],
+              rollbackHint: "Revert the workflow MCP bridge change if child-process planning fails.",
+              acceptance: "The spawned MCP server persists slice planning and renders task plans.",
               verify: "node --test",
               inputs: ["M001-ROADMAP.md"],
               expectedOutput: ["S01-PLAN.md", "T01-PLAN.md"],

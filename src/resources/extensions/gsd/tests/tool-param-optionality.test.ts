@@ -315,6 +315,8 @@ test("gsd_plan_slice — validates with only core params", () => {
         description: "Build the thing",
         estimate: "2h",
         files: ["src/x.ts"],
+        rollbackHint: "Revert src/x.ts if downstream verification fails.",
+        acceptance: "Feature X is implemented and covered by npm test.",
         verify: "npm test",
         inputs: [],
         expectedOutput: ["src/x.ts"],

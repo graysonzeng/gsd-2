@@ -19,7 +19,7 @@ import type {
   HookStatusEntry,
 } from "./types.js";
 import { resolvePostUnitHooks, resolvePreDispatchHooks } from "./preferences.js";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseUnitId } from "./unit-id.js";
 import { evaluatePhaseDisciplineProfileDispatch } from "./phase-discipline/profile-dispatch.js";
@@ -250,6 +250,12 @@ export class RuleRegistry {
         const maxCycles = config.max_cycles ?? 1;
 
         if (currentCycle < maxCycles) {
+          if (config.artifact) {
+            const artifactPath = resolveHookArtifactPath(basePath, hook.triggerUnitId, config.artifact);
+            if (existsSync(artifactPath)) {
+              rmSync(artifactPath, { force: true });
+            }
+          }
           this.activeHook = null;
           this.hookQueue = [];
           this.retryPending = true;

@@ -239,6 +239,8 @@ test("executePlanSlice writes task planning state and rendered plan artifacts", 
           description: "Implement the shared executor path.",
           estimate: "15m",
           files: ["src/resources/extensions/gsd/tools/workflow-tool-executors.ts"],
+          rollbackHint: "Revert the shared executor bridge changes if MCP persistence regresses.",
+          acceptance: "The MCP bridge persists slice planning and renders task plans.",
           verify: "node --test",
           inputs: ["ROADMAP.md"],
           expectedOutput: ["S01-PLAN.md", "T01-PLAN.md"],
@@ -261,7 +263,7 @@ test("executePlanSlice marks validation failures with isError", async () => {
   const base = makeTmpBase();
   try {
     openTestDb(base);
-
+  
     const result = await inProjectDir(base, () => executePlanSlice({
       milestoneId: "M001",
       sliceId: "S01",
@@ -272,6 +274,41 @@ test("executePlanSlice marks validation failures with isError", async () => {
     assert.equal(result.isError, true);
     assert.equal(result.details.operation, "plan_slice");
     assert.match(String(result.details.error), /validation failed: tasks must be a non-empty array/);
+    assert.match(result.content[0].text, /Error planning slice:/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanSlice rejects tasks with empty files arrays", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+
+    const result = await inProjectDir(base, () => executePlanSlice({
+      milestoneId: "M001",
+      sliceId: "S01",
+      goal: "Trigger validation failure for empty task files.",
+      tasks: [
+        {
+          taskId: "T01",
+          title: "Add planning bridge",
+          description: "Implement the shared executor path.",
+          estimate: "15m",
+          files: [],
+          rollbackHint: "Revert the shared executor bridge if validation regresses.",
+          acceptance: "The bridge persists slice planning.",
+          verify: "node --test",
+          inputs: ["ROADMAP.md"],
+          expectedOutput: ["S01-PLAN.md"],
+        },
+      ],
+    }, base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.operation, "plan_slice");
+    assert.match(String(result.details.error), /validation failed: tasks\[0\]\.files must be an array of non-empty strings/);
     assert.match(result.content[0].text, /Error planning slice:/);
   } finally {
     closeDatabase();
@@ -434,6 +471,8 @@ test("executeReassessRoadmap writes assessment and updates roadmap projection", 
           description: "Close the completed slice.",
           estimate: "5m",
           files: ["src/file.ts"],
+          rollbackHint: "Revert the slice completion patch if summary generation breaks.",
+          acceptance: "The slice reaches a completed state with summary and UAT artifacts.",
           verify: "node --test",
           inputs: ["M004-ROADMAP.md"],
           expectedOutput: ["S04-SUMMARY.md", "S04-UAT.md"],
@@ -568,6 +607,8 @@ test("executeReplanSlice rewrites pending tasks and renders replan artifacts", a
           description: "Finish the blocker-discovery task.",
           estimate: "5m",
           files: ["src/blocker.ts"],
+          rollbackHint: "Revert blocker discovery wiring if follow-up replan data becomes inconsistent.",
+          acceptance: "The blocker-discovery task produces the data needed for replanning.",
           verify: "node --test",
           inputs: ["M006-ROADMAP.md"],
           expectedOutput: ["T06-SUMMARY.md"],
@@ -578,6 +619,8 @@ test("executeReplanSlice rewrites pending tasks and renders replan artifacts", a
           description: "Original follow-up task.",
           estimate: "10m",
           files: ["src/pending.ts"],
+          rollbackHint: "Restore the original pending task plan if the replan is not needed.",
+          acceptance: "The pending task stays actionable before replanning.",
           verify: "node --test",
           inputs: ["S06-PLAN.md"],
           expectedOutput: ["Updated plan"],

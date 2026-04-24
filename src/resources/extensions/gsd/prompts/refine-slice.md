@@ -54,7 +54,7 @@ Then:
 2. {{skillActivation}} Record the installed skills you expect executors to use in each task plan's `skills_used` frontmatter.
 3. Define slice-level verification — the objective stopping condition. Plan real test files with real assertions; for simple slices, executable commands are fine.
 4. For non-trivial slices, plan observability / proof level / integration closure, threat surface, and requirement impact. Omit entirely for simple slices.
-5. Decompose the slice into tasks that fit one context window each. Every task must have Why / Files / Do / Verify / Done-when, plus a task plan with description, steps, must-haves, verification, inputs (backtick-wrapped paths), and expected output (backtick-wrapped paths).
+5. Decompose the slice into tasks that fit one context window each. Every task must have Why / Files / Do / Verify / Done-when, plus a task plan with description, steps, must-haves, verification, inputs (backtick-wrapped paths), and expected output (backtick-wrapped paths). Every `gsd_plan_slice` task payload must include non-empty `rollbackHint` and `acceptance` strings.
 6. **Persist planning state through `gsd_plan_slice`.** Call it with the full payload. The tool writes to the DB and renders `{{outputPath}}` and `{{slicePath}}/tasks/T##-PLAN.md` automatically. Do NOT rely on direct `PLAN.md` writes.
 7. **Self-audit the plan.** If every task were completed exactly as written, the slice goal/demo should actually be true. Every must-have maps to at least one task. Inputs and Expected Output are backtick-wrapped file paths.
 8. If refinement produced structural decisions that diverge from the sketch, append them to `.gsd/DECISIONS.md`.

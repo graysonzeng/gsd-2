@@ -21,13 +21,20 @@ This directory implements the opt-in `milestone_profile: phase-discipline-8step`
 
 ## Built-in hooks
 
-Only three preset-owned hooks have code-backed behavior:
+The following preset-owned hooks have code-backed behavior:
 
 - `phase-discipline-profile-dispatch`
 - `phase-discipline-code-review`
 - `phase-discipline-design-review`
+- `phase-discipline-impl-plan-validator`
+- `phase-discipline-verify-fuse`
 
 They are identified at runtime through the internal `builtin` marker added by the preset merge path. This avoids treating user-authored shadow hooks with the same `name` as built-in hooks.
+
+Prompt-only preset hooks do not carry a `builtin` marker:
+
+- `phase-discipline-admission`
+- `phase-discipline-findings-to-memories`
 
 ## Runtime boundary
 

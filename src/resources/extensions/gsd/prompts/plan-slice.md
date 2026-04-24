@@ -67,6 +67,7 @@ Then:
    - a concrete, action-oriented title
    - the inline task entry fields defined in the plan.md template (Why / Files / Do / Verify / Done when)
    - a matching task plan file with description, steps, must-haves, verification, inputs, and expected output
+   - every `gsd_plan_slice` task payload must include non-empty `rollbackHint` and `acceptance` strings in addition to `files`, `verify`, `inputs`, and `expectedOutput`
    - **Inputs and Expected Output must list concrete backtick-wrapped file paths** (e.g. `` `src/types.ts` ``). These are machine-parsed to derive task dependencies — vague prose without paths breaks parallel execution. Every task must have at least one output file path.
    - Observability Impact section **only if the task touches runtime boundaries, async flows, or error paths** — omit it otherwise
 7. **Persist planning state through `gsd_plan_slice`.** Call it with the full slice planning payload (goal, demo, must-haves, verification, tasks, and metadata). The tool inserts all tasks in the same transaction, writes to the DB, and renders `{{outputPath}}` and `{{slicePath}}/tasks/T##-PLAN.md` files automatically. Do **not** call `gsd_plan_task` separately — `gsd_plan_slice` handles task persistence. Do **not** rely on direct `PLAN.md` writes as the source of truth; the DB-backed tool is the canonical write path for slice and task planning state.

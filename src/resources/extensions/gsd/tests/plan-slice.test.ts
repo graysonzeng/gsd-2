@@ -41,6 +41,8 @@ function validParams() {
         description: 'Implement the slice planning handler.',
         estimate: '45m',
         files: ['src/resources/extensions/gsd/tools/plan-slice.ts'],
+        rollbackHint: 'Revert the slice handler changes if render parity breaks.',
+        acceptance: 'The shared slice handler persists plan state and renders task plans.',
         verify: 'node --test src/resources/extensions/gsd/tests/plan-slice.test.ts',
         inputs: ['src/resources/extensions/gsd/tools/plan-milestone.ts'],
         expectedOutput: ['src/resources/extensions/gsd/tools/plan-slice.ts'],
@@ -52,6 +54,8 @@ function validParams() {
         description: 'Implement the task planning handler.',
         estimate: '30m',
         files: ['src/resources/extensions/gsd/tools/plan-task.ts'],
+        rollbackHint: 'Restore the prior task planning implementation if regressions appear.',
+        acceptance: 'Task planning renders remain parse-compatible after regeneration.',
         verify: 'node --test src/resources/extensions/gsd/tests/plan-task.test.ts',
         inputs: ['src/resources/extensions/gsd/tools/plan-task.ts'],
         expectedOutput: ['src/resources/extensions/gsd/tests/plan-task.test.ts'],
@@ -93,6 +97,9 @@ test('handlePlanSlice writes slice/task planning state and renders plan artifact
     assert.ok(existsSync(taskPlanPath), 'task plan should be rendered to disk');
     const taskPlan = parseTaskPlanFile(readFileSync(taskPlanPath, 'utf-8'));
     assert.deepEqual(taskPlan.frontmatter.skills_used, []);
+    assert.equal(taskPlan.frontmatter.rollback_hint, 'Revert the slice handler changes if render parity breaks.');
+    assert.equal(taskPlan.frontmatter.acceptance, 'The shared slice handler persists plan state and renders task plans.');
+    assert.deepEqual(taskPlan.frontmatter.files, ['src/resources/extensions/gsd/tools/plan-slice.ts']);
   } finally {
     cleanup(base);
   }
@@ -107,6 +114,22 @@ test('handlePlanSlice rejects invalid payloads', async () => {
     const result = await handlePlanSlice({ ...validParams(), tasks: [] }, base);
     assert.ok('error' in result);
     assert.match(result.error, /validation failed: tasks must be a non-empty array/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanSlice rejects tasks with empty files arrays', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParentSlice();
+    const params = validParams();
+    params.tasks[0] = { ...params.tasks[0], files: [] };
+    const result = await handlePlanSlice(params, base);
+    assert.ok('error' in result);
+    assert.match(result.error, /validation failed: tasks\[0\]\.files must be an array of non-empty strings/);
   } finally {
     cleanup(base);
   }

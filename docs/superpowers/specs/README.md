@@ -1,19 +1,19 @@
 # Auto-Mode Harness Specifications
 
-This directory contains three independent specifications that together define the next iteration of `gsd-2`'s auto-mode harness. They were split out of a single brainstorm document (`composed-lite-harness-brainstorm.md`, later renamed `phase-discipline-preset.md`) during the v6 rewrite on 2026-04-23, extended in v7 (same date) with a B-min skeleton, and factually corrected in v7.1 (same date) after a receiving-code-review pass identified 8 errors.
+This directory contains three independent specifications that together define the next iteration of `gsd-2`'s auto-mode harness. They were split out of a single brainstorm document (`composed-lite-harness-brainstorm.md`, later renamed `phase-discipline-preset.md`) during the v6 rewrite on 2026-04-23, extended in v7 (same date) with a B-min skeleton, factually corrected in v7.1 (same date) after a receiving-code-review pass identified 8 errors, and doc-synced in v7.2 (2026-04-24) to record the branch-landed v1.1 Admission semantics.
 
 ## Scope
 
 | Spec | Subject | Status |
 |---|---|---|
-| [`phase-discipline-preset.md`](./phase-discipline-preset.md) | Multi-model cross-review preset + 8-phase milestone ordering skeleton on top of `auto-mode` | **v7.1 — design draft with required contract-sync residue.** Current `main` already contains the additive `advise` runtime path, but still lacks validator acceptance and the preset consumer surface; landing v1 therefore still requires PR-3a contract sync before PR-3b is usable. v7's claim that the existing pre-dispatch contract suffices was incorrect; see §16's v7.1 changelog entry for the factual corrections |
+| [`phase-discipline-preset.md`](./phase-discipline-preset.md) | Multi-model cross-review preset + 8-phase milestone ordering skeleton on top of `auto-mode` | **v7.2 — design draft with required contract-sync residue.** Current `main` already contains the additive `advise` runtime path, but still lacks validator acceptance and the preset consumer surface; landing v1 therefore still requires PR-3a contract sync before PR-3b is usable. v7.2 additionally records the branch-landed v1.1 Admission semantics (prompt-only hook, builtin-marker boundary, deterministic retry cleanup) without changing the broader `main`-landing analysis. |
 | [`2026-04-23-agents-md-docs-map-v1.md`](./2026-04-23-agents-md-docs-map-v1.md) | Extension-side `AGENTS.md` routing-table convention with section-aware loading; platform loader unchanged | **v1 — accepted** |
 | [`2026-04-23-cli-tool-restriction-chain.md`](./2026-04-23-cli-tool-restriction-chain.md) | Thread `--tools` restriction end-to-end through the CLI print/JSON subagent path so the built-in `Skill` tool can actually be excluded | **v1 — accepted** |
 
 ## Dependency graph
 
 ```
-phase-discipline-preset (v7.1)
+phase-discipline-preset (v7.2)
 ├─ Depends on (existing, stable):
 │    • preferences-types.ts (PostUnitHookConfig, PreDispatchHookConfig)
 │    • rule-registry.ts (listRules, runPreDispatchHooks)

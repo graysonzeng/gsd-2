@@ -34,6 +34,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { logWarning, logError } from "./workflow-logger.js";
 import { join } from "node:path";
 import { hasImplementationArtifacts, classifyMilestoneSummaryContent } from "./auto-recovery.js";
+import { shouldBlockMilestoneClose } from "./phase-discipline/verify-fuse.js";
 import {
   buildDiscussMilestonePrompt,
   buildResearchMilestonePrompt,
@@ -939,6 +940,22 @@ export const DISPATCH_RULES: DispatchRule[] = [
         const validationContent = await loadFile(validationFile);
         if (validationContent) {
           const verdict = extractVerdict(validationContent);
+          const hasExplicitValidationFailure = verdict === "needs-attention" || verdict === "needs-remediation";
+          const verifyFuseDecision = hasExplicitValidationFailure
+            ? shouldBlockMilestoneClose({
+                basePath,
+                milestoneId: mid,
+                validationPassed: false,
+              })
+            : { blocked: false };
+          if (verifyFuseDecision.blocked) {
+            return {
+              action: "stop",
+              reason: verifyFuseDecision.reason
+                ?? `Cannot complete milestone ${mid}: VALIDATION verdict is "${verdict}" and verify_fuse_on_fail is enabled.`,
+              level: "warning",
+            };
+          }
           if (verdict === "needs-remediation") {
             return {
               action: "stop",

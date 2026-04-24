@@ -7,6 +7,8 @@ import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { defaultReviewerModel, inferProvider, pickReviewerModel, ReviewerCoreError, runReview } from "../shared-harness/index.js";
 import type { PostUnitHookConfig, HookExecutionState } from "../types.js";
 import { logWarning } from "../workflow-logger.js";
+import { maybeRunPhaseDisciplineImplPlanBuiltInHook } from "./impl-plan-validator.js";
+import { runPhaseDisciplineVerifyFuseHook } from "./verify-fuse.js";
 
 export interface PhaseDisciplineReviewerSpec {
   model: string;
@@ -589,14 +591,33 @@ export async function maybeRunPhaseDisciplineBuiltInHook(input: {
   hookConfig: PostUnitHookConfig | undefined;
   currentModel?: { id?: string; provider?: string } | null;
 }): Promise<boolean> {
-  const builtin = input.hookConfig?.builtin?.trim();
+  if (!input.hookState || !input.hookConfig) {
+    return false;
+  }
+
+  const handledByImplPlanValidator = await maybeRunPhaseDisciplineImplPlanBuiltInHook({
+    unitType: input.unitType,
+    basePath: input.basePath,
+    hookState: input.hookState,
+    hookConfig: input.hookConfig,
+  });
+  if (handledByImplPlanValidator) {
+    return true;
+  }
+  const builtin = input.hookConfig.builtin?.trim();
+  if (builtin === "phase-discipline-verify-fuse") {
+    await runPhaseDisciplineVerifyFuseHook({
+      hookName: input.hookState.hookName,
+      triggerUnitId: input.hookState.triggerUnitId,
+      basePath: input.basePath,
+      hookConfig: input.hookConfig,
+    });
+    return true;
+  }
   if (
     builtin !== "phase-discipline-code-review"
     && builtin !== "phase-discipline-design-review"
   ) {
-    return false;
-  }
-  if (!input.hookState || !input.hookConfig) {
     return false;
   }
   await runPhaseDisciplineReviewerHook({

@@ -66,6 +66,149 @@ test("completing-milestone blocks when VALIDATION verdict is needs-remediation (
   }
 });
 
+test("completing-milestone blocks needs-attention when verify_fuse_on_fail is enabled", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-remediation-"));
+  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+
+  try {
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "version: 1",
+        "verify_fuse_on_fail: true",
+        "---",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "M001-VALIDATION.md"),
+      [
+        "---",
+        "verdict: needs-attention",
+        "remediation_round: 0",
+        "---",
+        "",
+        "# Validation Report",
+        "",
+        "Manual follow-up required.",
+      ].join("\n"),
+    );
+
+    const ctx = {
+      mid: "M001",
+      midTitle: "Test Milestone",
+      basePath: base,
+      state: { phase: "completing-milestone" } as any,
+      prefs: {} as any,
+      session: undefined,
+    };
+
+    const result = await completingRule!.match(ctx);
+
+    assert.ok(result !== null, "rule should match");
+    assert.equal(result!.action, "stop", "should return stop action");
+    if (result!.action === "stop") {
+      assert.match(result.reason, /verify_fuse_on_fail/i);
+      assert.match(result.reason, /did not pass/i);
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("verify_fuse_on_fail takes priority over needs-remediation fallback", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-remediation-"));
+  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+
+  try {
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "version: 1",
+        "verify_fuse_on_fail: true",
+        "---",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "M001-VALIDATION.md"),
+      [
+        "---",
+        "verdict: needs-remediation",
+        "remediation_round: 0",
+        "---",
+        "",
+        "# Validation Report",
+        "",
+        "Remediation required.",
+      ].join("\n"),
+    );
+
+    const ctx = {
+      mid: "M001",
+      midTitle: "Test Milestone",
+      basePath: base,
+      state: { phase: "completing-milestone" } as any,
+      prefs: {} as any,
+      session: undefined,
+    };
+
+    const result = await completingRule!.match(ctx);
+
+    assert.ok(result !== null, "rule should match");
+    assert.equal(result!.action, "stop", "should return stop action");
+    if (result!.action === "stop") {
+      assert.match(result.reason, /verify_fuse_on_fail/i);
+      assert.doesNotMatch(result.reason, /Address the remediation findings and re-run validation/i);
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("completing-milestone does not block needs-attention by default", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-remediation-"));
+  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+
+  try {
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "M001-VALIDATION.md"),
+      [
+        "---",
+        "verdict: needs-attention",
+        "remediation_round: 0",
+        "---",
+        "",
+        "# Validation Report",
+        "",
+        "Manual follow-up required.",
+      ].join("\n"),
+    );
+
+    const ctx = {
+      mid: "M001",
+      midTitle: "Test Milestone",
+      basePath: base,
+      state: { phase: "completing-milestone" } as any,
+      prefs: {} as any,
+      session: undefined,
+    };
+
+    const result = await completingRule!.match(ctx);
+
+    if (result && result.action === "stop") {
+      assert.ok(
+        !/verify_fuse_on_fail/i.test(result.reason),
+        "default needs-attention path should not be blocked by verify-fuse",
+      );
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("completing-milestone proceeds normally when VALIDATION verdict is pass (#2675 guard)", async () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-remediation-"));
   mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });

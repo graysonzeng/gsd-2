@@ -1291,5 +1291,13 @@ export function validatePreferences(preferences: GSDPreferences): {
     }
   }
 
+  if (preferences.verify_fuse_on_fail !== undefined) {
+    if (typeof preferences.verify_fuse_on_fail === "boolean") {
+      validated.verify_fuse_on_fail = preferences.verify_fuse_on_fail;
+    } else {
+      errors.push("verify_fuse_on_fail must be a boolean");
+    }
+  }
+
   return { preferences: validated, errors, warnings };
 }

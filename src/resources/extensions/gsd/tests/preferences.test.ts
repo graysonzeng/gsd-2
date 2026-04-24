@@ -389,6 +389,7 @@ test("pre-dispatch hook action validation via validatePreferences", () => {
 test("post-unit hook extended fields + milestone_profile validation", () => {
   const { preferences, errors } = validatePreferences({
     milestone_profile: "phase-discipline-8step",
+    verify_fuse_on_fail: true,
     post_unit_hooks: [{
       name: "phase-discipline-code-review",
       after: ["execute-task"],
@@ -402,9 +403,15 @@ test("post-unit hook extended fields + milestone_profile validation", () => {
 
   assert.equal(errors.length, 0);
   assert.equal(preferences.milestone_profile, "phase-discipline-8step");
+  assert.equal(preferences.verify_fuse_on_fail, true);
   assert.equal(preferences.post_unit_hooks?.[0]?.provider, "openai");
   assert.equal(preferences.post_unit_hooks?.[0]?.cross_review, 2);
   assert.deepEqual(preferences.post_unit_hooks?.[0]?.cross_review_models, ["anthropic/claude-sonnet-4-6"]);
+});
+
+test("verify_fuse_on_fail must be boolean", () => {
+  const { errors } = validatePreferences({ verify_fuse_on_fail: "yes" as any });
+  assert.ok(errors.some((error) => error.includes("verify_fuse_on_fail must be a boolean")));
 });
 
 test("phase-discipline preset builtins survive loadEffectiveGSDPreferences merge + revalidate", () => {
@@ -432,8 +439,12 @@ test("phase-discipline preset builtins survive loadEffectiveGSDPreferences merge
     const loaded = loadEffectiveGSDPreferences();
     assert.notEqual(loaded, null);
     assert.equal(loaded!.preferences.pre_dispatch_hooks?.[0]?.builtin, "phase-discipline-profile-dispatch");
-    assert.equal(loaded!.preferences.post_unit_hooks?.[0]?.builtin, "phase-discipline-code-review");
-    assert.equal(loaded!.preferences.post_unit_hooks?.[1]?.builtin, "phase-discipline-design-review");
+    assert.equal(loaded!.preferences.post_unit_hooks?.[0]?.name, "phase-discipline-admission");
+    assert.equal(loaded!.preferences.post_unit_hooks?.[0]?.builtin, undefined);
+    assert.equal(loaded!.preferences.post_unit_hooks?.[1]?.builtin, "phase-discipline-code-review");
+    assert.equal(loaded!.preferences.post_unit_hooks?.[2]?.builtin, "phase-discipline-design-review");
+    assert.equal(loaded!.preferences.post_unit_hooks?.[3]?.builtin, "phase-discipline-impl-plan-validator");
+    assert.equal(loaded!.preferences.post_unit_hooks?.[4]?.builtin, "phase-discipline-verify-fuse");
   } finally {
     process.chdir(originalCwd);
     if (originalGsdHome === undefined) delete process.env.GSD_HOME;

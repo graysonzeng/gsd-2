@@ -8,8 +8,18 @@ export type PhaseDisciplineSequenceEntry = {
 export const PHASE_DISCIPLINE_8STEP_SEQUENCE: PhaseDisciplineSequenceEntry[] = [
   { phase: "P0", units: ["discuss-milestone"], gating: "soft" },
   { phase: "P1", units: ["research-milestone", "research-slice"], gating: "soft" },
-  { phase: "P2", units: ["plan-slice", "refine-slice"], gating: "soft" },
-  { phase: "P3", units: ["plan-slice"], gating: "soft" },
+  {
+    phase: "P2",
+    units: ["plan-slice", "refine-slice"],
+    gating: "strict",
+    completionArtifact: ".gsd/milestones/{mid}/slices/{sid}/IMPL-PLAN-VALIDATION.md",
+  },
+  {
+    phase: "P3",
+    units: ["plan-slice"],
+    gating: "strict",
+    completionArtifact: ".gsd/milestones/{mid}/slices/{sid}/IMPL-PLAN-VALIDATION.md",
+  },
   {
     phase: "P4",
     units: ["execute-task"],

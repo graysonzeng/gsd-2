@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import type { PreDispatchResult } from "../types.js";
-import { resolveMilestonePath, resolveSliceFile, resolveTasksDir } from "../paths.js";
+import { resolveMilestonePath, resolveSliceFile, resolveSlicePath, resolveTasksDir } from "../paths.js";
 import { logWarning } from "../workflow-logger.js";
 import { PHASE_DISCIPLINE_8STEP_SEQUENCE } from "./profile-map.js";
 
@@ -46,6 +46,30 @@ function hasAnyTaskSummaryForActiveSlice(basePath: string, milestoneId: string, 
   return readdirSync(tasksDir).some((name) => /-SUMMARY\.md$/i.test(name));
 }
 
+function hasPassingPhaseCompletionArtifact(basePath: string, milestoneId: string, sliceId: string, phase: "P2" | "P3"): boolean {
+  const entry = PHASE_DISCIPLINE_8STEP_SEQUENCE.find((item) => item.phase === phase);
+  if (!entry?.completionArtifact) return false;
+  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
+  if (!slicePath) return false;
+  const fileName = entry.completionArtifact
+    .replace(/^.*\/slices\/\{sid\}\//, "")
+    .replace(/\{mid\}/g, milestoneId)
+    .replace(/\{sid\}/g, sliceId);
+  const artifactPath = join(slicePath, fileName);
+  if (!existsSync(artifactPath)) return false;
+  try {
+    const content = readFileSync(artifactPath, "utf8");
+    const resultMatch = content.match(/^- Result: (pass|fail)\s*$/m);
+    return resultMatch?.[1] === "pass";
+  } catch {
+    return false;
+  }
+}
+
+function hasPhaseCompletionArtifact(basePath: string, milestoneId: string, sliceId: string, phase: "P2" | "P3"): boolean {
+  return hasPassingPhaseCompletionArtifact(basePath, milestoneId, sliceId, phase);
+}
+
 function recordDisagreement(basePath: string, milestoneId: string, phase: string, currentUnitType: string, advisedUnitType: string): boolean {
   const key = `${basePath}:${milestoneId}:${phase}:${currentUnitType}->${advisedUnitType}`;
   const next = (disagreementCounts.get(key) ?? 0) + 1;
@@ -87,6 +111,22 @@ export function evaluatePhaseDisciplineProfileDispatch(input: {
     input.unitType === "execute-task"
     && sliceId
     && !hasActiveSlicePlan(input.basePath, milestoneId, sliceId)
+  ) {
+    if (!recordDisagreement(input.basePath, milestoneId, phaseLabel, input.unitType, "plan-slice")) {
+      return {
+        action: "advise",
+        prompt: input.prompt,
+        advisedUnitType: "plan-slice",
+        firedHooks: [],
+      };
+    }
+  }
+
+  if (
+    input.unitType === "execute-task"
+    && sliceId
+    && hasActiveSlicePlan(input.basePath, milestoneId, sliceId)
+    && !hasPhaseCompletionArtifact(input.basePath, milestoneId, sliceId, "P3")
   ) {
     if (!recordDisagreement(input.basePath, milestoneId, phaseLabel, input.unitType, "plan-slice")) {
       return {
