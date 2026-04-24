@@ -110,6 +110,15 @@ async function runReviewWithTimeout(
   }
 }
 
+export interface ReviewerAttemptMetrics {
+  reviewer: string;
+  status: "succeeded" | "failed" | "fallback_succeeded";
+  error?: string;
+  outputChars: number;
+  attempts: number;
+  wallClockMs?: number;
+}
+
 function writeObservabilityLog(input: {
   basePath: string;
   hookName: string;
@@ -122,10 +131,13 @@ function writeObservabilityLog(input: {
   overall: string;
   startedAt: string;
   completedAt: string;
+  reviewerMetrics?: ReviewerAttemptMetrics[];
 }): void {
   const artifactDir = dirname(input.artifactPath);
   const logDir = join(artifactDir, ".phase-discipline");
   mkdirSync(logDir, { recursive: true });
+  const startMs = new Date(input.startedAt).getTime();
+  const endMs = new Date(input.completedAt).getTime();
   const logPath = join(logDir, `${input.hookName}-${sanitizeForFileName(input.triggerUnitId)}.json`);
   writeFileSync(logPath, JSON.stringify({
     hookName: input.hookName,
@@ -138,7 +150,28 @@ function writeObservabilityLog(input: {
     overall: input.overall,
     startedAt: input.startedAt,
     completedAt: input.completedAt,
+    wallClockMs: endMs - startMs,
+    reviewerMetrics: input.reviewerMetrics ?? [],
   }, null, 2), "utf8");
+}
+
+function writeReviewerRawLog(input: {
+  artifactPath: string;
+  hookName: string;
+  triggerUnitId: string;
+  reviewerIndex: number;
+  rawOutput: string;
+  stderrOutput: string;
+}): void {
+  const logDir = join(dirname(input.artifactPath), ".phase-discipline");
+  mkdirSync(logDir, { recursive: true });
+  const stem = `${input.hookName}-${sanitizeForFileName(input.triggerUnitId)}-reviewer${input.reviewerIndex}`;
+  if (input.rawOutput) {
+    writeFileSync(join(logDir, `${stem}-stdout.log`), input.rawOutput, "utf8");
+  }
+  if (input.stderrOutput) {
+    writeFileSync(join(logDir, `${stem}-stderr.log`), input.stderrOutput, "utf8");
+  }
 }
 
 function defaultPickReviewers(input: {
@@ -347,6 +380,7 @@ export async function runPhaseDisciplineReviewerHook(
   }
 
   const runReviewImpl = input.runReviewImpl ?? runReview;
+  const reviewerMetrics: ReviewerAttemptMetrics[] = [];
   const settled = await Promise.allSettled(
     reviewers.map((reviewer) => runReviewWithTimeout(
       runReviewImpl,
@@ -364,6 +398,21 @@ export async function runPhaseDisciplineReviewerHook(
     if (entry.status === "fulfilled") {
       results.push(entry.value);
       succeeded.push(reviewerKey);
+      const lastAttempt = entry.value.attempts[entry.value.attempts.length - 1];
+      reviewerMetrics.push({
+        reviewer: reviewerKey,
+        status: "succeeded",
+        outputChars: lastAttempt?.rawOutput?.length ?? 0,
+        attempts: entry.value.attempts.length,
+      });
+      writeReviewerRawLog({
+        artifactPath,
+        hookName: input.hookName,
+        triggerUnitId: input.triggerUnitId,
+        reviewerIndex: index,
+        rawOutput: lastAttempt?.rawOutput ?? "",
+        stderrOutput: lastAttempt?.stderrOutput ?? "",
+      });
       return;
     }
     const errorMessage = entry.reason instanceof ReviewerCoreError
@@ -376,7 +425,80 @@ export async function runPhaseDisciplineReviewerHook(
       `phase-discipline reviewer ${reviewerKey} failed for ${input.triggerUnitType} ${input.triggerUnitId}: ${errorMessage}`,
     );
     failed.push({ reviewer: reviewerKey, error: errorMessage });
+    const failedAttempts = entry.reason instanceof ReviewerCoreError ? entry.reason.attempts : [];
+    const lastFailedAttempt = failedAttempts[failedAttempts.length - 1];
+    reviewerMetrics.push({
+      reviewer: reviewerKey,
+      status: "failed",
+      error: errorMessage,
+      outputChars: lastFailedAttempt?.rawOutput?.length ?? 0,
+      attempts: failedAttempts.length || 1,
+    });
+    if (lastFailedAttempt) {
+      writeReviewerRawLog({
+        artifactPath,
+        hookName: input.hookName,
+        triggerUnitId: input.triggerUnitId,
+        reviewerIndex: index,
+        rawOutput: lastFailedAttempt.rawOutput ?? "",
+        stderrOutput: lastFailedAttempt.stderrOutput ?? "",
+      });
+    }
   });
+
+  // OQ-4: If all reviewers failed and model_fallbacks are configured, try fallbacks in order
+  if (results.length === 0 && input.hookConfig.model_fallbacks?.length) {
+    for (const fallbackModelStr of input.hookConfig.model_fallbacks) {
+      const fallbackSpec = resolveReviewerSpec(fallbackModelStr);
+      const fallbackKey = `${fallbackSpec.provider}/${fallbackSpec.model}`;
+      try {
+        const fallbackResult = await runReviewWithTimeout(
+          runReviewImpl,
+          fallbackSpec,
+          input,
+          systemPrompt,
+          reviewPrompt,
+          targetContent,
+        );
+        results.push(fallbackResult);
+        succeeded.push(fallbackKey);
+        const lastAttempt = fallbackResult.attempts[fallbackResult.attempts.length - 1];
+        reviewerMetrics.push({
+          reviewer: fallbackKey,
+          status: "fallback_succeeded",
+          outputChars: lastAttempt?.rawOutput?.length ?? 0,
+          attempts: fallbackResult.attempts.length,
+        });
+        writeReviewerRawLog({
+          artifactPath,
+          hookName: input.hookName,
+          triggerUnitId: input.triggerUnitId,
+          reviewerIndex: reviewers.length + input.hookConfig.model_fallbacks.indexOf(fallbackModelStr),
+          rawOutput: lastAttempt?.rawOutput ?? "",
+          stderrOutput: lastAttempt?.stderrOutput ?? "",
+        });
+        logWarning(
+          "dispatch",
+          `phase-discipline reviewer fallback ${fallbackKey} succeeded for ${input.triggerUnitType} ${input.triggerUnitId}`,
+        );
+        break;
+      } catch (fbErr) {
+        const fbMsg = fbErr instanceof Error ? fbErr.message : String(fbErr);
+        logWarning(
+          "dispatch",
+          `phase-discipline reviewer fallback ${fallbackKey} also failed for ${input.triggerUnitType} ${input.triggerUnitId}: ${fbMsg}`,
+        );
+        failed.push({ reviewer: `fallback:${fallbackKey}`, error: fbMsg });
+        reviewerMetrics.push({
+          reviewer: `fallback:${fallbackKey}`,
+          status: "failed",
+          error: fbMsg,
+          outputChars: 0,
+          attempts: 1,
+        });
+      }
+    }
+  }
 
   if (results.length === 0) {
     const fallbackArtifact = [
@@ -407,6 +529,7 @@ export async function runPhaseDisciplineReviewerHook(
       overall: "reviewer_unavailable",
       startedAt,
       completedAt: new Date().toISOString(),
+      reviewerMetrics,
     });
     return {
       artifactPath,
@@ -448,6 +571,7 @@ export async function runPhaseDisciplineReviewerHook(
     overall: merged.overallAssessment,
     startedAt,
     completedAt: new Date().toISOString(),
+    reviewerMetrics,
   });
 
   return {

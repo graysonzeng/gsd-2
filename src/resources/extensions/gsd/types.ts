@@ -295,6 +295,8 @@ export interface PostUnitHookConfig {
   cross_review?: number;
   /** Advanced override: force specific extra reviewer models. Length must be ≤ `cross_review - 1`. */
   cross_review_models?: string[];
+  /** Fallback models tried in order if the primary reviewer fails (OQ-4). Provider-qualified strings like `"openai/gpt-5.4"`. */
+  model_fallbacks?: string[];
   builtin?: string;
 }
 

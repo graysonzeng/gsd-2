@@ -506,6 +506,22 @@ export function validatePreferences(preferences: GSDPreferences): {
           continue;
         }
       }
+      if (hook.model_fallbacks !== undefined) {
+        if (Array.isArray(hook.model_fallbacks)) {
+          const fallbacks = hook.model_fallbacks
+            .filter((value): value is string => typeof value === "string")
+            .map((value) => value.trim())
+            .filter(Boolean);
+          if (fallbacks.length !== hook.model_fallbacks.length) {
+            errors.push(`post_unit_hooks "${name}" model_fallbacks must be an array of non-empty strings`);
+            continue;
+          }
+          validHook.model_fallbacks = fallbacks;
+        } else {
+          errors.push(`post_unit_hooks "${name}" model_fallbacks must be an array of strings`);
+          continue;
+        }
+      }
       if (typeof hook.artifact === "string" && hook.artifact.trim()) {
         validHook.artifact = hook.artifact.trim();
       }
