@@ -192,6 +192,8 @@ describe("AuthStorage — rate-limit backoff", () => {
 
 	it("single credential: rate_limit error type still backs off", async () => {
 		const storage = inMemory({ anthropic: makeKey("sk-only") });
+		const origEnv = process.env.ANTHROPIC_API_KEY;
+		delete process.env.ANTHROPIC_API_KEY;
 		await storage.getApiKey("anthropic");
 
 		// rate_limit should still back off even single credentials
@@ -203,6 +205,11 @@ describe("AuthStorage — rate-limit backoff", () => {
 		// Key should be backed off
 		const key = await storage.getApiKey("anthropic");
 		assert.equal(key, undefined);
+		if (origEnv === undefined) {
+			delete process.env.ANTHROPIC_API_KEY;
+		} else {
+			process.env.ANTHROPIC_API_KEY = origEnv;
+		}
 	});
 
 	it("session-sticky: marks the correct credential as backed off", async () => {

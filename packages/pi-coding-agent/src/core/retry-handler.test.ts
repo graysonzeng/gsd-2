@@ -51,6 +51,8 @@ interface MockDeps {
 	continueFn: Mock<() => Promise<void>>;
 	onModelChangeFn: Mock<(model: Model<any>) => void>;
 	markUsageLimitReached: Mock<(...args: any[]) => boolean>;
+	hasFallbackAuth: Mock<(provider: string) => boolean>;
+	getCredentialsForProvider: Mock<(provider: string) => Array<{ type: "api_key"; key: string }>>;
 	findFallback: Mock<(...args: any[]) => Promise<any>>;
 	findModel: Mock<(provider: string, modelId: string) => Model<Api> | undefined>;
 }
@@ -59,6 +61,8 @@ function createMockDeps(overrides?: {
 	model?: Model<Api>;
 	retryEnabled?: boolean;
 	markUsageLimitReachedResult?: boolean;
+	hasFallbackAuthResult?: boolean;
+	credentialCount?: number;
 	fallbackResult?: any;
 	findModelResult?: (provider: string, modelId: string) => Model<Api> | undefined;
 	retrySettings?: {
@@ -73,6 +77,10 @@ function createMockDeps(overrides?: {
 	const onModelChangeFn = mock.fn((_model: Model<any>) => {});
 	const markUsageLimitReached = mock.fn(
 		() => overrides?.markUsageLimitReachedResult ?? false,
+	);
+	const hasFallbackAuth = mock.fn(() => overrides?.hasFallbackAuthResult ?? false);
+	const getCredentialsForProvider = mock.fn(
+		() => Array.from({ length: overrides?.credentialCount ?? 1 }, (_, index) => ({ type: "api_key" as const, key: `sk-${index + 1}` })),
 	);
 	const findFallback = mock.fn(async () => overrides?.fallbackResult ?? null);
 	const findModel = mock.fn(
@@ -103,6 +111,8 @@ function createMockDeps(overrides?: {
 		modelRegistry: {
 			authStorage: {
 				markUsageLimitReached,
+				hasFallbackAuth,
+				getCredentialsForProvider,
 			},
 			find: findModel,
 		} as unknown as ModelRegistry,
@@ -115,7 +125,7 @@ function createMockDeps(overrides?: {
 		onModelChange: onModelChangeFn,
 	};
 
-	return { deps, emittedEvents, continueFn, onModelChangeFn, markUsageLimitReached, findFallback, findModel };
+	return { deps, emittedEvents, continueFn, onModelChangeFn, markUsageLimitReached, hasFallbackAuth, getCredentialsForProvider, findFallback, findModel };
 }
 
 // ─── _classifyErrorType (tested via handleRetryableError behavior) ──────────
@@ -373,6 +383,59 @@ describe("RetryHandler — long-context entitlement 429 (#2803)", () => {
 				"402 This request requires more credits, or fewer max_tokens. You requested up to 32000 tokens, but can only afford 329.",
 			);
 			assert.equal(handler.isRetryableError(msg), true);
+		});
+
+		it("does NOT consider auth-invalid errors retryable when no alternate auth exists", () => {
+			const { deps } = createMockDeps({ credentialCount: 1, hasFallbackAuthResult: false });
+			const handler = new RetryHandler(deps);
+			const msg = errorMessage("401 无效的令牌");
+			assert.equal(handler.isRetryableError(msg), false);
+		});
+
+		it("considers auth-invalid errors retryable when fallback auth exists", () => {
+			const { deps } = createMockDeps({ credentialCount: 1, hasFallbackAuthResult: true });
+			const handler = new RetryHandler(deps);
+			const msg = errorMessage("401 无效的令牌");
+			assert.equal(handler.isRetryableError(msg), true);
+		});
+	});
+
+	describe("auth-invalid credential exclusion", () => {
+		it("retries immediately when another stored credential is available", async () => {
+			const { deps, emittedEvents, markUsageLimitReached } = createMockDeps({
+				credentialCount: 2,
+				markUsageLimitReachedResult: true,
+			});
+
+			const handler = new RetryHandler(deps);
+			const msg = errorMessage("401 无效的令牌");
+
+			const result = await handler.handleRetryableError(msg);
+
+			assert.equal(result, true);
+			assert.equal(markUsageLimitReached.mock.calls.length, 1);
+			const retryStart = emittedEvents.find((e) => e.type === "auto_retry_start");
+			assert.ok(retryStart);
+			assert.match(String(retryStart?.errorMessage || ""), /excluding invalid credential/);
+		});
+
+		it("retries immediately when stored credential is invalid but env or fallback auth exists", async () => {
+			const { deps, emittedEvents, markUsageLimitReached, hasFallbackAuth } = createMockDeps({
+				credentialCount: 1,
+				hasFallbackAuthResult: true,
+				markUsageLimitReachedResult: false,
+			});
+
+			const handler = new RetryHandler(deps);
+			const msg = errorMessage("401 invalid api key");
+
+			const result = await handler.handleRetryableError(msg);
+
+			assert.equal(result, true);
+			assert.equal(markUsageLimitReached.mock.calls.length, 1);
+			assert.equal(hasFallbackAuth.mock.calls.length, 1);
+			const retryStart = emittedEvents.find((e) => e.type === "auto_retry_start");
+			assert.ok(retryStart);
 		});
 	});
 

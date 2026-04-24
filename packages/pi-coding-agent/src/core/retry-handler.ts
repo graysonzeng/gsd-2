@@ -112,6 +112,9 @@ export class RetryHandler {
 		if (isContextOverflow(message, contextWindow)) return false;
 
 		const err = message.errorMessage;
+		if (this._isAuthInvalidError(err)) {
+			return this._canRetryAuthInvalidError();
+		}
 		// "temporarily backed off" is intentionally excluded: it is an internally-
 		// generated error from getApiKey() when credentials are in a backoff window.
 		// Re-entering the retry handler for that message creates a cascade of empty
@@ -157,6 +160,7 @@ export class RetryHandler {
 			const errorType = this._classifyErrorType(message.errorMessage);
 			const isRateLimit = errorType === "rate_limit";
 			const isQuotaError = errorType === "quota_exhausted";
+			const isAuthInvalid = errorType === "auth_invalid";
 
 			// Credit-aware retry (OpenRouter-style 402 affordability errors):
 			// when provider reports "can only afford N", lower maxTokens and retry
@@ -192,6 +196,30 @@ export class RetryHandler {
 					// Retry immediately with the next credential - don't increment _retryAttempt
 					this._scheduleContinue(retryGeneration);
 
+					return true;
+				}
+			}
+
+			if (isAuthInvalid) {
+				const provider = this._deps.getModel()!.provider;
+				const authStorage = this._deps.modelRegistry.authStorage;
+				const hasAlternate = authStorage.markUsageLimitReached(provider, this._deps.getSessionId(), {
+					errorType,
+				});
+				const hasFallbackAuth = authStorage.hasFallbackAuth(provider);
+
+				if (hasAlternate || hasFallbackAuth) {
+					this._removeLastAssistantError();
+
+					this._deps.emit({
+						type: "auto_retry_start",
+						attempt: this._retryAttempt + 1,
+						maxAttempts: settings.maxRetries,
+						delayMs: 0,
+						errorMessage: `${message.errorMessage} (excluding invalid credential)`,
+					});
+
+					this._scheduleContinue(retryGeneration);
 					return true;
 				}
 			}
@@ -420,9 +448,23 @@ export class RetryHandler {
 		if (/requires more credits|can only afford|insufficient credits|not enough credits|credit balance/i.test(err))
 			return "quota_exhausted";
 		if (/quota|billing|exceeded.*limit|usage.*limit/i.test(err)) return "quota_exhausted";
+		if (this._isAuthInvalidError(err)) return "auth_invalid";
 		if (/rate.?limit|too many requests|429/i.test(err)) return "rate_limit";
 		if (/500|502|503|504|server.?error|internal.?error|service.?unavailable/i.test(err)) return "server_error";
 		return "unknown";
+	}
+
+	private _isAuthInvalidError(errorMessage: string): boolean {
+		return /\b401\b|invalid api key|invalid token|invalid credentials|invalid_auth|unauthorized|authentication failed|auth(?:entication)?[_ -]?error|无效的令牌|令牌无效|未授权/.test(
+			errorMessage.toLowerCase(),
+		);
+	}
+
+	private _canRetryAuthInvalidError(): boolean {
+		const provider = this._deps.getModel()?.provider;
+		if (!provider) return false;
+		const authStorage = this._deps.modelRegistry.authStorage;
+		return authStorage.getCredentialsForProvider(provider).length > 1 || authStorage.hasFallbackAuth(provider);
 	}
 
 	/**

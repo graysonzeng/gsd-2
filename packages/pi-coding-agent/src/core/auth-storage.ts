@@ -199,9 +199,10 @@ export class InMemoryAuthStorageBackend implements AuthStorageBackend {
 const BACKOFF_RATE_LIMIT_MS = 30_000; // 30s for rate limit / 429
 const BACKOFF_QUOTA_EXHAUSTED_MS = 30 * 60_000; // 30min for quota exhausted
 const BACKOFF_SERVER_ERROR_MS = 20_000; // 20s for 5xx server errors
+const BACKOFF_AUTH_INVALID_MS = 60_000; // 60s for invalid/stale credentials to allow env/fallback auth
 const BACKOFF_DEFAULT_MS = 60_000; // 60s fallback
 
-export type UsageLimitErrorType = "rate_limit" | "quota_exhausted" | "server_error" | "unknown";
+export type UsageLimitErrorType = "rate_limit" | "quota_exhausted" | "server_error" | "auth_invalid" | "unknown";
 
 /**
  * Get backoff duration for an error type.
@@ -214,6 +215,8 @@ function getBackoffDuration(errorType: UsageLimitErrorType): number {
 			return BACKOFF_QUOTA_EXHAUSTED_MS;
 		case "server_error":
 			return BACKOFF_SERVER_ERROR_MS;
+		case "auth_invalid":
+			return BACKOFF_AUTH_INVALID_MS;
 		default:
 			return BACKOFF_DEFAULT_MS;
 	}
@@ -455,11 +458,19 @@ export class AuthStorage {
 
 	/**
 	 * Check if any form of auth is configured for a provider.
-	 * Unlike getApiKey(), this doesn't refresh OAuth tokens.
 	 */
 	hasAuth(provider: string): boolean {
 		if (this.runtimeOverrides.has(provider)) return true;
 		if (this.data[provider]) return true;
+		if (getEnvApiKey(provider)) return true;
+		if (this.fallbackResolver?.(provider)) return true;
+		return false;
+	}
+
+	/**
+	 * Check whether auth exists outside stored auth.json credentials.
+	 */
+	hasFallbackAuth(provider: string): boolean {
 		if (getEnvApiKey(provider)) return true;
 		if (this.fallbackResolver?.(provider)) return true;
 		return false;
