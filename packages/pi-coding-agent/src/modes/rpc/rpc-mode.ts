@@ -25,6 +25,7 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import { RemoteTerminal } from "./remote-terminal.js";
 import type {
 	RpcCommand,
+	RpcExecutionCompleteEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcInitResult,
@@ -36,6 +37,7 @@ import type {
 // Re-export types for consumers
 export type {
 	RpcCommand,
+	RpcExecutionCompleteEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcInitResult,
@@ -44,6 +46,40 @@ export type {
 	RpcSessionState,
 	RpcV2Event,
 } from "./rpc-types.js";
+
+export function deriveExecutionCompleteEvent(
+	event: { messages?: Array<{ role?: string; stopReason?: string; errorMessage?: string }> },
+	runId: string,
+	stats: RpcExecutionCompleteEvent["stats"],
+): RpcExecutionCompleteEvent {
+	const last = event.messages?.[event.messages.length - 1];
+	if (last?.role === "assistant") {
+		if (last.stopReason === "aborted") {
+			return {
+				type: "execution_complete",
+				runId,
+				status: "cancelled",
+				...(last.errorMessage ? { reason: last.errorMessage } : {}),
+				stats,
+			};
+		}
+		if (last.stopReason === "error") {
+			return {
+				type: "execution_complete",
+				runId,
+				status: "error",
+				...(last.errorMessage ? { reason: last.errorMessage } : {}),
+				stats,
+			};
+		}
+	}
+	return {
+		type: "execution_complete",
+		runId,
+		status: "completed",
+		stats,
+	};
+}
 
 /**
  * Run in RPC mode.
@@ -464,12 +500,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			// execution_complete on agent_end
 			if (event.type === "agent_end" && currentRunId) {
 				const stats = session.getSessionStats();
-				const completionEvent = {
-					type: "execution_complete" as const,
-					runId: currentRunId,
-					status: "completed" as const,
-					stats,
-				};
+				const completionEvent = deriveExecutionCompleteEvent(event, currentRunId, stats);
 				if (!eventFilter || eventFilter.has("execution_complete")) {
 					output(completionEvent);
 				}

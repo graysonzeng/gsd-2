@@ -10,6 +10,7 @@ import { describe, it, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
+import { deriveExecutionCompleteEvent } from "./rpc-mode.js";
 import type {
 	RpcCommand,
 	RpcResponse,
@@ -190,6 +191,52 @@ describe("v2 type shapes", () => {
 		};
 		assert.equal(event.status, "error");
 		assert.equal(event.reason, "API rate limit exceeded");
+	});
+
+	it("deriveExecutionCompleteEvent preserves assistant error stopReason", () => {
+		const event = deriveExecutionCompleteEvent(
+			{
+				messages: [
+					{ role: "user" },
+					{ role: "assistant", stopReason: "error", errorMessage: "Rate limit exceeded" },
+				],
+			},
+			"run-error-1",
+			{} as any,
+		);
+
+		assert.equal(event.status, "error");
+		assert.equal(event.reason, "Rate limit exceeded");
+	});
+
+	it("deriveExecutionCompleteEvent preserves assistant aborted stopReason", () => {
+		const event = deriveExecutionCompleteEvent(
+			{
+				messages: [
+					{ role: "assistant", stopReason: "aborted", errorMessage: "Cancelled by user" },
+				],
+			},
+			"run-cancelled-1",
+			{} as any,
+		);
+
+		assert.equal(event.status, "cancelled");
+		assert.equal(event.reason, "Cancelled by user");
+	});
+
+	it("deriveExecutionCompleteEvent defaults to completed for normal assistant completion", () => {
+		const event = deriveExecutionCompleteEvent(
+			{
+				messages: [
+					{ role: "assistant", stopReason: "end_turn" },
+				],
+			},
+			"run-complete-1",
+			{} as any,
+		);
+
+		assert.equal(event.status, "completed");
+		assert.equal(event.reason, undefined);
 	});
 
 	it("RpcCostUpdateEvent matches expected shape", () => {

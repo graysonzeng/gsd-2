@@ -137,17 +137,17 @@ test('filter allows matching event types', () => {
 
 test('no filter allows all event types (undefined check)', () => {
   const filter: Set<string> | undefined = undefined
-  const shouldEmit = (type: string) => !filter || filter.has(type)
-  assert.ok(shouldEmit('agent_end'))
-  assert.ok(shouldEmit('message_update'))
-  assert.ok(shouldEmit('tool_execution_start'))
+  const shouldEmit = (activeFilter: Set<string> | undefined, type: string) => activeFilter === undefined || activeFilter.has(type)
+  assert.ok(shouldEmit(filter, 'agent_end'))
+  assert.ok(shouldEmit(filter, 'message_update'))
+  assert.ok(shouldEmit(filter, 'tool_execution_start'))
 })
 
 test('empty filter blocks all events', () => {
   const filter = new Set<string>()
-  const shouldEmit = (type: string) => !filter || filter.has(type)
-  assert.ok(!shouldEmit('agent_end'))
-  assert.ok(!shouldEmit('message_update'))
+  const shouldEmit = (activeFilter: Set<string> | undefined, type: string) => activeFilter === undefined || activeFilter.has(type)
+  assert.ok(!shouldEmit(filter, 'agent_end'))
+  assert.ok(!shouldEmit(filter, 'message_update'))
 })
 
 import {
@@ -156,6 +156,8 @@ import {
   EXIT_ERROR,
   EXIT_BLOCKED,
   EXIT_CANCELLED,
+  resolveHeadlessJsonStatus,
+  resolveHeadlessTextStatus,
   isInteractiveHeadlessTool,
   shouldArmHeadlessIdleTimeout,
 } from '../headless-events.js'
@@ -192,6 +194,22 @@ test('mapStatusToExitCode: "cancelled" returns EXIT_CANCELLED', () => {
 
 test('mapStatusToExitCode: unknown status returns EXIT_ERROR', () => {
   assert.equal(mapStatusToExitCode('unknown'), EXIT_ERROR)
+})
+
+test('resolveHeadlessTextStatus: provider/runtime errors stay error when not timed out', () => {
+  assert.equal(resolveHeadlessTextStatus({ blocked: false, exitCode: EXIT_ERROR, timedOut: false }), 'error')
+})
+
+test('resolveHeadlessTextStatus: actual timeout reports timeout', () => {
+  assert.equal(resolveHeadlessTextStatus({ blocked: false, exitCode: EXIT_ERROR, timedOut: true }), 'timeout')
+})
+
+test('resolveHeadlessJsonStatus: provider/runtime errors stay error when not timed out', () => {
+  assert.equal(resolveHeadlessJsonStatus({ blocked: false, exitCode: EXIT_ERROR, timedOut: false }), 'error')
+})
+
+test('resolveHeadlessJsonStatus: actual timeout reports timeout', () => {
+  assert.equal(resolveHeadlessJsonStatus({ blocked: false, exitCode: EXIT_ERROR, timedOut: true }), 'timeout')
 })
 
 test('isInteractiveHeadlessTool: ask_user_questions is interactive', () => {

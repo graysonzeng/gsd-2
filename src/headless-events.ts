@@ -7,6 +7,8 @@
  * Also defines exit code constants and the status→exit-code mapping function.
  */
 
+ import type { HeadlessJsonResult } from './headless-types.js'
+
 // ---------------------------------------------------------------------------
 // Exit Code Constants
 // ---------------------------------------------------------------------------
@@ -46,6 +48,28 @@ export function mapStatusToExitCode(status: string): number {
       return EXIT_ERROR
   }
 }
+
+ export function resolveHeadlessTextStatus(args: {
+  blocked: boolean
+  exitCode: number
+  timedOut: boolean
+ }): 'complete' | 'blocked' | 'cancelled' | 'error' | 'timeout' {
+  if (args.blocked) return 'blocked'
+  if (args.exitCode === EXIT_CANCELLED) return 'cancelled'
+  if (args.exitCode === EXIT_ERROR) return args.timedOut ? 'timeout' : 'error'
+  return 'complete'
+ }
+
+ export function resolveHeadlessJsonStatus(args: {
+  blocked: boolean
+  exitCode: number
+  timedOut: boolean
+ }): HeadlessJsonResult['status'] {
+  if (args.blocked) return 'blocked'
+  if (args.exitCode === EXIT_CANCELLED) return 'cancelled'
+  if (args.exitCode === EXIT_ERROR) return args.timedOut ? 'timeout' : 'error'
+  return 'success'
+ }
 
 // ---------------------------------------------------------------------------
 // Completion Detection

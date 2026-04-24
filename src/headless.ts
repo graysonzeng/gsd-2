@@ -23,20 +23,22 @@ import { getProjectSessionsDir } from './project-sessions.js'
 import { loadAndValidateAnswerFile, AnswerInjector } from './headless-answers.js'
 
 import {
-  isTerminalNotification,
   isBlockedNotification,
   isMilestoneReadyNotification,
+  isTerminalNotification,
   isQuickCommand,
   FIRE_AND_FORGET_METHODS,
+  resolveHeadlessJsonStatus,
+  resolveHeadlessTextStatus,
+  mapStatusToExitCode,
+  shouldArmHeadlessIdleTimeout,
+  isInteractiveHeadlessTool,
   IDLE_TIMEOUT_MS,
   NEW_MILESTONE_IDLE_TIMEOUT_MS,
-  isInteractiveHeadlessTool,
-  shouldArmHeadlessIdleTimeout,
   EXIT_SUCCESS,
   EXIT_ERROR,
   EXIT_BLOCKED,
   EXIT_CANCELLED,
-  mapStatusToExitCode,
 } from './headless-events.js'
 
 import type { OutputFormat, HeadlessJsonResult } from './headless-types.js'
@@ -367,6 +369,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   let blocked = false
   let completed = false
   let exitCode = 0
+  let timedOut = false
   let milestoneReady = false  // tracks "Milestone X ready." for auto-chaining
   const recentEvents: TrackedEvent[] = []
   const interactiveToolCallIds = new Set<string>()
@@ -391,10 +394,11 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   function emitBatchJsonResult(): void {
     if (options.outputFormat !== 'json') return
     const duration = Date.now() - startTime
-    const status: HeadlessJsonResult['status'] = blocked ? 'blocked'
-      : exitCode === EXIT_CANCELLED ? 'cancelled'
-      : exitCode === EXIT_ERROR ? (totalEvents === 0 ? 'error' : 'timeout')
-      : 'success'
+    const status: HeadlessJsonResult['status'] = resolveHeadlessJsonStatus({
+      blocked,
+      exitCode,
+      timedOut,
+    })
     const result: HeadlessJsonResult = {
       status,
       exitCode,
@@ -478,6 +482,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   const timeoutTimer = options.timeout > 0
     ? setTimeout(() => {
         process.stderr.write(`[headless] Timeout after ${options.timeout / 1000}s\n`)
+        timedOut = true
         exitCode = EXIT_ERROR
         resolveCompletion()
       }, options.timeout)
@@ -890,7 +895,11 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   // Summary
   const duration = ((Date.now() - startTime) / 1000).toFixed(1)
-  const status = blocked ? 'blocked' : exitCode === EXIT_CANCELLED ? 'cancelled' : exitCode === EXIT_ERROR ? (totalEvents === 0 ? 'error' : 'timeout') : 'complete'
+  const status = resolveHeadlessTextStatus({
+    blocked,
+    exitCode,
+    timedOut,
+  })
 
   process.stderr.write(`[headless] Status: ${status}\n`)
   process.stderr.write(`[headless] Duration: ${duration}s\n`)
