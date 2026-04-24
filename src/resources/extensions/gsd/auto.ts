@@ -445,6 +445,12 @@ function stopAutoCommandPolling(): void {
 
 export { type AutoDashboardData } from "./auto-dashboard.js";
 
+function hasCommandContext(
+  ctx: ExtensionContext | ExtensionCommandContext | null | undefined,
+): ctx is ExtensionCommandContext {
+  return typeof (ctx as Partial<ExtensionCommandContext> | null | undefined)?.newSession === "function";
+}
+
 export function getAutoDashboardData(): AutoDashboardData {
   const ledger = getLedger();
   const totals = ledger ? getProjectTotals(ledger.units) : null;
@@ -485,6 +491,10 @@ export function getAutoDashboardData(): AutoDashboardData {
 
 export function isAutoActive(): boolean {
   return s.active;
+}
+
+export function getAutoCommandContext(): ExtensionCommandContext | null {
+  return s.cmdCtx;
 }
 
 /** Test-only seam for validating auto-mode guards (#4704). Do not use in production code. */
@@ -1558,6 +1568,16 @@ export async function startAuto(
       return;
     }
 
+    const resumeCommandCtx = hasCommandContext(ctx) ? ctx : s.cmdCtx;
+    if (!resumeCommandCtx) {
+      if (lockBase()) {
+        releaseSessionLock(lockBase());
+        clearLock(lockBase());
+      }
+      ctx.ui.notify("Cannot resume: command context unavailable for session creation.", "error");
+      return;
+    }
+
     // Lock acquired — now safe to delete the pause file
     if (s.pausedSessionFile) {
       try { unlinkSync(s.pausedSessionFile); } catch (err) {
@@ -1572,7 +1592,7 @@ export async function startAuto(
     s.active = true;
     s.verbose = verboseMode;
     s.stepMode = requestedStepMode;
-    s.cmdCtx = ctx;
+    s.cmdCtx = resumeCommandCtx;
     s.basePath = base;
     // ── Resume worktree: if the paused session was inside a milestone worktree,
     // apply that path as the dispatch basePath immediately (#3723).

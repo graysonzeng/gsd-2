@@ -189,6 +189,22 @@ test("runUnit returns cancelled when session creation fails", async () => {
   assert.equal(pi.calls.length, 0);
 });
 
+test("runUnit marks structural session creation failures as non-transient", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  const pi = makeMockPi();
+  const s = makeMockSession({ newSessionThrows: "s.cmdCtx.newSession is not a function" });
+
+  const result = await runUnit(ctx, pi, s, "task", "T01", "prompt");
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.errorContext?.category, "session-failed");
+  assert.equal(result.errorContext?.isTransient, false);
+  assert.match(result.errorContext?.message ?? "", /s\.cmdCtx\.newSession is not a function/);
+  assert.equal(pi.calls.length, 0);
+});
+
 test("runUnit short-circuits phase-discipline built-in reviewer hooks before newSession", async () => {
   _resetPendingResolve();
   resetHookState();

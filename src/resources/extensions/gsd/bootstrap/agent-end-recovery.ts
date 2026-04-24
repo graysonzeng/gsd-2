@@ -234,19 +234,26 @@ export async function handleAgentEnd(
         }
       }
 
-      // No usable fallback — pause with a clearly named message.
+      // No usable immediate fallback — pause, then auto-resume once so the next
+      // dispatch can re-run model selection with the newly persisted blocklist.
       const blockedLabel = rejectedProvider && rejectedId ? `${rejectedProvider}/${rejectedId}` : "current model";
-      const pauseDetail = `Model ${blockedLabel} blocked for this account${errorDetail}. Configure a different model and restart /gsd auto.`;
+      const pauseDetail = `Model ${blockedLabel} blocked for this account${errorDetail}. Re-dispatching with blocked-model recovery.`;
       await pauseAutoForProviderError(ctx.ui, pauseDetail, () =>
         pauseAuto(ctx, pi, {
           message: pauseDetail,
           category: "provider",
-          isTransient: false,
+          isTransient: true,
         }),
       {
         isRateLimit: false,
-        isTransient: false,
-        retryAfterMs: 0,
+        isTransient: true,
+        retryAfterMs: 1,
+        resume: () => {
+          void resumeAutoAfterProviderDelay(pi, ctx).catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            ctx.ui.notify(`Blocked-model recovery failed to resume auto-mode: ${message}`, "error");
+          });
+        },
       });
       return;
     }

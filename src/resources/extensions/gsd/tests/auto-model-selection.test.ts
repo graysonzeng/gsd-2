@@ -223,6 +223,95 @@ test("selectAndApplyModel honors explicit phase models without downgrading (#361
   }
 });
 
+test("selectAndApplyModel falls through to a same-tier synthesized candidate after a blocked primary and unavailable start model", async () => {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = makeTempDir("gsd-routing-project-");
+  const tempGsdHome = makeTempDir("gsd-routing-home-");
+  const setModelCalls: string[] = [];
+
+  try {
+    mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+    mkdirSync(join(tempProject, ".gsd", "runtime"), { recursive: true });
+    writeFileSync(
+      join(tempProject, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "dynamic_routing:",
+        "  enabled: true",
+        "  capability_routing: false",
+        "  tier_models:",
+        "    heavy: claude-opus-4-6",
+        "---",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(
+      join(tempProject, ".gsd", "runtime", "blocked-models.json"),
+      JSON.stringify({
+        version: 1,
+        blocked: [
+          {
+            provider: "openai",
+            id: "gpt-4.1",
+            reason: "provider rejected it for this account",
+            blockedAt: Date.now(),
+          },
+        ],
+      }, null, 2) + "\n",
+      "utf-8",
+    );
+    process.env.GSD_HOME = tempGsdHome;
+    process.chdir(tempProject);
+
+    const availableModels = [
+      { id: "claude-opus-4-6", provider: "anthropic", api: "anthropic-messages" },
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+      { id: "gpt-4.1", provider: "openai", api: "responses" },
+    ];
+
+    const result = await selectAndApplyModel(
+      {
+        modelRegistry: { getAvailable: () => availableModels, getProviderAuthMode: () => "apiKey" },
+        sessionManager: { getSessionId: () => "test-session" },
+        ui: { notify: () => {} },
+        model: { provider: "anthropic", id: "claude-opus-4-6", api: "anthropic-messages" },
+      } as any,
+      {
+        setModel: async (model: { provider: string; id: string }) => {
+          setModelCalls.push(`${model.provider}/${model.id}`);
+          return !(model.provider === "anthropic" && model.id === "claude-opus-4-6");
+        },
+        emitBeforeModelSelect: async () => undefined,
+        getActiveTools: () => [],
+        emitAdjustToolSet: async () => undefined,
+        setActiveTools: () => {},
+        setThinkingLevel: () => {},
+      } as any,
+      "research-slice",
+      "M002/S02",
+      tempProject,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-opus-4-6" },
+      undefined,
+      true,
+      null,
+      null,
+    );
+
+    assert.deepEqual(setModelCalls, ["anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-6"]);
+    assert.equal(result.appliedModel?.provider, "anthropic");
+    assert.equal(result.appliedModel?.id, "claude-sonnet-4-6");
+  } finally {
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  }
+});
+
 // ─── resolveModelId tests ─────────────────────────────────────────────────
 
 test("resolveModelId: bare ID resolves to claude-code when session is claude-code (#3772)", () => {

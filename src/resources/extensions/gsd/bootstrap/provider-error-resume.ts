@@ -4,16 +4,28 @@ import type {
   ExtensionContext,
 } from "@gsd/pi-coding-agent";
 
-import { getAutoDashboardData, startAuto, type AutoDashboardData } from "../auto.js";
+import {
+  getAutoCommandContext,
+  getAutoDashboardData,
+  startAuto,
+  type AutoDashboardData,
+} from "../auto.js";
 import { resetTransientRetryState } from "./agent-end-recovery.js";
 import { resetSessionTimeoutState } from "../auto/phases.js";
 
 type AutoResumeSnapshot = Pick<AutoDashboardData, "active" | "paused" | "stepMode" | "basePath">;
 
+function hasCommandContext(
+  ctx: ExtensionContext | ExtensionCommandContext | null | undefined,
+): ctx is ExtensionCommandContext {
+  return typeof (ctx as Partial<ExtensionCommandContext> | null | undefined)?.newSession === "function";
+}
+
 export interface ProviderErrorResumeDeps {
   getSnapshot(): AutoResumeSnapshot;
   resetTransientRetryState(): void;
   resetSessionTimeoutState(): void;
+  resolveCommandContext(ctx: ExtensionContext): ExtensionCommandContext | null;
   startAuto(
     ctx: ExtensionCommandContext,
     pi: ExtensionAPI,
@@ -27,6 +39,7 @@ const defaultDeps: ProviderErrorResumeDeps = {
   getSnapshot: () => getAutoDashboardData(),
   resetTransientRetryState,
   resetSessionTimeoutState,
+  resolveCommandContext: (ctx) => (hasCommandContext(ctx) ? ctx : getAutoCommandContext()),
   startAuto,
 };
 
@@ -34,7 +47,7 @@ export async function resumeAutoAfterProviderDelay(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   deps: ProviderErrorResumeDeps = defaultDeps,
-): Promise<"resumed" | "already-active" | "not-paused" | "missing-base"> {
+): Promise<"resumed" | "already-active" | "not-paused" | "missing-base" | "missing-command-context"> {
   const snapshot = deps.getSnapshot();
 
   if (snapshot.active) return "already-active";
@@ -54,8 +67,17 @@ export async function resumeAutoAfterProviderDelay(
   deps.resetTransientRetryState();
   deps.resetSessionTimeoutState();
 
+  const resumeCommandCtx = deps.resolveCommandContext(ctx);
+  if (!resumeCommandCtx) {
+    ctx.ui.notify(
+      "Provider error recovery delay elapsed, but no resumable command context was available. Leaving auto-mode paused.",
+      "warning",
+    );
+    return "missing-command-context";
+  }
+
   await deps.startAuto(
-    ctx as ExtensionCommandContext,
+    resumeCommandCtx,
     pi,
     snapshot.basePath,
     false,

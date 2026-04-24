@@ -24,6 +24,13 @@ import { maybeRunPhaseDisciplineBuiltInHook } from "../phase-discipline/reviewer
 // older runUnit() call cannot clear the guard for a newer one.
 let sessionSwitchGeneration = 0;
 
+function isStructuralSessionCreationError(message: string): boolean {
+  return /\bis not a function\b/i.test(message)
+    || /\bTypeError\b/i.test(message)
+    || /\bCannot read properties of\b/i.test(message)
+    || /\bundefined is not an object\b/i.test(message);
+}
+
 /**
  * Execute a single unit: create a new session, send the prompt, and await
  * the agent_end promise. Returns a UnitResult describing what happened.
@@ -96,13 +103,21 @@ export async function runUnit(
     if (sessionTimeoutHandle) clearTimeout(sessionTimeoutHandle);
     const msg =
       sessionErr instanceof Error ? sessionErr.message : String(sessionErr);
+    const isStructural = isStructuralSessionCreationError(msg);
     debugLog("runUnit", {
       phase: "session-error",
       unitType,
       unitId,
       error: msg,
     });
-    return { status: "cancelled", errorContext: { message: `Session creation failed: ${msg}`, category: "session-failed", isTransient: true } };
+    return {
+      status: "cancelled",
+      errorContext: {
+        message: `Session creation failed: ${msg}`,
+        category: "session-failed",
+        isTransient: !isStructural,
+      },
+    };
   }
   if (sessionTimeoutHandle) clearTimeout(sessionTimeoutHandle);
 

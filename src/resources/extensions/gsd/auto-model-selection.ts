@@ -41,6 +41,19 @@ function reapplyThinkingLevel(
   pi.setThinkingLevel(level);
 }
 
+function mergeUniqueModelIds(primary: string, ...lists: readonly string[][]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>([primary]);
+  for (const list of lists) {
+    for (const id of list) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      merged.push(id);
+    }
+  }
+  return merged;
+}
+
 export function resolvePreferredModelConfig(
   unitType: string,
   autoModeStartModel: { provider: string; id: string; flatRateCtx?: FlatRateContext } | null,
@@ -155,6 +168,7 @@ export async function selectAndApplyModel(
     let effectiveModelConfig = modelConfig;
     let routingTierLabel = "";
     let routingEligibleModels = availableModels;
+    let sameTierEligibleModelIds: string[] = [];
 
     const taskMetadataForPolicy = unitType === "execute-task"
       ? extractTaskMetadata(unitId, basePath)
@@ -337,7 +351,23 @@ export async function selectAndApplyModel(
         }
         routingTierLabel = ` [${tierLabel(classification.tier)}]`;
         routing = { tier: classification.tier, modelDowngraded: routingResult.wasDowngraded };
+        sameTierEligibleModelIds = getEligibleModels(
+          classification.tier,
+          availableModelIds,
+          routingConfig,
+        ).filter(id => id !== routingResult.modelId);
       }
+    }
+
+    if (modelConfig.source === "synthesized" && sameTierEligibleModelIds.length > 0) {
+      effectiveModelConfig = {
+        ...effectiveModelConfig,
+        fallbacks: mergeUniqueModelIds(
+          effectiveModelConfig.primary,
+          effectiveModelConfig.fallbacks,
+          sameTierEligibleModelIds,
+        ),
+      };
     }
 
     const modelsToTry = [effectiveModelConfig.primary, ...effectiveModelConfig.fallbacks];
@@ -442,41 +472,40 @@ export async function selectAndApplyModel(
       }
     }
 
-    if (uokFlags.modelPolicy && policyAllowedModelKeys && !attemptedPolicyEligible) {
-      throw new Error(`Model policy denied dispatch for ${unitType}/${unitId} before prompt send`);
-    }
-  } else if (autoModeStartModel) {
-    // No model preference for this unit type — re-apply the model captured
-    // at auto-mode start to prevent bleed from shared global settings.json (#650).
-    const availableModels = ctx.modelRegistry.getAvailable();
-    const startBlocked = isModelBlocked(basePath, autoModeStartModel.provider, autoModeStartModel.id);
-    if (startBlocked) {
-      ctx.ui.notify(
-        `Auto-mode start model ${autoModeStartModel.provider}/${autoModeStartModel.id} is blocked for this account. Using current session model instead.`,
-        "warning",
-      );
-    } else {
-      const startModel = availableModels.find(
-        m => m.provider === autoModeStartModel.provider && m.id === autoModeStartModel.id,
-      );
-      if (startModel) {
-        const ok = await pi.setModel(startModel, { persist: false });
-        if (!ok) {
-          const byId = availableModels.find(
-            m => m.id === autoModeStartModel.id && !isModelBlocked(basePath, m.provider, m.id),
-          );
-          if (byId) {
-            const fallbackOk = await pi.setModel(byId, { persist: false });
-            if (fallbackOk) {
-              appliedModel = byId;
-              reapplyThinkingLevel(pi, autoModeStartThinkingLevel);
+    if (!appliedModel && autoModeStartModel) {
+      const startBlocked = isModelBlocked(basePath, autoModeStartModel.provider, autoModeStartModel.id);
+      if (startBlocked) {
+        ctx.ui.notify(
+          `Auto-mode start model ${autoModeStartModel.provider}/${autoModeStartModel.id} is blocked for this account. Using current session model instead.`,
+          "warning",
+        );
+      } else {
+        const startModel = availableModels.find(
+          m => m.provider === autoModeStartModel.provider && m.id === autoModeStartModel.id,
+        );
+        if (startModel) {
+          const ok = await pi.setModel(startModel, { persist: false });
+          if (!ok) {
+            const byId = availableModels.find(
+              m => m.id === autoModeStartModel.id && !isModelBlocked(basePath, m.provider, m.id),
+            );
+            if (byId) {
+              const fallbackOk = await pi.setModel(byId, { persist: false });
+              if (fallbackOk) {
+                appliedModel = byId;
+                reapplyThinkingLevel(pi, autoModeStartThinkingLevel);
+              }
             }
+          } else {
+            appliedModel = startModel;
+            reapplyThinkingLevel(pi, autoModeStartThinkingLevel);
           }
-        } else {
-          appliedModel = startModel;
-          reapplyThinkingLevel(pi, autoModeStartThinkingLevel);
         }
       }
+    }
+
+    if (uokFlags.modelPolicy && policyAllowedModelKeys && !attemptedPolicyEligible) {
+      throw new Error(`Model policy denied dispatch for ${unitType}/${unitId} before prompt send`);
     }
   }
 

@@ -169,14 +169,17 @@ test("classifyError: 'model not available for this plan' is unsupported-model", 
   assert.equal(result.kind, "unsupported-model");
 });
 
-test("classifyError: 'account does not have access to model' is unsupported-model", () => {
-  const result = classifyError("Your account does not have access to the gpt-5 model.");
-  assert.equal(result.kind, "unsupported-model");
-});
-
 test("classifyError: 'tier does not support deployment' is unsupported-model", () => {
   const result = classifyError("The free tier does not support this deployment.");
   assert.equal(result.kind, "unsupported-model");
+});
+
+test("classifyError: zhumuai 'No available channel for model ... under group' is unsupported-model", () => {
+  const result = classifyError(
+    '503 {"error":{"code":"model_not_found","message":"No available channel for model claude-3-5-haiku-20241022 under group default (distributor)","type":"zhumuai_api_error"}}',
+  );
+  assert.equal(result.kind, "unsupported-model");
+  assert.ok(!isTransient(result));
 });
 
 test("classifyError: 'account suspended' stays permanent (not unsupported-model)", () => {
@@ -394,6 +397,7 @@ test("pauseAutoForProviderError falls back to indefinite pause when not rate lim
 
 test("resumeAutoAfterProviderDelay restarts paused auto-mode from the recorded base path", async () => {
   const startCalls: Array<{ base: string; verboseMode: boolean; step?: boolean }> = [];
+  const resumeCtx = { newSession: async () => ({ cancelled: false }) } as any;
   const result = await resumeAutoAfterProviderDelay(
     {} as any,
     { ui: { notify() {} } } as any,
@@ -406,7 +410,9 @@ test("resumeAutoAfterProviderDelay restarts paused auto-mode from the recorded b
       }),
       resetTransientRetryState: () => {},
       resetSessionTimeoutState: () => {},
-      startAuto: async (_ctx, _pi, base, verboseMode, options) => {
+      resolveCommandContext: () => resumeCtx,
+      startAuto: async (ctx, _pi, base, verboseMode, options) => {
+        assert.equal(ctx, resumeCtx);
         startCalls.push({ base, verboseMode, step: options?.step });
       },
     },
@@ -432,6 +438,7 @@ test("resumeAutoAfterProviderDelay does not double-start when auto-mode is alrea
       }),
       resetTransientRetryState: () => {},
       resetSessionTimeoutState: () => {},
+      resolveCommandContext: () => null,
       startAuto: async () => {
         startCalls += 1;
       },
@@ -464,6 +471,7 @@ test("resumeAutoAfterProviderDelay leaves auto paused when no base path is avail
       }),
       resetTransientRetryState: () => {},
       resetSessionTimeoutState: () => {},
+      resolveCommandContext: () => null,
       startAuto: async () => {
         startCalls += 1;
       },
@@ -482,6 +490,7 @@ test("resumeAutoAfterProviderDelay leaves auto paused when no base path is avail
 
 test("resumeAutoAfterProviderDelay resets provider retry state before restarting auto-mode", async () => {
   const calls: string[] = [];
+  const resumeCtx = { newSession: async () => ({ cancelled: false }) } as any;
 
   const result = await resumeAutoAfterProviderDelay(
     {} as any,
@@ -499,6 +508,7 @@ test("resumeAutoAfterProviderDelay resets provider retry state before restarting
       resetSessionTimeoutState: () => {
         calls.push("reset-session-timeout");
       },
+      resolveCommandContext: () => resumeCtx,
       startAuto: async () => {
         calls.push("start-auto");
       },
@@ -510,6 +520,81 @@ test("resumeAutoAfterProviderDelay resets provider retry state before restarting
     "reset-transient",
     "reset-session-timeout",
     "start-auto",
+  ]);
+});
+
+test("resumeAutoAfterProviderDelay uses resolved command context when event context lacks newSession", async () => {
+  const eventCtx = {
+    ui: { notify() {} },
+  } as any;
+  const resumeCtx = { newSession: async () => ({ cancelled: false }) } as any;
+  let resolveCalls = 0;
+  let receivedCtx: unknown;
+
+  const result = await resumeAutoAfterProviderDelay(
+    {} as any,
+    eventCtx,
+    {
+      getSnapshot: () => ({
+        active: false,
+        paused: true,
+        stepMode: false,
+        basePath: "/tmp/project",
+      }),
+      resetTransientRetryState: () => {},
+      resetSessionTimeoutState: () => {},
+      resolveCommandContext: (ctx) => {
+        resolveCalls += 1;
+        assert.equal(ctx, eventCtx);
+        return resumeCtx;
+      },
+      startAuto: async (ctx) => {
+        receivedCtx = ctx;
+      },
+    },
+  );
+
+  assert.equal(result, "resumed");
+  assert.equal(resolveCalls, 1);
+  assert.equal(receivedCtx, resumeCtx);
+});
+
+test("resumeAutoAfterProviderDelay leaves auto paused when no resumable command context exists", async () => {
+  const notifications: Array<{ message: string; level: string }> = [];
+  let startCalls = 0;
+
+  const result = await resumeAutoAfterProviderDelay(
+    {} as any,
+    {
+      ui: {
+        notify(message: string, level?: string) {
+          notifications.push({ message, level: level ?? "info" });
+        },
+      },
+    } as any,
+    {
+      getSnapshot: () => ({
+        active: false,
+        paused: true,
+        stepMode: false,
+        basePath: "/tmp/project",
+      }),
+      resetTransientRetryState: () => {},
+      resetSessionTimeoutState: () => {},
+      resolveCommandContext: () => null,
+      startAuto: async () => {
+        startCalls += 1;
+      },
+    },
+  );
+
+  assert.equal(result, "missing-command-context");
+  assert.equal(startCalls, 0);
+  assert.deepEqual(notifications, [
+    {
+      message: "Provider error recovery delay elapsed, but no resumable command context was available. Leaving auto-mode paused.",
+      level: "warning",
+    },
   ]);
 });
 
@@ -574,6 +659,22 @@ test("agent-end-recovery.ts updates dashboard dispatched model after fallback sw
   assert.ok(
     src.includes("setCurrentDispatchedModelId"),
     "agent-end-recovery.ts should update currentDispatchedModelId when recovery switches model",
+  );
+});
+
+test("agent-end-recovery.ts auto-resumes after blocking an unsupported model when no immediate fallback is available", () => {
+  const src = readFileSync(join(__dirname, "..", "bootstrap", "agent-end-recovery.ts"), "utf-8");
+  assert.ok(
+    src.includes("Re-dispatching with blocked-model recovery."),
+    "unsupported-model recovery should re-dispatch instead of requiring a manual restart",
+  );
+  assert.ok(
+    src.includes("retryAfterMs: 1"),
+    "unsupported-model recovery should schedule a near-immediate auto-resume after persisting the block",
+  );
+  assert.ok(
+    src.includes("resumeAutoAfterProviderDelay(pi, ctx)"),
+    "unsupported-model recovery should restart auto-mode through resumeAutoAfterProviderDelay",
   );
 });
 

@@ -75,6 +75,7 @@ const RESET_DELAY_RE = /reset in (\d+)s/i;
 // (no model token) while catching the phrasings providers actually use.
 // See issue #4513.
 const UNSUPPORTED_MODEL_MODEL_RE = /\b(?:model|deployment)\b/i;
+const UNSUPPORTED_MODEL_PROVIDER_RE = /\bmodel_not_found\b|\bno available channel for model\b.*\bunder group\b/i;
 const UNSUPPORTED_MODEL_INDICATOR_RE =
   /\bnot support(?:ed|s)?\b|\bunsupported\b|\bnot available\b|\bunavailable\b|\bno access\b|\bdoes(?:n['’]t| not) (?:have access|support)\b|\bnot authori[sz]ed\b/i;
 const UNSUPPORTED_MODEL_SCOPE_RE = /\b(?:account|plan|tier|subscription)\b/i;
@@ -95,9 +96,14 @@ export function classifyError(errorMsg: string, retryAfterMs?: number): ErrorCla
   const isPermanent = PERMANENT_RE.test(errorMsg);
   const isRateLimit = RATE_LIMIT_RE.test(errorMsg) || AFFORDABILITY_RE.test(errorMsg);
   const isUnsupportedModel =
-    UNSUPPORTED_MODEL_MODEL_RE.test(errorMsg) &&
-    UNSUPPORTED_MODEL_INDICATOR_RE.test(errorMsg) &&
-    UNSUPPORTED_MODEL_SCOPE_RE.test(errorMsg);
+    (
+      UNSUPPORTED_MODEL_MODEL_RE.test(errorMsg) &&
+      UNSUPPORTED_MODEL_INDICATOR_RE.test(errorMsg) &&
+      UNSUPPORTED_MODEL_SCOPE_RE.test(errorMsg)
+    ) || (
+      UNSUPPORTED_MODEL_MODEL_RE.test(errorMsg) &&
+      UNSUPPORTED_MODEL_PROVIDER_RE.test(errorMsg)
+    );
 
   // 0. Unsupported model (account/plan entitlement rejection) — checked before
   //    `permanent` because PERMANENT_RE also matches /account/i and would
