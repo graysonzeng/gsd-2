@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTheme } from "next-themes"
 import { Loader2, ImagePlus } from "lucide-react"
+import type { MainSessionPaneStatus } from "@/lib/power-mode-context"
 import { cn } from "@/lib/utils"
 import { validateImageFile } from "@/lib/image-utils"
 import { buildProjectAbsoluteUrl, buildProjectPath } from "@/lib/project-url"
@@ -17,6 +18,7 @@ interface MainSessionTerminalProps {
   className?: string
   fontSize?: number
   projectCwd?: string
+  onStatusChange?: (status: MainSessionPaneStatus) => void
 }
 
 const MIN_INITIAL_ATTACH_WIDTH = 180
@@ -82,7 +84,7 @@ async function settleTerminalLayout(
   return getAttachableTerminalSize(container, terminal)
 }
 
-export function MainSessionTerminal({ className, fontSize, projectCwd }: MainSessionTerminalProps) {
+export function MainSessionTerminal({ className, fontSize, projectCwd, onStatusChange }: MainSessionTerminalProps) {
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme !== "light"
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -96,6 +98,10 @@ export function MainSessionTerminal({ className, fontSize, projectCwd }: MainSes
   const [connectionState, setConnectionState] = useState<"connecting" | "connected" | "error">("connecting")
   const [hasOutput, setHasOutput] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+
+  useEffect(() => {
+    onStatusChange?.({ connectionState, hasOutput })
+  }, [connectionState, hasOutput, onStatusChange])
 
   const flushInputQueue = useCallback(async () => {
     if (flushingRef.current) return
@@ -384,7 +390,11 @@ export function MainSessionTerminal({ className, fontSize, projectCwd }: MainSes
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-terminal">
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           <span className="text-xs text-muted-foreground">
-            {connectionState === "error" ? "Reconnecting main session terminal…" : "Connecting to main session…"}
+            {connectionState === "error"
+              ? "Reconnecting to main session…"
+              : connectionState === "connected"
+                ? "Main session connected — waiting for output…"
+                : "Connecting to main session…"}
           </span>
         </div>
       )}

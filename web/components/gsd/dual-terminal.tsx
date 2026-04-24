@@ -1,117 +1,133 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
-import { GripVertical, Loader2 } from "lucide-react"
+import { useMemo, useState } from "react"
+import { ChevronDown, ChevronRight, TerminalSquare, Wrench } from "lucide-react"
+import { AutoModeConsole } from "@/components/gsd/auto-mode-console"
 import { MainSessionTerminal } from "@/components/gsd/main-session-terminal"
+import { PowerModeChip } from "@/components/gsd/power-mode-context"
 import { ShellTerminal } from "@/components/gsd/shell-terminal"
-import { useTerminalFontSize } from "@/lib/use-terminal-font-size"
+import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { useGSDWorkspaceState } from "@/lib/gsd-workspace-store"
-import { derivePendingWorkflowCommandLabel } from "@/lib/workflow-action-execution"
+import { deriveAutoModeRuntimeSummary, type InteractivePaneStatus, type MainSessionPaneStatus } from "@/lib/power-mode-context"
+import { useTerminalFontSize } from "@/lib/use-terminal-font-size"
+
+function terminalStatusLabel(status: MainSessionPaneStatus | InteractivePaneStatus): string {
+  if (status.connectionState === "error") return "Error"
+  if (status.connectionState === "connected") return status.hasOutput ? "Connected" : "Waiting"
+  return "Connecting"
+}
 
 export function DualTerminal() {
-  const [splitPosition, setSplitPosition] = useState(50)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const rootRef = useRef<HTMLDivElement>(null)
-  const isDragging = useRef(false)
+  const [interactiveOpen, setInteractiveOpen] = useState(false)
+  const [rawTuiOpen, setRawTuiOpen] = useState(false)
   const [terminalFontSize] = useTerminalFontSize()
+  const diagnosticFontSize = Math.min(terminalFontSize, 11)
   const workspace = useGSDWorkspaceState()
-  const projectCwd = workspace.boot?.project.cwd
-  const pendingCommandLabel = derivePendingWorkflowCommandLabel({
-    commandInFlight: workspace.commandInFlight,
-    terminalLines: workspace.terminalLines,
+  const [mainStatus, setMainStatus] = useState<MainSessionPaneStatus>({ connectionState: "connecting", hasOutput: false })
+  const [interactiveStatus, setInteractiveStatus] = useState<InteractivePaneStatus>({
+    connectionState: "connecting",
+    hasOutput: false,
+    tabCount: 1,
+    commandLabel: "gsd",
   })
-
-  const handleMouseDown = () => {
-    isDragging.current = true
-  }
-
-  const handleMouseMove = (e: MouseEvent) => {
-    if (!isDragging.current || !containerRef.current) return
-    const rect = containerRef.current.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const percent = (x / rect.width) * 100
-    setSplitPosition(Math.max(20, Math.min(80, percent)))
-  }
-
-  const handleMouseUp = () => {
-    isDragging.current = false
-  }
-
-  useEffect(() => {
-    document.addEventListener("mousemove", handleMouseMove)
-    document.addEventListener("mouseup", handleMouseUp)
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove)
-      document.removeEventListener("mouseup", handleMouseUp)
-    }
-  }, [])
-
-  // Prevent browser default file-open on drag/drop anywhere in the dual terminal.
-  // Uses native DOM listeners so xterm's internal DOM can't swallow the events first.
-  useEffect(() => {
-    const el = rootRef.current
-    if (!el) return
-
-    const preventDragDefault = (e: DragEvent) => {
-      e.preventDefault()
-    }
-
-    // Capture phase ensures we fire before any child element can consume the event
-    el.addEventListener("dragover", preventDragDefault, true)
-    el.addEventListener("drop", preventDragDefault, true)
-    return () => {
-      el.removeEventListener("dragover", preventDragDefault, true)
-      el.removeEventListener("drop", preventDragDefault, true)
-    }
-  }, [])
+  const projectCwd = workspace.boot?.project.cwd
+  const runtime = useMemo(() => deriveAutoModeRuntimeSummary(workspace), [workspace])
 
   return (
-    <div ref={rootRef} className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border bg-card px-4 py-2.5">
         <span className="font-medium">Power User Mode</span>
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
-          {pendingCommandLabel && (
-            <span
-              className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-primary"
-              data-testid="power-mode-pending-command"
-              title={pendingCommandLabel}
-            >
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Sending {pendingCommandLabel}
-            </span>
-          )}
-          <span>Left: Main Session TUI</span>
-          <span className="text-border">|</span>
-          <span>Right: Interactive GSD</span>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <TerminalSquare className="h-3.5 w-3.5" />
+          <span>Auto-first observability</span>
         </div>
       </div>
 
-      {/* Split terminals */}
-      <div ref={containerRef} className="flex flex-1 overflow-hidden">
-        {/* Left terminal - Main bridge native TUI */}
-        <div style={{ width: `${splitPosition}%` }} className="flex h-full min-w-0 flex-col overflow-hidden bg-terminal">
-          <MainSessionTerminal className="min-h-0 flex-1" fontSize={terminalFontSize} projectCwd={projectCwd} />
+      <div
+        className="flex flex-wrap items-center gap-2 border-b border-border bg-card/60 px-4 py-2"
+        data-testid="power-mode-context-strip"
+        role="region"
+        aria-label="Power User Mode run context"
+      >
+        <PowerModeChip label="Project" value={runtime.projectLabel} />
+        <PowerModeChip label="Auto" value={runtime.autoPresentation.label} tone={runtime.autoPresentation.tone} />
+        <PowerModeChip label="Bridge" value={runtime.bridgePresentation.label} tone={runtime.bridgePresentation.tone} />
+        {runtime.phase ? <PowerModeChip label="Phase" value={runtime.phase} tone="info" /> : null}
+        {runtime.unitId ? <PowerModeChip label="Unit" value={runtime.unitId} title={runtime.scopeLabel} /> : null}
+        {runtime.activeToolLabel ? <PowerModeChip label="Tool" value={runtime.activeToolLabel} tone="info" title={runtime.activeToolLabel} /> : null}
+        {runtime.issueSummary ? <PowerModeChip label="Issue" value={runtime.issueSummary} tone="danger" title={runtime.issueSummary} /> : null}
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/70 bg-card/60 px-3 py-2.5">
+          <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => setInteractiveOpen((open) => !open)}>
+            <Wrench className="h-3.5 w-3.5" />
+            {interactiveOpen ? "Hide Interactive Console" : "Open Interactive Console"}
+          </Button>
+          <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => setRawTuiOpen((open) => !open)}>
+            <TerminalSquare className="h-3.5 w-3.5" />
+            {rawTuiOpen ? "Hide Raw TUI" : "View Raw TUI"}
+          </Button>
+          {workspace.commandInFlight ? (
+            <span className="text-xs text-muted-foreground">Command in flight: {workspace.commandInFlight}</span>
+          ) : null}
         </div>
 
-        {/* Divider */}
-        <div
-          className="flex w-1 cursor-col-resize items-center justify-center bg-border hover:bg-muted-foreground/30 transition-colors"
-          onMouseDown={handleMouseDown}
-        >
-          <GripVertical className="h-4 w-4 text-muted-foreground" />
-        </div>
+        <AutoModeConsole className="min-h-0 flex-1" />
 
-        {/* Right terminal - Interactive GSD instance */}
-        <div style={{ width: `${100 - splitPosition}%` }} className="h-full min-w-0 overflow-hidden bg-terminal">
-          <ShellTerminal
-            className="h-full"
-            command="gsd"
-            sessionPrefix="gsd-interactive"
-            fontSize={terminalFontSize}
-            hideInitialGsdHeader
-            projectCwd={projectCwd}
-          />
+        <div className="space-y-3">
+          <Collapsible open={interactiveOpen} onOpenChange={setInteractiveOpen}>
+            <div className="rounded-lg border border-border/70 bg-card/60">
+              <CollapsibleTrigger asChild>
+                <button type="button" className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">Interactive Console</div>
+                    <div className="text-xs text-muted-foreground">Manual recovery and command input · {terminalStatusLabel(interactiveStatus)}</div>
+                  </div>
+                  {interactiveOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="h-[280px] border-t border-border/70">
+                  <ShellTerminal
+                    key={`power-mode-shell:${projectCwd ?? "default"}`}
+                    className="h-full"
+                    command="gsd"
+                    sessionPrefix="gsd-interactive"
+                    fontSize={diagnosticFontSize}
+                    hideInitialGsdHeader
+                    projectCwd={projectCwd}
+                    onStatusChange={setInteractiveStatus}
+                  />
+                </div>
+              </CollapsibleContent>
+            </div>
+          </Collapsible>
+
+          <Collapsible open={rawTuiOpen} onOpenChange={setRawTuiOpen}>
+            <div className="rounded-lg border border-border/70 bg-card/60">
+              <CollapsibleTrigger asChild>
+                <button type="button" className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">Raw Main Session TUI</div>
+                    <div className="text-xs text-muted-foreground">Primary auto session output for deep diagnostics · {terminalStatusLabel(mainStatus)}</div>
+                  </div>
+                  {rawTuiOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="h-[320px] border-t border-border/70">
+                  <MainSessionTerminal
+                    className="min-h-0 h-full"
+                    fontSize={diagnosticFontSize}
+                    projectCwd={projectCwd}
+                    onStatusChange={setMainStatus}
+                  />
+                </div>
+              </CollapsibleContent>
+            </div>
+          </Collapsible>
         </div>
       </div>
     </div>

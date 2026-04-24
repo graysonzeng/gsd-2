@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from "react"
 import { useTheme } from "next-themes"
 import { Plus, X, TerminalSquare, Loader2, ImagePlus } from "lucide-react"
+import type { InteractivePaneStatus } from "@/lib/power-mode-context"
 import { cn } from "@/lib/utils"
 import { validateImageFile } from "@/lib/image-utils"
 import { filterInitialGsdHeader } from "@/lib/initial-gsd-header-filter"
@@ -24,7 +25,8 @@ const MIN_TERMINAL_ATTACH_ROWS = 8
 interface TerminalTab {
   id: string
   label: string
-  connected: boolean
+  connectionState: "connecting" | "connected" | "error"
+  hasOutput: boolean
 }
 
 interface ShellTerminalProps {
@@ -36,6 +38,7 @@ interface ShellTerminalProps {
   fontSize?: number
   hideInitialGsdHeader?: boolean
   projectCwd?: string
+  onStatusChange?: (status: InteractivePaneStatus) => void
 }
 
 function getRenderableTerminalSize(container: HTMLDivElement | null, terminal: XTerminal | null): { cols: number; rows: number } | null {
@@ -115,7 +118,7 @@ interface TerminalInstanceProps {
   fontSize?: number
   hideInitialGsdHeader?: boolean
   projectCwd?: string
-  onConnectionChange: (connected: boolean) => void
+  onStatusChange: (status: { connectionState: "connecting" | "connected" | "error"; hasOutput: boolean }) => void
 }
 
 function TerminalInstance({
@@ -127,7 +130,7 @@ function TerminalInstance({
   fontSize,
   hideInitialGsdHeader = false,
   projectCwd,
-  onConnectionChange,
+  onStatusChange,
 }: TerminalInstanceProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerminal | null>(null)
@@ -136,11 +139,12 @@ function TerminalInstance({
   const inputQueueRef = useRef<string[]>([])
   const flushingRef = useRef(false)
   const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const onConnectionChangeRef = useRef(onConnectionChange)
+  const onStatusChangeRef = useRef(onStatusChange)
   const initialHeaderSettledRef = useRef(!hideInitialGsdHeader)
   const initialHeaderBufferRef = useRef("")
   const commandArgsKey = (commandArgs ?? []).join("\u0000")
   const [hasOutput, setHasOutput] = useState(false)
+  const [connectionState, setConnectionState] = useState<"connecting" | "connected" | "error">("connecting")
 
   const sendResize = useCallback(
     (cols: number, rows: number) => {
@@ -169,13 +173,13 @@ function TerminalInstance({
         })
         if (!res.ok) {
           if (res.status >= 500) inputQueueRef.current.unshift(data)
-          onConnectionChangeRef.current(false)
+          setConnectionState("error")
           termRef.current?.writeln(`\r\nInput failed (${res.status}). Reconnect the terminal and retry.`)
           break
         }
       } catch {
         inputQueueRef.current.unshift(data)
-        onConnectionChangeRef.current(false)
+        setConnectionState("error")
         break
       }
     }
@@ -191,12 +195,14 @@ function TerminalInstance({
   )
 
   useEffect(() => {
-    onConnectionChangeRef.current = onConnectionChange
-  }, [onConnectionChange])
+    onStatusChangeRef.current = onStatusChange
+  }, [onStatusChange])
 
   useEffect(() => {
     initialHeaderSettledRef.current = !hideInitialGsdHeader
     initialHeaderBufferRef.current = ""
+    setConnectionState("connecting")
+    setHasOutput(false)
   }, [hideInitialGsdHeader, sessionId])
 
   // Update xterm theme when isDark changes
@@ -290,7 +296,7 @@ function TerminalInstance({
             data?: string
           }
           if (msg.type === "connected") {
-            onConnectionChangeRef.current(true)
+            setConnectionState("connected")
             void settleTerminalLayout(containerRef.current, terminal, fitAddon, () => disposed).then((size) => {
               if (!size) return
               sendResize(size.cols, size.rows)
@@ -321,7 +327,7 @@ function TerminalInstance({
         }
       }
 
-      es.onerror = () => onConnectionChangeRef.current(false)
+      es.onerror = () => setConnectionState("error")
 
       // Resize observer
       resizeObserver = new ResizeObserver(() => {
@@ -349,6 +355,10 @@ function TerminalInstance({
       fitAddonRef.current = null
     }
   }, [sessionId, command, commandArgs, commandArgsKey, fontSize, hideInitialGsdHeader, isDark, projectCwd, sendInput, sendResize])
+
+  useEffect(() => {
+    onStatusChangeRef.current?.({ connectionState, hasOutput })
+  }, [connectionState, hasOutput])
 
   // Focus on click
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -498,30 +508,18 @@ export function ShellTerminal({
   fontSize,
   hideInitialGsdHeader = false,
   projectCwd,
+  onStatusChange,
 }: ShellTerminalProps) {
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme !== "light"
   const defaultId = deriveProjectScopedSessionId(projectCwd, sessionPrefix, command)
   const commandLabel = deriveCommandLabel(command)
   const [tabs, setTabs] = useState<TerminalTab[]>([
-    { id: defaultId, label: commandLabel, connected: false },
+    { id: defaultId, label: commandLabel, connectionState: "connecting", hasOutput: false },
   ])
   const [activeTabId, setActiveTabId] = useState(defaultId)
   const [isDragOver, setIsDragOver] = useState(false)
   const terminalAreaRef = useRef<HTMLDivElement>(null)
-
-  // When the project changes, the defaultId changes.  Reset tabs so the
-  // terminal reconnects to the project-scoped PTY session on the server.
-  // The server's getOrCreateSession will return the existing live session
-  // when the session ID matches, preserving terminal state.
-  const prevDefaultIdRef = useRef(defaultId)
-  useEffect(() => {
-    if (prevDefaultIdRef.current !== defaultId) {
-      prevDefaultIdRef.current = defaultId
-      setTabs([{ id: defaultId, label: commandLabel, connected: false }])
-      setActiveTabId(defaultId)
-    }
-  }, [defaultId, commandLabel])
 
   // ── Drag-and-drop handlers (native DOM, capture phase) ──────────────────
   // React synthetic events don't reliably fire through xterm's internal DOM.
@@ -617,7 +615,8 @@ export function ShellTerminal({
       const newTab: TerminalTab = {
         id: data.id,
         label: commandLabel,
-        connected: false,
+        connectionState: "connecting",
+        hasOutput: false,
       }
       setTabs((prev) => [...prev, newTab])
       setActiveTabId(data.id)
@@ -644,14 +643,25 @@ export function ShellTerminal({
     [tabs, activeTabId, defaultId, projectCwd],
   )
 
-  const updateConnection = useCallback(
-    (id: string, connected: boolean) => {
+  const updateTabStatus = useCallback(
+    (id: string, status: { connectionState: "connecting" | "connected" | "error"; hasOutput: boolean }) => {
       setTabs((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, connected } : t)),
+        prev.map((t) => (t.id === id ? { ...t, connectionState: status.connectionState, hasOutput: status.hasOutput } : t)),
       )
     },
     [],
   )
+
+  useEffect(() => {
+    const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
+    if (!activeTab) return
+    onStatusChange?.({
+      connectionState: activeTab.connectionState,
+      hasOutput: activeTab.hasOutput,
+      tabCount: tabs.length,
+      commandLabel,
+    })
+  }, [activeTabId, commandLabel, onStatusChange, tabs])
 
   return (
     <div className={cn("flex bg-terminal", className)}>
@@ -671,7 +681,7 @@ export function ShellTerminal({
             fontSize={fontSize}
             hideInitialGsdHeader={hideInitialGsdHeader}
             projectCwd={projectCwd}
-            onConnectionChange={(c) => updateConnection(tab.id, c)}
+            onStatusChange={(status) => updateTabStatus(tab.id, status)}
           />
         ))}
 
@@ -722,7 +732,7 @@ export function ShellTerminal({
                   <span
                     className={cn(
                       "absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full border border-terminal",
-                      tab.connected ? "bg-success" : "bg-muted-foreground/40",
+                      tab.connectionState === "connected" ? "bg-success" : tab.connectionState === "error" ? "bg-destructive" : "bg-muted-foreground/40",
                     )}
                   />
                 </div>
