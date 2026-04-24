@@ -521,9 +521,131 @@ seed 后 `headless query`：
 
 1. 确认 / 补齐 `openai/gpt-5.4` 的可用凭据或 provider 可用性。
 2. 在相同隔离 repo、保留当前 seed milestone 的前提下，重新执行 `headless auto`。
-3. 一旦 provider 通路恢复，观察：
+ 3. 一旦 provider 通路恢复，观察：
    - `constraints_risks` scout 是否通过；
    - 是否写出 `S01/.phase-discipline/` observability / raw logs；
    - 是否进一步推进到 task plan 生成、admission、review 或 execute-task。
 
 在拿到 provider 可用条件前，**不建议**直接改 `phase-discipline/*` 主实现，因为当前最直接证据仍指向外部 provider 失败，而非已证实的 runtime 逻辑 bug。
+
+---
+
+## 7. 2026-04-24 provider 凭据与限流续验
+
+### 7.1 401 根因已排除
+
+本轮继续围绕 `research-slice / prior_art / openai/gpt-5.4` 做最小外部验证，先确认 401 是否仍来自凭据混用，而不是 phase-discipline runtime 本身。
+
+直接对当前 provider base URL：
+
+- `https://api.sandboxai.top/v1`
+
+执行只读探测后，确认：
+
+1. `~/.gsd/agent/auth.json` 中保存的 OpenAI key 对 `/v1/models` 返回 `200`
+2. 当前进程里的 `OPENAI_API_KEY` 对同一接口返回 `401 无效的令牌`
+3. 因为 `auth.json` 优先级高于 env，所以平时主请求优先走 stored key；但一旦 stored key 因 rate limit/backoff 暂时避让，就会跌落到 env 中的坏 key，并出现 401
+
+随后在真实 `prior_art` scout 复验里使用：
+
+```bash
+env -u OPENAI_API_KEY node /Users/sheng/tencent/gsd-2/dist/loader.js ...
+```
+
+结果显示：
+
+- `401` 不再出现
+- 错误只剩 `api_error: Rate limit exceeded. Please try again later.`
+
+因此可以确认：
+
+- **401 已不是当前主 blocker**
+- 它来自无效 env key，而不是 stored key 或 phase-discipline runtime 逻辑
+
+### 7.2 新 key 认证成功，但推理仍被限流
+
+用户随后提供了一把新的 sandboxai key，仅用于**单次命令运行时覆盖**，没有写入仓库或本机配置。
+
+针对该 key 的直接探测结果：
+
+1. `GET /v1/models` 返回 `200`
+2. 可见的 GPT 系模型只有：
+   - `gpt-5.4`
+   - `gpt5.4`
+3. 对以下四种最小推理请求，均返回 `429 Rate limit exceeded`：
+   - `POST /v1/responses` + `gpt-5.4`
+   - `POST /v1/chat/completions` + `gpt-5.4`
+   - `POST /v1/responses` + `gpt5.4`
+   - `POST /v1/chat/completions` + `gpt5.4`
+
+进一步用该 key 直接重跑独立 `prior_art` scout：
+
+- 首次尝试返回 `api_error: Rate limit exceeded. Please try again later.`
+- 随后的自动重试中交替出现 `Rate limit exceeded` 与 `Connection error`
+- 仍然没有任何 tokens、toolResults 或正常 assistant 输出
+
+### 7.3 当前结论
+
+截至本轮，provider 侧证据已经收敛到以下结论：
+
+1. **401 根因已定位并排除**：无效的是 env 中的 `OPENAI_API_KEY`
+2. **stored key 可认证**，用户新提供的 key 也可认证
+3. **剩余 blocker 是 sandboxai OpenAI channel 的推理侧限流/不稳定**，而不是认证失败
+4. 因为当前可见 GPT 系模型只有 `gpt-5.4` / `gpt5.4`，没有同 provider 下的其他可切换模型，所以在不改默认策略的前提下，本轮还**不能**把 seeded-auto 全流程跑通
+
+### 7.4 下一步建议
+
+若要继续推动整条 phase-discipline 流程，当前最小可执行选项只有：
+
+- 提供另一把在 `https://api.sandboxai.top/v1` 上对 `gpt-5.4` 具备推理额度的 key
+- 或等待当前 channel 的 rate limit 恢复后，再继续重跑独立 `prior_art` scout 与 `headless auto`
+
+在拿到新的可推理 provider 条件之前，**不建议**继续修改 `phase-discipline/*` runtime 主实现，因为现有证据已经足够表明剩余 blocker 仍位于外部 provider 侧。
+
+## 8. 2026-04-24 晚间：seeded-auto runtime 首次真实推进到 scout fan-out
+
+### 8.1 新增的外部条件
+
+- 已从 `~/.zshrc` 删除 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` 三行（备份 `~/.zshrc.bak.20260424-194049`）
+- 已从 `~/.gsd/agent/models.json` 删除 `providers.anthropic.baseUrl` override（备份 `~/.gsd/agent/models.json.bak.20260424-194049`）
+- 用户给的新 provider `https://zhumuai.com` 同一把 key 同时通 OpenAI 兼容和 Anthropic 兼容：
+  - `/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages` 均 200
+- 但 pi-ai 默认 Node fetch 会被 **Cloudflare Error 1010** 拦截，必须在 `models.json` 的 `providers.*.headers` 注入 `User-Agent: curl/8.7.1`
+
+### 8.2 独立 prior_art 真实通过
+
+- 隔离方式：临时 `HOME` + 临时 `models.json` + 临时 `auth.json` + `env -u` 屏蔽所有旧 OPENAI/ANTHROPIC 变量
+- 结果：`stopReason=stop`、`api=openai-responses`、`provider=openai`、`model=gpt-5.4`
+- 用量：`totalTokens=26734`、`cost=$0.018386`
+
+### 8.3 `headless auto` 首次真实推进到 scout fan-out
+
+同一隔离条件下的 `headless ... auto` 让 `phase-discipline` runtime 第一次在真实 provider 下跑到 `research-slice / phase-discipline-scout-fanout`。
+
+`.gsd/milestones/M001/slices/S01/.phase-discipline/phase-discipline-scout-fanout-M001-S01.json` observability：
+
+- `codebase_scan = succeeded`
+- `constraints_risks = succeeded`
+- `prior_art = failed`
+- `wallClockMs = 8892`
+
+auto-mode 在 scout fan-out 失败后正确 pause 并写出 4 份证据文件（observability json + 3 份 scout stdout log）。
+
+### 8.4 新的首个真实 blocker
+
+failure 文案精确：
+
+```text
+Scout prior_art failed | provider=openai | model=gpt-5.4 |
+403 预扣费额度失败, 用户剩余额度: ＄1.525424, 需要预扣费额度: ＄1.548070
+(request id: 202604241149165156956638268d9d626Q976vm)
+```
+
+- 不是认证错误
+- 不是 Cloudflare 拦截
+- 不是 phase-discipline runtime bug
+- 是 zhumuai 账户余额差 ~$0.023 美金
+
+### 8.5 下一步
+
+给 zhumuai 账户充值（~$5 足够 smoke），或换一把余额充足的 key；继续用**临时 HOME + 临时 models.json(含 User-Agent) + 临时 auth.json + `env -u`** 的隔离模板，重跑 `prior_art` smoke，再跑 `headless auto`，观察能否通过 3/3 scout 并进入 plan-slice / admission / reviewer / execute-task / validate-milestone / verify-fuse。
