@@ -15,6 +15,7 @@ function buildPhaseDisciplineAdmissionPrompt(): string {
 export const PHASE_DISCIPLINE_PRESET_HOOK_NAMES = {
   admission: "phase-discipline-admission",
   profileDispatch: "phase-discipline-profile-dispatch",
+  scoutFanOut: "phase-discipline-scout-fanout",
   implPlanValidator: "phase-discipline-impl-plan-validator",
   codeReview: "phase-discipline-code-review",
   designReview: "phase-discipline-design-review",
@@ -92,6 +93,12 @@ export const phaseDiscipline8StepPreDispatchHooks: PreDispatchHookConfig[] = [
     ],
     action: "advise",
     unit_type: "plan-slice",
+  },
+  {
+    name: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut,
+    builtin: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut,
+    before: ["research-slice"],
+    action: "modify",
   },
 ];
 

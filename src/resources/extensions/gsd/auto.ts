@@ -174,6 +174,7 @@ import { getErrorMessage } from "./error-utils.js";
 import { recoverFailedMigration } from "./migrate-external.js";
 import { initRegistry, convertDispatchRules } from "./rule-registry.js";
 import { emitJournalEvent as _emitJournalEvent, type JournalEntry } from "./journal.js";
+import { runPhaseDisciplineScoutFanOut } from "./phase-discipline/scout-fanout.js";
 import {
   type AutoDashboardData,
   updateProgressWidget as _updateProgressWidget,
@@ -1264,6 +1265,7 @@ function buildLoopDeps(pi: ExtensionAPI): LoopDeps {
     // Dispatch
     resolveDispatch,
     runPreDispatchHooks,
+    runPhaseDisciplineScoutFanOut,
     getPriorSliceCompletionBlocker,
     getMainBranch,
     // Unit closeout + runtime records

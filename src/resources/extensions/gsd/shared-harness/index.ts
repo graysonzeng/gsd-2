@@ -4,10 +4,11 @@ export { pickReviewerModel, ReviewerUnavailableError, inferProvider, defaultRevi
 export type { PickReviewerInput } from "./review-model-picker.js";
 export {
   spawnGsdSubagent,
+  spawnGsdSubagentHandle,
   resolveSubagentTerminalResult,
   trackLiveSubagentProcess,
   cleanupTrackedSubagentProcesses,
 } from "./subagent-spawn.js";
-export type { SpawnGsdSubagentOptions, SpawnGsdSubagentResult } from "./subagent-spawn.js";
+export type { SpawnGsdSubagentHandle, SpawnGsdSubagentOptions, SpawnGsdSubagentResult } from "./subagent-spawn.js";
 export { parseSubagentTerminalResult } from "./subagent-terminal.js";
 export type { SubagentTerminalResult } from "./subagent-terminal.js";

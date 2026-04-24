@@ -48,7 +48,7 @@ test("phase-discipline preset reaches the real hook resolvers with builtin marke
     const pre = resolvePreDispatchHooks(project);
 
     assert.equal(post.length, 6);
-    assert.equal(pre.length, 1);
+    assert.equal(pre.length, 2);
     assert.equal(post[0]?.name, "phase-discipline-admission");
     assert.equal(post[0]?.builtin, undefined);
     assert.equal(post[1]?.builtin, "phase-discipline-code-review");
@@ -57,6 +57,9 @@ test("phase-discipline preset reaches the real hook resolvers with builtin marke
     assert.ok(post.some((hook) => hook.builtin === "phase-discipline-verify-fuse"));
     assert.equal(pre[0]?.name, "phase-discipline-profile-dispatch");
     assert.equal(pre[0]?.builtin, "phase-discipline-profile-dispatch");
+    assert.equal(pre[1]?.name, "phase-discipline-scout-fanout");
+    assert.equal(pre[1]?.builtin, "phase-discipline-scout-fanout");
+    assert.equal(pre[1]?.action, "modify");
   } finally {
     process.chdir(originalCwd);
     if (originalGsdHome === undefined) delete process.env.GSD_HOME;

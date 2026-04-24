@@ -448,6 +448,26 @@ export interface PreDispatchHookConfig {
   builtin?: string;
 }
 
+export type PreDispatchFanOutScoutFocus =
+  | "codebase_scan"
+  | "constraints_risks"
+  | "prior_art";
+
+export interface PreDispatchFanOutScoutSpec {
+  focus: PreDispatchFanOutScoutFocus;
+  task: string;
+}
+
+export interface PreDispatchFanOutSpec {
+  /** Preset-owned builtin marker. Kernel stays generic and does not enumerate preset names. */
+  builtin: string;
+  unitType: string;
+  unitId: string;
+  model?: string;
+  provider?: string;
+  scouts: PreDispatchFanOutScoutSpec[];
+}
+
 export interface PreDispatchResult {
   /** What happened: the unit proceeds with modifications, was skipped, was replaced, or advised a different runnable target. */
   action: "proceed" | "skip" | "replace" | "advise";
@@ -463,6 +483,8 @@ export interface PreDispatchResult {
   advisedUnitId?: string;
   /** Model override. */
   model?: string;
+  /** Only valid when action === "proceed". Non-proceed actions must not carry fanOutSpec. */
+  fanOutSpec?: PreDispatchFanOutSpec;
   /** Names of hooks that fired, for logging. */
   firedHooks: string[];
 }

@@ -592,7 +592,12 @@ export function validatePreferences(preferences: GSDPreferences): {
         errors.push(`pre_dispatch_hooks "${name}" action "replace" requires prompt`);
         continue;
       }
-      if (action === "modify" && !validHook.prepend && !validHook.append) {
+      if (
+        action === "modify"
+        && !validHook.prepend
+        && !validHook.append
+        && !(typeof hook.builtin === "string" && hook.builtin.trim())
+      ) {
         errors.push(`pre_dispatch_hooks "${name}" action "modify" requires prepend or append`);
         continue;
       }

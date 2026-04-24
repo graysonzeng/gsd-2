@@ -8,7 +8,7 @@ import type { ExtensionAPI, ExtensionContext } from "@gsd/pi-coding-agent";
 
 import type { AutoSession } from "./session.js";
 import type { GSDPreferences } from "../preferences.js";
-import type { GSDState } from "../types.js";
+import type { GSDState, PreDispatchFanOutSpec } from "../types.js";
 import type { SessionLockStatus } from "../session-lock.js";
 import type { CloseoutOptions } from "../auto-unit-closeout.js";
 import type { PostUnitContext, PreVerificationOpts } from "../auto-post-unit.js";
@@ -173,7 +173,18 @@ export interface LoopDeps {
     advisedUnitType?: string;
     advisedUnitId?: string;
     model?: string;
+    fanOutSpec?: PreDispatchFanOutSpec;
   };
+  runPhaseDisciplineScoutFanOut?: (input: {
+    basePath: string;
+    unitType: string;
+    unitId: string;
+    fanOutSpec: PreDispatchFanOutSpec;
+  }) => Promise<{
+    researchArtifactPath: string;
+    scoutCount: number;
+    rawLogDir: string;
+  }>;
   getPriorSliceCompletionBlocker: (
     basePath: string,
     mainBranch: string,

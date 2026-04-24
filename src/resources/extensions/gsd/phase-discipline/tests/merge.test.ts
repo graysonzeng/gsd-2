@@ -8,9 +8,12 @@ test("applyPhaseDisciplinePreset injects preset hooks when milestone_profile is 
   const result = applyPhaseDisciplinePreset({ milestone_profile: "phase-discipline-8step" });
 
   assert.equal(result.preferences.post_unit_hooks?.length, 6);
-  assert.equal(result.preferences.pre_dispatch_hooks?.length, 1);
+  assert.equal(result.preferences.pre_dispatch_hooks?.length, 2);
   assert.equal(result.preferences.pre_dispatch_hooks?.[0]?.name, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch);
   assert.equal(result.preferences.pre_dispatch_hooks?.[0]?.builtin, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch);
+  assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.name, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut);
+  assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.builtin, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut);
+  assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.action, "modify");
   assert.ok(result.preferences.post_unit_hooks?.some((hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.admission));
   assert.equal(
     result.preferences.post_unit_hooks?.find(
@@ -81,5 +84,28 @@ test("applyPhaseDisciplinePreset keeps preset pre-dispatch hook before user hook
   });
 
   assert.equal(result.preferences.pre_dispatch_hooks?.[0]?.name, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch);
-  assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.name, "user-modify");
+  assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.name, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut);
+  assert.equal(result.preferences.pre_dispatch_hooks?.[2]?.name, "user-modify");
+});
+
+test("applyPhaseDisciplinePreset lets user shadow scout fan-out pre-dispatch hook by name", () => {
+  const result = applyPhaseDisciplinePreset({
+    milestone_profile: "phase-discipline-8step",
+    pre_dispatch_hooks: [
+      {
+        name: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut,
+        before: ["research-slice"],
+        action: "modify",
+        prepend: "custom scout note",
+      },
+    ],
+  });
+
+  const scoutHooks = result.preferences.pre_dispatch_hooks?.filter(
+    (hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut,
+  );
+  assert.equal(scoutHooks?.length, 1);
+  assert.equal(scoutHooks?.[0]?.prepend, "custom scout note");
+  assert.equal(scoutHooks?.[0]?.builtin, undefined);
+  assert.ok(result.warnings.some((warning) => warning.includes("phase-discipline-scout-fanout")));
 });

@@ -63,6 +63,7 @@ import {
   getRequiredWorkflowToolsForAutoUnit,
   supportsStructuredQuestions,
 } from "../workflow-mcp.js";
+import { runPhaseDisciplineScoutFanOut } from "../phase-discipline/scout-fanout.js";
 
 // ─── Session timeout auto-resume state ────────────────────────────────────────
 
@@ -1147,6 +1148,31 @@ export async function runDispatch(
     await deps.stopAuto(ctx, pi, priorSliceBlocker);
     debugLog("autoLoop", { phase: "exit", reason: "prior-slice-blocker" });
     return { action: "break", reason: "prior-slice-blocker" };
+  }
+
+  if (preDispatchResult.action === "proceed" && preDispatchResult.fanOutSpec) {
+    try {
+      const runScoutFanOut = deps.runPhaseDisciplineScoutFanOut ?? runPhaseDisciplineScoutFanOut;
+      await runScoutFanOut({
+        basePath: guardBasePath,
+        unitType,
+        unitId,
+        fanOutSpec: preDispatchResult.fanOutSpec,
+      });
+      debugLog("autoLoop", {
+        phase: "pre-dispatch-fanout",
+        unitType,
+        unitId,
+        builtin: preDispatchResult.fanOutSpec.builtin,
+      });
+      return { action: "continue" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logWarning("dispatch", `pre-dispatch scout fan-out failed for ${unitType} ${unitId}: ${message}`);
+      ctx.ui.notify(`Scout fan-out failed for ${unitType} ${unitId}: ${message}`, "warning");
+      await deps.pauseAuto(ctx, pi);
+      return { action: "break", reason: "pre-dispatch-fanout-failed" };
+    }
   }
 
   return {

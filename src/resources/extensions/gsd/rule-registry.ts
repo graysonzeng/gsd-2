@@ -22,7 +22,9 @@ import { resolvePostUnitHooks, resolvePreDispatchHooks } from "./preferences.js"
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseUnitId } from "./unit-id.js";
+import { PHASE_DISCIPLINE_PRESET_HOOK_NAMES } from "./phase-discipline/preset.js";
 import { evaluatePhaseDisciplineProfileDispatch } from "./phase-discipline/profile-dispatch.js";
+import { evaluatePhaseDisciplineScoutFanOut } from "./phase-discipline/scout-fanout.js";
 
 // ─── Artifact Path Resolution ──────────────────────────────────────────────
 
@@ -307,6 +309,8 @@ export class RuleRegistry {
 
     const firedHooks: string[] = [];
     let currentPrompt = prompt;
+    let currentModel: string | undefined;
+    let currentFanOutSpec = undefined;
 
     for (const hook of hooks) {
       if (hook.action === "skip") {
@@ -329,7 +333,7 @@ export class RuleRegistry {
         };
       }
 
-      if (hook.builtin === "phase-discipline-profile-dispatch") {
+      if (hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch) {
         firedHooks.push(hook.name);
         const result = evaluatePhaseDisciplineProfileDispatch({
           unitType,
@@ -337,10 +341,36 @@ export class RuleRegistry {
           prompt: currentPrompt,
           basePath,
         });
-        return {
-          ...result,
-          firedHooks,
-        };
+        if (result.action !== "proceed") {
+          return {
+            ...result,
+            firedHooks,
+          };
+        }
+        currentPrompt = result.prompt ?? currentPrompt;
+        currentModel = result.model ?? currentModel;
+        continue;
+      }
+
+      if (hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut) {
+        firedHooks.push(hook.name);
+        const result = evaluatePhaseDisciplineScoutFanOut({
+          unitType,
+          unitId,
+          prompt: currentPrompt,
+          basePath,
+          hook,
+        });
+        if (result.action !== "proceed") {
+          return {
+            ...result,
+            firedHooks,
+          };
+        }
+        currentPrompt = result.prompt ?? currentPrompt;
+        currentModel = result.model ?? currentModel;
+        currentFanOutSpec = result.fanOutSpec ?? currentFanOutSpec;
+        continue;
       }
 
       if (hook.action === "advise") {
@@ -362,13 +392,15 @@ export class RuleRegistry {
         if (hook.append) {
           currentPrompt = `${currentPrompt}\n\n${substitute(hook.append)}`;
         }
+        currentModel = hook.model ?? currentModel;
       }
     }
 
     return {
       action: "proceed",
       prompt: currentPrompt,
-      model: hooks.find(h => h.action === "modify" && h.model)?.model,
+      model: currentModel,
+      fanOutSpec: currentFanOutSpec,
       firedHooks,
     };
   }

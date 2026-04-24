@@ -71,6 +71,11 @@ export interface SpawnGsdSubagentResult {
   terminalResult: SubagentTerminalResult;
 }
 
+export interface SpawnGsdSubagentHandle {
+  promise: Promise<SpawnGsdSubagentResult>;
+  cancel(signal?: NodeJS.Signals | number): void;
+}
+
 export function resolveSubagentTerminalResult(input: {
   rawOutput: string;
   stderrOutput?: string;
@@ -115,7 +120,7 @@ export function resolveSubagentTerminalResult(input: {
   return parsed;
 }
 
-export async function spawnGsdSubagent(options: SpawnGsdSubagentOptions): Promise<SpawnGsdSubagentResult> {
+export function spawnGsdSubagentHandle(options: SpawnGsdSubagentOptions): SpawnGsdSubagentHandle {
   installSubagentCleanupHandlers();
 
   const args: string[] = [
@@ -133,7 +138,8 @@ export async function spawnGsdSubagent(options: SpawnGsdSubagentOptions): Promis
     .filter(Boolean);
   const extensionArgs = bundledPaths.flatMap((extensionPath) => ["--extension", extensionPath]);
 
-  return new Promise((resolve) => {
+  let cancel: (signal?: NodeJS.Signals | number) => void = () => {};
+  const promise = new Promise<SpawnGsdSubagentResult>((resolve) => {
     const gsdBin = resolveGsdBin();
     if (!gsdBin) {
       resolve({
@@ -183,6 +189,14 @@ export async function spawnGsdSubagent(options: SpawnGsdSubagentOptions): Promis
       const untrack = trackLiveSubagentProcess(proc);
       const timeoutMs = resolveSubagentTimeoutMs();
 
+      cancel = (signal: NodeJS.Signals | number = "SIGTERM") => {
+        if (settled) return;
+        try {
+          proc.kill(signal);
+        } catch {
+        }
+      };
+
       timeoutHandle = setTimeout(() => {
         try {
           proc.kill("SIGTERM");
@@ -207,4 +221,13 @@ export async function spawnGsdSubagent(options: SpawnGsdSubagentOptions): Promis
       settle(1, message);
     }
   });
+
+  return {
+    promise,
+    cancel: (signal?: NodeJS.Signals | number) => cancel(signal),
+  };
+}
+
+export async function spawnGsdSubagent(options: SpawnGsdSubagentOptions): Promise<SpawnGsdSubagentResult> {
+  return spawnGsdSubagentHandle(options).promise;
 }

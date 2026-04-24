@@ -439,6 +439,7 @@ test("phase-discipline preset builtins survive loadEffectiveGSDPreferences merge
     const loaded = loadEffectiveGSDPreferences();
     assert.notEqual(loaded, null);
     assert.equal(loaded!.preferences.pre_dispatch_hooks?.[0]?.builtin, "phase-discipline-profile-dispatch");
+    assert.equal(loaded!.preferences.pre_dispatch_hooks?.[1]?.builtin, "phase-discipline-scout-fanout");
     assert.equal(loaded!.preferences.post_unit_hooks?.[0]?.name, "phase-discipline-admission");
     assert.equal(loaded!.preferences.post_unit_hooks?.[0]?.builtin, undefined);
     assert.equal(loaded!.preferences.post_unit_hooks?.[1]?.builtin, "phase-discipline-code-review");

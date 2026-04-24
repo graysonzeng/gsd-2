@@ -422,6 +422,96 @@ describe("RuleRegistry", () => {
     }
   });
 
+  test("phase-discipline profile proceed composes with scout fan-out builtin on research-slice", () => {
+    const originalGsdHome = process.env.GSD_HOME;
+    const tempProject = mkdtempSync(join(tmpdir(), "gsd-rule-registry-scout-"));
+    const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-rule-registry-scout-home-"));
+
+    try {
+      mkdirSync(join(tempProject, ".gsd", "milestones", "M001", "slices", "S01", "tasks"), { recursive: true });
+      writeFileSync(
+        join(tempProject, ".gsd", "PREFERENCES.md"),
+        [
+          "---",
+          "version: 1",
+          "milestone_profile: phase-discipline-8step",
+          "---",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      process.env.GSD_HOME = tempGsdHome;
+
+      const registry = new RuleRegistry([]);
+      const result = registry.evaluatePreDispatch("research-slice", "M001/S01", "prompt", tempProject);
+
+      assert.equal(result.action, "proceed");
+      assert.equal(result.prompt, "prompt");
+      assert.deepEqual(result.firedHooks, [
+        "phase-discipline-profile-dispatch",
+        "phase-discipline-scout-fanout",
+      ]);
+      assert.equal(result.fanOutSpec?.builtin, "phase-discipline-scout-fanout");
+      assert.equal(result.fanOutSpec?.unitType, "research-slice");
+      assert.equal(result.fanOutSpec?.unitId, "M001/S01");
+      assert.deepEqual(result.fanOutSpec?.scouts.map((scout) => scout.focus), [
+        "codebase_scan",
+        "constraints_risks",
+        "prior_art",
+      ]);
+    } finally {
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+      rmSync(tempProject, { recursive: true, force: true });
+      rmSync(tempGsdHome, { recursive: true, force: true });
+    }
+  });
+
+  test("phase-discipline scout fan-out proceed keeps trailing user modify prompt composition", () => {
+    const originalGsdHome = process.env.GSD_HOME;
+    const tempProject = mkdtempSync(join(tmpdir(), "gsd-rule-registry-scout-modify-"));
+    const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-rule-registry-scout-modify-home-"));
+
+    try {
+      mkdirSync(join(tempProject, ".gsd", "milestones", "M001", "slices", "S01", "tasks"), { recursive: true });
+      writeFileSync(
+        join(tempProject, ".gsd", "PREFERENCES.md"),
+        [
+          "---",
+          "version: 1",
+          "milestone_profile: phase-discipline-8step",
+          "pre_dispatch_hooks:",
+          "  - name: user-note",
+          "    before:",
+          "      - research-slice",
+          "    action: modify",
+          "    append: user tail",
+          "---",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      process.env.GSD_HOME = tempGsdHome;
+
+      const registry = new RuleRegistry([]);
+      const result = registry.evaluatePreDispatch("research-slice", "M001/S01", "prompt", tempProject);
+
+      assert.equal(result.action, "proceed");
+      assert.equal(result.prompt, "prompt\n\nuser tail");
+      assert.deepEqual(result.firedHooks, [
+        "phase-discipline-profile-dispatch",
+        "phase-discipline-scout-fanout",
+        "user-note",
+      ]);
+      assert.equal(result.fanOutSpec?.builtin, "phase-discipline-scout-fanout");
+    } finally {
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+      rmSync(tempProject, { recursive: true, force: true });
+      rmSync(tempGsdHome, { recursive: true, force: true });
+    }
+  });
+
   // ── matchedRule provenance (S02 journal support) ───────────────────
 
   test("evaluateDispatch result includes matchedRule on dispatch match", async () => {
