@@ -1,4 +1,5 @@
 import type { PostUnitHookConfig, PreDispatchHookConfig } from "../types.js";
+import type { GSDModelConfigV2 } from "../preferences-types.js";
 import { buildPhaseDisciplineFindingsToMemoriesPrompt } from "./findings-carry.js";
 
 function buildPhaseDisciplineAdmissionPrompt(): string {
@@ -23,6 +24,17 @@ export const PHASE_DISCIPLINE_PRESET_HOOK_NAMES = {
   findingsToMemories: "phase-discipline-findings-to-memories",
 } as const;
 
+export const phaseDiscipline8StepDefaultModels: GSDModelConfigV2 = {
+  research: { model: "gpt-5.4", provider: "openai" },
+  planning: { model: "gpt-5.4", provider: "openai" },
+  discuss: { model: "gpt-5.4", provider: "openai" },
+  execution: { model: "gpt-5.4", provider: "openai" },
+  execution_simple: { model: "gpt-5.4", provider: "openai" },
+  completion: { model: "gpt-5.4", provider: "openai" },
+  validation: { model: "gpt-5.4", provider: "openai" },
+  subagent: { model: "gpt-5.4", provider: "openai" },
+};
+
 export const phaseDiscipline8StepPostUnitHooks: PostUnitHookConfig[] = [
   {
     name: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.admission,
@@ -37,6 +49,8 @@ export const phaseDiscipline8StepPostUnitHooks: PostUnitHookConfig[] = [
     after: ["execute-task"],
     prompt: "Run the phase-discipline code-review fan-out for this completed task and write the review artifact.",
     builtin: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.codeReview,
+    model: "claude-opus-4-6",
+    provider: "anthropic",
     cross_review: 2,
     artifact: "CODE-REVIEW.md",
     retry_on: "CODE-REVIEW-RETRY.md",
@@ -47,6 +61,8 @@ export const phaseDiscipline8StepPostUnitHooks: PostUnitHookConfig[] = [
     after: ["plan-slice", "refine-slice"],
     prompt: "Run the phase-discipline design-review fan-out for this slice plan and write the review artifact.",
     builtin: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.designReview,
+    model: "claude-opus-4-6",
+    provider: "anthropic",
     cross_review: 2,
     artifact: "DESIGN-REVIEW.md",
     retry_on: "DESIGN-REVIEW-RETRY.md",
@@ -99,6 +115,8 @@ export const phaseDiscipline8StepPreDispatchHooks: PreDispatchHookConfig[] = [
     builtin: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut,
     before: ["research-slice"],
     action: "modify",
+    model: "gpt-5.4",
+    provider: "openai",
   },
 ];
 

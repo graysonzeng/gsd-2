@@ -419,3 +419,111 @@ node /Users/sheng/tencent/gsd-2/dist/loader.js \
 - 若想更聚焦 phase-discipline runtime，优先手工 seed 一个最小 milestone，再直接跑 `/gsd auto`
 
 优先建议后者，因为它可以绕过当前 `new-milestone` 前置创建路径，把验证重点放回 phase-discipline 本身。
+
+---
+
+## 6. 2026-04-24 手工 seed milestone 后的真实 `headless auto` 续验
+
+### 6.1 seed 前后状态
+
+继续使用隔离 repo：
+
+- `/Users/sheng/tencent/gsd-phase-discipline-auto-56G8jS`
+
+手工写入最小 milestone：
+
+- `.gsd/milestones/M001/M001-ROADMAP.md`
+- `.gsd/milestones/M001/M001-CONTEXT.md`
+- `.gsd/milestones/M001/slices/S01/S01-PLAN.md`
+
+seed 前 `headless query`：
+
+- `No milestones found. Run /gsd to create one.`
+
+seed 后 `headless query`：
+
+```json
+{"state":{"activeMilestone":{"id":"M001","title":"Docs-only validation milestone"},"activeSlice":{"id":"S01","title":"Add one validation note to docs"},"activeTask":{"id":"T01","title":"Add a concise validation note"},"phase":"executing","recentDecisions":[],"blockers":[],"nextAction":"Execute T01: Add a concise validation note in slice S01.","registry":[{"id":"M001","title":"Docs-only validation milestone","status":"active"}],"requirements":{"active":0,"validated":0,"deferred":0,"outOfScope":0,"blocked":0,"total":0},"progress":{"milestones":{"done":0,"total":1},"slices":{"done":0,"total":1},"tasks":{"done":0,"total":1}}},"next":{"action":"dispatch","unitType":"plan-slice","unitId":"M001/S01"},"cost":{"workers":[],"total":0}}
+```
+
+结论：
+
+- **seed 结构满足 runtime 读取约束**
+- 当前首个 blocker **不再是 milestone 识别 / `new-milestone` 链路**
+
+### 6.2 真实 `headless auto` 运行摘要
+
+本轮真实运行输出（关键片段）：
+
+```text
+[gsd]     Resuming paused session for M001.
+[gsd]     Auto-mode resumed.
+[gsd]     Pre-dispatch hooks: phase-discipline-profile-dispatch, phase-discipline-scout-fanout
+[gsd]     Scout fan-out failed for research-slice M001/S01: Scout constraints_risks failed | provider=openai | model=gpt-5.4 | Unknown error
+[gsd]     Auto-mode paused (Escape). Type to interact, or /gsd auto to resume.
+```
+
+这里的关键事实是：
+
+1. runtime 已成功恢复 `M001` 的 paused session。
+2. `phase-discipline-profile-dispatch` 与 `phase-discipline-scout-fanout` 都已实际执行。
+3. 首个真实失败点已进入 **phase-discipline runtime 内部**，而不是 `new-milestone` 或 seed 识别。
+
+### 6.3 续验后的当前状态证据
+
+续验后再次执行 `headless query`：
+
+```json
+{"state":{"activeMilestone":{"id":"M001","title":"Docs-only validation milestone"},"activeSlice":{"id":"S01","title":"Add one validation note to docs"},"activeTask":null,"phase":"planning","recentDecisions":[],"blockers":[],"nextAction":"Task plan files missing for S01. Run plan-slice to generate task plans.","registry":[{"id":"M001","title":"Docs-only validation milestone","status":"active"}],"requirements":{"active":0,"validated":0,"deferred":0,"outOfScope":0,"blocked":0,"total":0},"progress":{"milestones":{"done":0,"total":1},"slices":{"done":0,"total":1},"tasks":{"done":0,"total":1}}},"next":{"action":"dispatch","unitType":"research-slice","unitId":"M001/S01"},"cost":{"workers":[],"total":0}}
+```
+
+额外落盘证据：
+
+- `~/.gsd/projects/0dfdd86ee7af/runtime/paused-session.json` 记录了 `milestoneId = M001` 与 paused 时间。
+- `~/.gsd/projects/0dfdd86ee7af/runtime/units/plan-slice-M001-S01.json` 仍显示当前 unit 为 `plan-slice` / `M001/S01`，状态 `dispatched`。
+- `~/.gsd/projects/0dfdd86ee7af/STATE.md` 当前显示：
+  - `Phase: planning`
+  - `Next Action: Task plan files missing for S01. Run plan-slice to generate task plans.`
+- `S01/.phase-discipline/` 仍为空，`tasks/` 也为空，说明 canonical research artifact 与 task plan 尚未成功写出。
+
+### 6.4 结论
+
+这次续验说明：
+
+- **不是**“还没进 runtime 就因为没 API key 被外层 `auto` 启动前拦住”。
+- **而是**：runtime 已真实进入 `phase-discipline`，并在 **`research-slice` 的 scout fan-out** 上首次失败。
+- 当前首个真实 blocker 可归类为：
+  - **位置**：phase-discipline runtime 本体内部（`research-slice / phase-discipline-scout-fanout`）
+  - **类型**：外部 provider 失败（`openai/gpt-5.4`）
+  - **具体 scout**：`constraints_risks`
+
+因此当前最准确的说法是：
+
+- `auto` 本身已经启动并进入 runtime；
+- 但 **runtime 内的 OpenAI scout 子调用** 失败并导致 pause；
+- 尚不能据此断言 phase-discipline 后续 phase（admission/review/execute/validate）是否还有新的内部 blocker。
+
+### 6.5 当前不应误判的点
+
+- 不要把这次失败重新归因到 `headless new-milestone --auto` false-success；那条主线已经关闭。
+- 不要把这次失败误判成“milestone seed 仍不被识别”；seed 已被明确识别。
+- `headless query` 中出现的
+
+  ```text
+  [gsd:dispatch] WARN: registry dispatch failed, falling back to inline rules: RuleRegistry not initialized — call initRegistry() or setRegistry() first.
+  ```
+
+  当前看是次要噪音，不是首个真实 blocker，因为 runtime 仍已成功执行到 `phase-discipline-scout-fanout`。
+
+### 6.6 下一步建议
+
+下一轮最高价值动作应聚焦：
+
+1. 确认 / 补齐 `openai/gpt-5.4` 的可用凭据或 provider 可用性。
+2. 在相同隔离 repo、保留当前 seed milestone 的前提下，重新执行 `headless auto`。
+3. 一旦 provider 通路恢复，观察：
+   - `constraints_risks` scout 是否通过；
+   - 是否写出 `S01/.phase-discipline/` observability / raw logs；
+   - 是否进一步推进到 task plan 生成、admission、review 或 execute-task。
+
+在拿到 provider 可用条件前，**不建议**直接改 `phase-discipline/*` 主实现，因为当前最直接证据仍指向外部 provider 失败，而非已证实的 runtime 逻辑 bug。

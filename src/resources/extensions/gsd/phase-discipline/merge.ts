@@ -1,6 +1,6 @@
 import type { GSDPreferences } from "../preferences-types.js";
 import type { PostUnitHookConfig, PreDispatchHookConfig } from "../types.js";
-import { phaseDiscipline8StepPreset } from "./preset.js";
+import { phaseDiscipline8StepDefaultModels, phaseDiscipline8StepPreset } from "./preset.js";
 
 export interface PresetMergeResult {
   preferences: GSDPreferences;
@@ -70,6 +70,10 @@ export function applyPhaseDisciplinePreset(preferences: GSDPreferences): PresetM
   return {
     preferences: {
       ...preferences,
+      models: {
+        ...phaseDiscipline8StepDefaultModels,
+        ...(preferences.models ?? {}),
+      },
       post_unit_hooks: postMerge.hooks,
       pre_dispatch_hooks: preMerge.hooks,
     },

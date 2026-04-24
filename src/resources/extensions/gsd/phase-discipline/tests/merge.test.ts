@@ -7,6 +7,8 @@ import { PHASE_DISCIPLINE_PRESET_HOOK_NAMES } from "../../phase-discipline/prese
 test("applyPhaseDisciplinePreset injects preset hooks when milestone_profile is enabled", () => {
   const result = applyPhaseDisciplinePreset({ milestone_profile: "phase-discipline-8step" });
 
+  assert.equal(result.preferences.models?.research && typeof result.preferences.models.research === "object" ? result.preferences.models.research.model : undefined, "gpt-5.4");
+  assert.equal(result.preferences.models?.research && typeof result.preferences.models.research === "object" ? result.preferences.models.research.provider : undefined, "openai");
   assert.equal(result.preferences.post_unit_hooks?.length, 6);
   assert.equal(result.preferences.pre_dispatch_hooks?.length, 2);
   assert.equal(result.preferences.pre_dispatch_hooks?.[0]?.name, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch);
@@ -14,6 +16,8 @@ test("applyPhaseDisciplinePreset injects preset hooks when milestone_profile is 
   assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.name, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut);
   assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.builtin, PHASE_DISCIPLINE_PRESET_HOOK_NAMES.scoutFanOut);
   assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.action, "modify");
+  assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.model, "gpt-5.4");
+  assert.equal(result.preferences.pre_dispatch_hooks?.[1]?.provider, "openai");
   assert.ok(result.preferences.post_unit_hooks?.some((hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.admission));
   assert.equal(
     result.preferences.post_unit_hooks?.find(
@@ -26,10 +30,26 @@ test("applyPhaseDisciplinePreset injects preset hooks when milestone_profile is 
       (hook) => hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.codeReview,
     ),
   );
+  assert.equal(
+    result.preferences.post_unit_hooks?.find((hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.codeReview)?.model,
+    "claude-opus-4-6",
+  );
+  assert.equal(
+    result.preferences.post_unit_hooks?.find((hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.codeReview)?.provider,
+    "anthropic",
+  );
   assert.ok(
     result.preferences.post_unit_hooks?.some(
       (hook) => hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.designReview,
     ),
+  );
+  assert.equal(
+    result.preferences.post_unit_hooks?.find((hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.designReview)?.model,
+    "claude-opus-4-6",
+  );
+  assert.equal(
+    result.preferences.post_unit_hooks?.find((hook) => hook.name === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.designReview)?.provider,
+    "anthropic",
   );
   assert.ok(
     result.preferences.post_unit_hooks?.some(
