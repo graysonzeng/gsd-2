@@ -106,15 +106,8 @@ export function authHeaders(extra?: Record<string, string>): Record<string, stri
  */
 export async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const token = getAuthToken()
-  if (!token) {
-    return new Response(JSON.stringify({ error: "No auth token available" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    })
-  }
-
   const headers = new Headers(init?.headers)
-  if (!headers.has("Authorization")) {
+  if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`)
   }
 
