@@ -237,6 +237,23 @@ test("buildValidateMilestonePrompt inlines ASSESSMENT evidence instead of UAT sp
   }
 });
 
+test("buildValidateMilestonePrompt uses canonical .gsd/milestones paths for reviewer instructions", async () => {
+  const base = makeTmpBase();
+  try {
+    writeRoadmap(base, "M001", ALL_DONE_ROADMAP);
+    writeContext(base, "M001", CONTEXT_FILE);
+    writeSliceSummary(base, "M001", "S01", "# S01 Summary\nDelivered.");
+    writeSliceAssessment(base, "M001", "S01", "---\nverdict: PASS\n---\n# Assessment\nEvidence captured.");
+
+    const prompt = await buildValidateMilestonePrompt("M001", "Test Milestone", base);
+    assert.match(prompt, /\.gsd\/milestones\/M001\/M001-CONTEXT\.md/, "prompt should point reviewers at canonical milestone context path");
+    assert.match(prompt, /\.gsd\/milestones\/M001\/slices\//, "prompt should point reviewers at canonical slice artifact directory");
+    assert.doesNotMatch(prompt, /\.gsd\/M001\/CONTEXT\.md/, "prompt should not reference stale flat milestone context path");
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("buildCompleteMilestonePrompt skips skipped slices from DB-backed summary inlining", async () => {
   const base = makeTmpBase();
   try {
@@ -271,6 +288,22 @@ Test
     assert.match(prompt, /S01 Summary/i, "prompt should inline non-skipped slice summaries");
     assert.doesNotMatch(prompt, /### S02 Summary/i, "prompt should not inline skipped slice summaries");
     assert.doesNotMatch(prompt, /not found — file does not exist yet/i, "prompt should not emit skipped-slice missing-file placeholders");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("buildCompleteMilestonePrompt allows committed or artifact-backed product evidence when diff is clean", async () => {
+  const base = makeTmpBase();
+  try {
+    writeRoadmap(base, "M001", ALL_DONE_ROADMAP);
+    writeContext(base, "M001", CONTEXT_FILE);
+    writeSliceSummary(base, "M001", "S01", "# S01 Summary\nDelivered non-.gsd product change.");
+
+    const prompt = await buildCompleteMilestonePrompt("M001", "Test Milestone", base);
+    assert.match(prompt, /already auto-committed earlier in the same auto-mode run/i, "prompt should mention auto-committed product changes as valid evidence");
+    assert.match(prompt, /committed diff evidence, slice\/task SUMMARY \+ VERIFY artifacts, and current content assertions/i, "prompt should allow artifact-backed evidence when worktree diff is empty");
+    assert.match(prompt, /clean worktree alone is \*\*not\*\* proof of failure/i, "prompt should explicitly reject treating a clean worktree as automatic failure");
   } finally {
     cleanup(base);
   }

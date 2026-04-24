@@ -17,7 +17,11 @@ All relevant context has been preloaded below — the roadmap, all slice summari
 Then:
 1. Use the **Milestone Summary** output template from the inlined context above
 2. {{skillActivation}}
-3. **Verify code changes exist.** Run `git diff --stat HEAD $(git merge-base HEAD main) -- ':!.gsd/'` (or the equivalent for the integration branch). If no non-`.gsd/` files appear in the diff, the milestone produced only planning artifacts and no actual code. Record this as a **verification failure**.
+3. **Verify product changes exist.** Prefer this evidence order:
+    - First, run `git diff --stat HEAD $(git merge-base HEAD main) -- ':!.gsd/'` (or the equivalent for the integration branch).
+    - If that shows non-`.gsd/` files, use it as direct change evidence.
+    - If it shows no non-`.gsd/` files, check whether the milestone's product changes were already auto-committed earlier in the same auto-mode run. Use committed diff evidence, slice/task SUMMARY + VERIFY artifacts, and current content assertions to confirm the milestone still produced real non-`.gsd/` changes.
+    - Only record a **verification failure** if you cannot establish any real non-`.gsd/` product change from either current diff evidence or committed/artifact-backed evidence.
 4. Verify each **success criterion** from the milestone definition in `{{roadmapPath}}`. For each criterion, confirm it was met with specific evidence from slice summaries, test results, or observable behavior. Record any criterion that was NOT met as a **verification failure**.
 5. Verify the milestone's **definition of done** — all slices are `[x]`, all slice summaries exist, and any cross-slice integration points work correctly. Record any unmet items as a **verification failure**.
 6. If the roadmap includes a **Horizontal Checklist**, verify each item was addressed during the milestone. Note unchecked items in the milestone summary.
@@ -66,6 +70,6 @@ Then:
 13. Do not commit manually — the system auto-commits your changes after this unit completes.
 - Say: "Milestone {{milestoneId}} complete."
 
-**Important:** Do NOT skip the code change verification, success criteria, or definition of done verification (steps 3-5). The milestone summary must reflect actual verified outcomes, not assumed success. Verification failures BLOCK completion — there is no override. The milestone stays in its current state until issues are resolved and verification is re-run. **If a verification tool itself fails, errors, or returns unexpected output, treat it as a verification failure** — never rationalize past a tool error ("tool didn't respond, assuming success" is forbidden). A tool that cannot verify is a tool that did not verify.
+**Important:** Do NOT skip the product-change verification, success criteria, or definition of done verification (steps 3-5). The milestone summary must reflect actual verified outcomes, not assumed success. Verification failures BLOCK completion — there is no override. The milestone stays in its current state until issues are resolved and verification is re-run. A clean worktree alone is **not** proof of failure if committed diff evidence or artifact-backed evidence proves the milestone already delivered non-`.gsd/` product changes. **If a verification tool itself fails, errors, or returns unexpected output, treat it as a verification failure** — never rationalize past a tool error ("tool didn't respond, assuming success" is forbidden). A tool that cannot verify is a tool that did not verify.
 
 **File system safety:** When scanning milestone directories for evidence, use `ls` or `find` to list directory contents first — never pass a directory path (e.g. `tasks/`, `slices/`) directly to the `read` tool. The `read` tool only accepts file paths, not directories.

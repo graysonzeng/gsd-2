@@ -263,6 +263,21 @@ test("validate-milestone prompt dispatches parallel reviewers", () => {
   assert.match(prompt, /assessment evidence/i);
 });
 
+test("validate-milestone prompt references canonical milestone artifact paths", () => {
+  const prompt = readPrompt("validate-milestone");
+  assert.match(prompt, /\.gsd\/milestones\/\{\{milestoneId\}\}\/\{\{milestoneId\}\}-CONTEXT\.md/);
+  assert.match(prompt, /\.gsd\/milestones\/\{\{milestoneId\}\}\/slices\//);
+  assert.doesNotMatch(prompt, /\.gsd\/\{\{milestoneId\}\}\/CONTEXT\.md/);
+  assert.doesNotMatch(prompt, /\.gsd\/\{\{milestoneId\}\}\//);
+});
+
+test("complete-milestone prompt allows committed or artifact-backed evidence when worktree is clean", () => {
+  const prompt = readPrompt("complete-milestone");
+  assert.match(prompt, /If it shows no non-`?\.gsd\/`? files, check whether the milestone's product changes were already auto-committed earlier in the same auto-mode run/i);
+  assert.match(prompt, /Use committed diff evidence, slice\/task SUMMARY \+ VERIFY artifacts, and current content assertions/i);
+  assert.match(prompt, /A clean worktree alone is \*\*not\*\* proof of failure/i);
+});
+
 // ─── Prompt migration: replan-slice → gsd_replan_slice ────────────────
 
 test("replan-slice prompt names gsd_replan_slice as the tool to use", () => {

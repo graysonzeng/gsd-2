@@ -21,6 +21,8 @@ export interface PtySession {
   alive: boolean;
   buffer: string[];
   bufferedBytes: number;
+  commandLabel: string;
+  orphanCleanupTimer: ReturnType<typeof setTimeout> | null;
 }
 
 interface LoadedNodePty {
@@ -32,6 +34,7 @@ interface LoadedNodePty {
 const GLOBAL_KEY = "__gsd_pty_sessions__" as const;
 const CLEANUP_GUARD_KEY = "__gsd_pty_cleanup_installed__" as const;
 const MAX_SESSION_BUFFER_BYTES = 1024 * 1024;
+const GSD_ORPHAN_SESSION_CLEANUP_MS = 5_000;
 
 function getSessions(): Map<string, PtySession> {
   const g = globalThis as Record<string, unknown>;
@@ -58,9 +61,33 @@ function appendToSessionBuffer(session: PtySession, data: string): void {
   }
 }
 
+function clearOrphanCleanupTimer(session: PtySession): void {
+  if (session.orphanCleanupTimer) {
+    clearTimeout(session.orphanCleanupTimer);
+    session.orphanCleanupTimer = null;
+  }
+}
+
+function scheduleOrphanCleanup(sessionId: string): void {
+  const session = getSessions().get(sessionId);
+  if (!session || !session.alive || session.commandLabel !== "gsd") return;
+  if (session.listeners.size > 0) return;
+  clearOrphanCleanupTimer(session);
+  session.orphanCleanupTimer = setTimeout(() => {
+    const current = getSessions().get(sessionId);
+    if (!current || !current.alive || current.commandLabel !== "gsd") return;
+    if (current.listeners.size > 0) {
+      clearOrphanCleanupTimer(current);
+      return;
+    }
+    destroySession(sessionId);
+  }, GSD_ORPHAN_SESSION_CLEANUP_MS);
+}
+
 function destroyAllSessions(): void {
   const map = getSessions();
   for (const [sessionId, session] of map.entries()) {
+    clearOrphanCleanupTimer(session);
     session.alive = false;
     try {
       session.pty.kill();
@@ -328,6 +355,8 @@ export function getOrCreateSession(sessionId: string, projectCwd?: string, comma
     alive: true,
     buffer: [],
     bufferedBytes: 0,
+    commandLabel: spawnSpec.label,
+    orphanCleanupTimer: null,
   };
 
   ptyProcess.onData((data: string) => {
@@ -385,6 +414,7 @@ export function destroySession(sessionId: string): boolean {
   const map = getSessions();
   const session = map.get(sessionId);
   if (!session) return false;
+  clearOrphanCleanupTimer(session);
   session.alive = false;
   try {
     session.pty.kill();
@@ -403,6 +433,8 @@ export function addListener(
   const session = getSessions().get(sessionId);
   if (!session) return null;
 
+  clearOrphanCleanupTimer(session);
+
   const snapshot = session.buffer.slice();
   session.listeners.add(listener);
 
@@ -417,6 +449,9 @@ export function addListener(
 
   return () => {
     session.listeners.delete(listener);
+    if (session.listeners.size === 0) {
+      scheduleOrphanCleanup(sessionId);
+    }
   };
 }
 
@@ -438,4 +473,16 @@ export function listSessions(): PtySessionInfo[] {
     alive: s.alive,
     pid: s.pty.pid,
   }));
+}
+
+export function __registerTestSession(session: PtySession): void {
+  getSessions().set(session.id, session);
+}
+
+export function __clearTestSessions(): void {
+  destroyAllSessions();
+}
+
+export function __getTestSession(sessionId: string): PtySession | undefined {
+  return getSessions().get(sessionId);
 }

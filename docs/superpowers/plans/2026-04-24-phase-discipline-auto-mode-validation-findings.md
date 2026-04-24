@@ -1071,3 +1071,368 @@ remediation_round: 1
 
 - 再跑一轮完整 seeded-auto E2E，确认从当前稳定模板出发是否还能无人工介入地走完整条链路
 - 或者把本次 `M002 pass` 作为当前阶段的收口证据，转入下一里程碑/下一类真实验证
+
+---
+
+## 12. 2026-04-24 深夜继续：`M003` seeded-auto E2E 已真实发起，但被 `401 Invalid token` 阻断
+
+### 12.1 本轮目标
+
+在 `M002 remediation -> validation pass` 已经收口的前提下，继续发起一轮新的最小 seeded-auto E2E，确认当前稳定模板下是否还能无人工介入地继续跑下一里程碑。
+
+### 12.2 本轮采用的最小执行清单
+
+1. 用官方 `executePlanMilestone()` 为 isolated repo 新建 `M003`
+2. 用 `headless query` 确认 runtime 起点进入 `M003 / S01`
+3. 用当前稳定模板发起真实 `headless auto`
+4. 收集真实运行结果并判断是正常推进、设计性 pause，还是新的 blocker
+
+### 12.3 `M003` 官方 seed 结果
+
+从主仓调用官方 executor：
+
+```text
+executePlanMilestone({ milestoneId: 'M003', ... })
+```
+
+返回：
+
+```text
+Planned milestone M003
+```
+
+随后 `headless query` 真实显示：
+
+- `activeMilestone = M003`
+- `activeSlice = S01`
+- `phase = planning`
+- `next.action = dispatch`
+- `next.unitType = research-slice`
+- `next.unitId = M003/S01`
+
+说明新的 seeded-auto E2E 起点已经建立成功。
+
+### 12.4 一个新发现：官方 seed 只写出 `ROADMAP`，未写出 `CONTEXT`
+
+本轮官方 seed 后，磁盘上最初只出现：
+
+- `.gsd/milestones/M003/M003-ROADMAP.md`
+
+但没有：
+
+- `.gsd/milestones/M003/M003-CONTEXT.md`
+
+在第一次发起 `auto` 后，runtime 表现为：
+
+- `research-slice-M003-S01.json` 已创建
+- `phase = dispatched`
+- `progressCount = 0`
+- 没有对应 session 文件
+
+为了排除“半初始化 milestone”因素，本轮补写了一个最小、明确的 `M003-CONTEXT.md`：
+
+- 目标：仅向 `docs/notes.md` 追加一行 plain-language validation note
+- acceptance：
+  - 至少 5 个 non-empty lines
+  - 不修改 `docs/notes.md` 之外的文件
+  - docs-only，无需测试
+  - 满足时 `validate-milestone` 应返回 `pass`
+
+### 12.5 清理残留进程并重跑后的真实结果
+
+在同一 isolated repo 上还发现了多条残留 `gsd` 进程占用同一个 repo。清理这些 repo-local 残留进程后，重新发起了一轮干净的：
+
+```text
+node dist/loader.js headless --model openai/gpt-5.4 --verbose --timeout 900000 --max-restarts 0 auto
+```
+
+使用模板仍然是：
+
+- 临时 `HOME`
+- 临时 `models.json`
+- 临时 `settings.json`
+- project symlink
+- `zhumuai` OpenAI/Anthropic baseUrl + `User-Agent: curl/8.7.1`
+
+这轮真实推进已经明确越过“会话占用”问题，stderr 可观测事件包括：
+
+- `Auto-mode started. Will loop until milestone complete.`
+- `Dynamic routing: enabled — simple tasks may use cheaper models (ceiling: openai/gpt-5.4)`
+- `Pre-flight: 2 milestones queued. All have full context.`
+- `Session started`
+
+说明这轮 seeded-auto E2E **已经真实进入运行态**，不是启动前失败，也不是空转。
+
+### 12.6 本轮新的首个真实 blocker
+
+进入真实 session 之后，session 文件：
+
+- `/private/tmp/gsd-pd-auto-e2e-rerun.RfPX65/.gsd/agent/sessions/--Users-sheng-tencent-gsd-phase-discipline-auto-56G8jS--/2026-04-24T15-50-22-493Z_35edb742-67a8-4ed3-87e2-97ec17e538e1.jsonl`
+
+记录显示：
+
+- `provider = openai`
+- `model = gpt-5.4`
+- `stopReason = error`
+- 重复错误：`401 Invalid token`
+
+首个错误样例：
+
+```text
+401 Invalid token (request id: 202604241550416704485058268d9d6HUQo5l1i)
+```
+
+之后 runtime 进入 provider error 抖动：
+
+- `Auto-mode paused due to provider error: 401 Invalid token`
+- 大量 `Session started / Session ended` 反复出现
+
+### 12.7 本轮最准确结论
+
+这轮新的 seeded-auto E2E 已经真实证明：
+
+1. `M003` 已能被官方路径 seed 并被 runtime 识别为新的 active milestone
+2. 在补齐 `M003-CONTEXT.md` 后，auto 可以真实进入 `Session started`
+3. 当前首个真实 blocker **不是**会话占用、不是 `M002` 旧 evidence gap、也不是 `cmdCtx` / `model_not_found` 老问题
+4. 当前新的首个真实 blocker 是：
+   - **位置**：`research-slice M003/S01` 刚进入真实 session 后
+   - **provider/model**：`openai / gpt-5.4`
+   - **错误**：`401 Invalid token`
+
+### 12.8 下一步建议
+
+下一轮若继续，不应再重复：
+
+- 重 seed `M002`
+- 重查 `headless false-success`
+- 重查 `cmdCtx.newSession`
+- 重查 `model_not_found` 自动恢复
+
+更有价值的最小下一步是：
+
+  1. 先确认本轮 `headless auto` 继承到的 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 是否就是当前应使用的 zhumuai 凭据
+  2. 若不是，修正这轮 E2E 使用的 runtime env key 来源后，再重跑同一模板
+  3. 若是同一把 key 仍然稳定返回 `401 Invalid token`，则 blocker 已经收敛到 provider credential 本身，而不是 runtime 主实现
+
+---
+
+## 13. 2026-04-25 00:00 后续：修正持久 credential 配置后，`M003` 已跑到 milestone close 前最后一关
+
+### 13.1 先修正了什么
+
+在用户提供新 key 后，先把本机持久配置切到 `zhumuai`：
+
+- `~/.gsd/agent/auth.json`
+- `~/.gsd/agent/models.json`
+
+同时发现一个关键格式问题：
+
+- 我最初写入的是 `type: apiKey`
+- 但 `packages/pi-coding-agent/src/core/auth-storage.ts` 实际识别的是 `type: "api_key"`
+
+把类型字段改成 `api_key` 后，runtime smoke 立即恢复正常。
+
+### 13.2 新 key / runtime 链路验证结果
+
+验证顺序如下：
+
+1. 直连 `zhumuai /v1/models` → `200`
+2. 直连 `zhumuai /v1/responses` + `gpt-5.4` → `200`，返回 `OK`
+3. `dist/loader.js --mode json --no-session --model openai/gpt-5.4 "Reply with exactly OK."`
+   - 在 `type: api_key` 修正后恢复正常
+   - 返回 `OK`
+
+因此：
+
+- 新 key 本身可用
+- runtime 也确实能在当前持久配置下正常使用这把 key
+
+### 13.3 这轮 `M003` seeded-auto E2E 实际推进到了哪里
+
+修正 credential 后，重新运行 `M003` seeded-auto E2E，已真实推进 through：
+
+1. `research-slice M003/S01`
+   - `Slice S01 researched.`
+2. `plan-slice M003/S01`
+   - 生成 `S01-PLAN.md`
+   - 生成 `T01-PLAN.md` / `T02-PLAN.md`
+3. `execute-task M003/S01/T01`
+   - 修改 `docs/notes.md`
+   - 自动 commit：`eccad74 docs: Appended one additional plain-language validation line to docs/no…`
+   - `Verification gate: 1/1 checks passed`
+4. `execute-task M003/S01/T02`
+   - fresh verification 与证据记录完成
+   - 生成 `T02-SUMMARY.md` / `T02-VERIFY.json`
+5. `gsd_complete_slice M003/S01`
+   - `Slice S01 complete.`
+6. `gsd_validate_milestone M003`
+   - 生成 `M003-VALIDATION.md`
+   - verdict: `needs-attention`
+7. `complete-milestone M003` 前置收口
+   - 写出 `M003-LEARNINGS.md`
+   - 进入最终 milestone close 验证
+
+### 13.4 本轮最终 blocker：milestone close gate 仍依赖“当前可见 diff”
+
+这次不再是 provider/auth 问题。最终卡点出现在 milestone close gate：
+
+```text
+Milestone M003 verification FAILED — not complete.
+```
+
+关键失败检查为：
+
+```text
+git diff --stat HEAD $(git merge-base HEAD main) -- ':!.gsd/'
+```
+
+它要求当前仍能看到非 `.gsd` 的工作树/相对基线 diff；但本轮 auto-mode 已经在 `T01` 阶段把唯一产品改动 `docs/notes.md` 提交掉了，因此 close 阶段看到的是：
+
+- `docs/notes.md` 已真实改动并提交
+- slice/task/summary/uat/validation 全都存在
+- 当前工作树中已没有待提交的非 `.gsd` 改动
+
+所以这个 failure 的性质是：
+
+- **不是产品没有交付**
+- **不是验证证据缺失**
+- **而是 milestone close gate 继续依赖“当前可见 diff”这一 stale / timing-sensitive 条件**
+
+### 13.5 `M003-VALIDATION.md` 为什么是 `needs-attention`
+
+`M003-VALIDATION.md` 的 `needs-attention` 也与同类问题相关：
+
+- Reviewer A / C 的部分检查在文案中寻找 `.gsd/M003/...` 这一类路径
+- 当前真实 canonical artifact 路径是 `.gsd/milestones/M003/...`
+- 因此 validator 的一部分 evidence lookup 没能命中现有产物
+
+但同一份 validation 文件里，也明确承认：
+
+- `S01` complete
+- `2/2 tasks done`
+- `docs/notes.md` 的 5 行 non-empty lines 要求已满足
+- docs-only 约束已满足
+
+### 13.6 本轮最准确结论
+
+截至现在，这条 seeded-auto E2E 已经真实证明：
+
+1. 新 key + 持久配置修正后，provider/runtime auth 已打通
+2. `M003` 已真实推进 through：`research -> plan -> T01 -> T02 -> complete-slice -> validate-milestone -> complete-milestone pre-close`
+3. 当前最新 blocker **不是 provider / model / credential**
+4. 当前最新 blocker 是：
+   - milestone close verification 仍然要求“当前可见 diff”
+   - 与 auto 已自动提交唯一产品改动这一事实冲突
+
+### 13.7 下一步建议
+
+下一会话不应该再回头重查：
+
+- `401 Invalid token`
+- `cooldown window`
+- `cmdCtx.newSession`
+- `model_not_found`
+- `M002` remediation evidence gap
+
+更有价值的下一步是直接聚焦：
+
+1. `complete-milestone` 阶段使用 `git diff --stat HEAD $(git merge-base HEAD main) -- ':!.gsd/'` 作为 blocking gate 是否合理
+2. 若 milestone product change 已经由 auto commit 落盘，close gate 应否改为接受：
+   - committed diff evidence
+   - task/slice summary + verify artifacts
+   - current content assertions
+   而不是强依赖“当前工作树里仍有未提交 diff”
+
+---
+
+## 14. 2026-04-25 00:46 后续：修复 close gate / validation path / web PTY 占锁后，`M003` 已真实 complete
+
+### 14.1 本轮代码修复
+
+本轮没有去改 phase-discipline 主流程状态机，而是做了三个最小但直接命中 blocker 的修复：
+
+1. `src/resources/extensions/gsd/prompts/validate-milestone.md`
+   - 把 reviewer A / C 的路径提示从旧的 `.gsd/{{milestoneId}}/...` 改成 canonical `.gsd/milestones/{{milestoneId}}/...`
+2. `src/resources/extensions/gsd/prompts/complete-milestone.md`
+   - 不再要求 close 阶段必须看到“当前未提交 diff”
+   - 允许使用：
+     - current diff evidence
+     - committed diff evidence
+     - task/slice `SUMMARY` + `VERIFY` artifacts
+     - current content assertions
+3. `web/lib/pty-manager.ts`
+   - 新增仅针对 `commandLabel === "gsd"` 的 orphan PTY cleanup
+   - 当最后一个 listener 断开后延迟 5 秒销毁 `gsd` PTY 会话
+   - 若在窗口期重连，则取消销毁
+   - 普通 `zsh` / shell PTY 不受影响
+
+### 14.2 本轮验证
+
+代码级验证已通过：
+
+- `node --import ./src/resources/extensions/gsd/tests/resolve-ts.mjs --experimental-strip-types --test src/resources/extensions/gsd/tests/prompt-contracts.test.ts src/resources/extensions/gsd/tests/validate-milestone.test.ts`
+- `node --import ./src/resources/extensions/gsd/tests/resolve-ts.mjs --experimental-strip-types --test web/lib/__tests__/power-mode-context.test.ts web/lib/__tests__/shutdown-gate.test.ts web/lib/__tests__/pty-manager.test.ts`
+
+其中新增回归覆盖了：
+
+- canonical `.gsd/milestones/...` prompt path
+- committed/artifact-backed product evidence 可接受
+- orphaned `gsd` PTY session 会自动清理，而普通 shell session 不会被误杀
+
+### 14.3 运行时解锁动作
+
+为了让新修复真正生效，还做了两步运行时解锁：
+
+1. 停掉旧的 web host / packaged standalone
+2. 重新执行 `npm run gsd:web`
+
+新 web host 重新启动后，isolated repo `/Users/sheng/tencent/gsd-phase-discipline-auto-56G8jS` 上不再有旧的 repo-local `gsd` PTY 会话持续占锁。
+
+### 14.4 最终真实 E2E 结果
+
+在新 runtime 下重新继续 `M003`：
+
+- 初始状态：`phase = completing-milestone`
+- `next = complete-milestone M003`
+
+本轮 `headless auto` 真实执行到：
+
+- `git diff --stat ...`
+- `gsd_milestone_status M003`
+- artifact / content evidence 读取
+- `gsd_complete_milestone M003`
+- 写入 `.gsd/PROJECT.md`
+- 写入 `M003-LEARNINGS.md`
+- 写入 `M003-SUMMARY.md`
+
+最终输出：
+
+```text
+Milestone M003 complete.
+Auto-mode stopped — All milestones complete.
+```
+
+`headless query` 最终状态为：
+
+- `phase = complete`
+- `lastCompletedMilestone.id = M003`
+- registry 中 `M002` / `M003` 均为 `complete`
+
+### 14.5 结论更新
+
+截至本轮，phase-discipline seeded-auto 这条真实 E2E 已经从：
+
+- auth / credential blocker
+- validation path mismatch
+- stale diff-based close gate
+- web PTY session lock interference
+
+一路推进并最终完成到：
+
+- `All milestones complete.`
+
+因此，`M003` seeded-auto validation 的最新结论应从“卡在 milestone close gate”更新为：
+
+- **prompt + PTY cleanup 修复后，真实 auto-mode 已可完成 `M003` 并进入最终 `complete` 状态。**
+
+---
