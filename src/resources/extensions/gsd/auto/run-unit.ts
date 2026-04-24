@@ -9,10 +9,12 @@ import type { ExtensionAPI, ExtensionContext } from "@gsd/pi-coding-agent";
 import type { AutoSession } from "./session.js";
 import { NEW_SESSION_TIMEOUT_MS } from "./session.js";
 import type { UnitResult } from "./types.js";
-import { _setCurrentResolve, _setSessionSwitchInFlight } from "./resolve.js";
+import { _clearCurrentResolve, _setCurrentResolve, _setSessionSwitchInFlight } from "./resolve.js";
 import { debugLog } from "../debug-logger.js";
 import { logWarning, logError } from "../workflow-logger.js";
-import { resolveAutoSupervisorConfig } from "../preferences.js";
+import { resolveAutoSupervisorConfig, resolvePostUnitHooks } from "../preferences.js";
+import { getActiveHook } from "../post-unit-hooks.js";
+import { maybeRunPhaseDisciplineBuiltInHook } from "../phase-discipline/reviewer-hook.js";
 
 // Tracks the latest session-switch attempt so a late timeout settlement from an
 // older runUnit() call cannot clear the guard for a newer one.
@@ -35,6 +37,22 @@ export async function runUnit(
   prompt: string,
 ): Promise<UnitResult> {
   debugLog("runUnit", { phase: "start", unitType, unitId });
+
+  const hookState = unitType.startsWith("hook/") ? getActiveHook() : null;
+  const hookConfig = hookState
+    ? resolvePostUnitHooks(s.basePath).find((hook) => hook.name === hookState.hookName)
+    : undefined;
+  const handledByBuiltinHook = await maybeRunPhaseDisciplineBuiltInHook({
+    unitType,
+    basePath: s.basePath,
+    hookState,
+    hookConfig,
+    currentModel: s.currentUnitModel,
+  });
+  if (handledByBuiltinHook) {
+    _clearCurrentResolve();
+    return { status: "completed", event: { messages: [] } };
+  }
 
   // ── Session creation with timeout ──
   debugLog("runUnit", { phase: "session-create", unitType, unitId });

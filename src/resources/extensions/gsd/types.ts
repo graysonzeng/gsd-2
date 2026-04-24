@@ -289,6 +289,13 @@ export interface PostUnitHookConfig {
   agent?: string;
   /** Set false to disable without removing config. Default true. */
   enabled?: boolean;
+  /** Explicit provider qualifier for the primary reviewer when `model` is not provider-prefixed. */
+  provider?: string;
+  /** Number of reviewers to fan-out on each hook invocation. `undefined`/0/1 preserves the legacy single-reviewer path. Clamped to max 5. */
+  cross_review?: number;
+  /** Advanced override: force specific extra reviewer models. Length must be ≤ `cross_review - 1`. */
+  cross_review_models?: string[];
+  builtin?: string;
 }
 
 export interface HookExecutionState {
@@ -429,8 +436,11 @@ export interface PreDispatchHookConfig {
   skip_if?: string;
   /** Model override when this hook fires. */
   model?: string;
+  /** Explicit provider qualifier for the hook's subagent model when `model` is not provider-prefixed. */
+  provider?: string;
   /** Set false to disable without removing config. Default true. */
   enabled?: boolean;
+  builtin?: string;
 }
 
 export interface PreDispatchResult {

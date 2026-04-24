@@ -4,6 +4,9 @@
 // and evaluation methods using mock rules.
 
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test, describe, beforeEach } from "node:test";
 import {
   RuleRegistry,
@@ -381,6 +384,42 @@ describe("RuleRegistry", () => {
     const result = registry.evaluatePreDispatch("execute-task", "M001/S01/T01", "original prompt", "/tmp/test");
     assert.deepStrictEqual(result.action, "proceed", "proceeds when no hooks");
     assert.deepStrictEqual(result.prompt, "original prompt", "prompt unchanged");
+  });
+
+  test("phase-discipline builtin pre-dispatch runs before generic advise handling", () => {
+    const originalGsdHome = process.env.GSD_HOME;
+    const tempProject = mkdtempSync(join(tmpdir(), "gsd-rule-registry-phase-"));
+    const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-rule-registry-home-"));
+
+    try {
+      mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+      writeFileSync(
+        join(tempProject, ".gsd", "PREFERENCES.md"),
+        [
+          "---",
+          "version: 1",
+          "milestone_profile: phase-discipline-8step",
+          "---",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      process.env.GSD_HOME = tempGsdHome;
+
+      const registry = new RuleRegistry([]);
+      const result = registry.evaluatePreDispatch("validate-milestone", "M001", "prompt", tempProject);
+
+      assert.equal(result.action, "advise");
+      if (result.action === "advise") {
+        assert.equal(result.advisedUnitType, "execute-task");
+      }
+      assert.deepEqual(result.firedHooks, ["phase-discipline-profile-dispatch"]);
+    } finally {
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+      rmSync(tempProject, { recursive: true, force: true });
+      rmSync(tempGsdHome, { recursive: true, force: true });
+    }
   });
 
   // ── matchedRule provenance (S02 journal support) ───────────────────

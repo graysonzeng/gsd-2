@@ -21,6 +21,7 @@ import type { DynamicRoutingConfig } from "./model-router.js";
 import { normalizeStringArray } from "../shared/format-utils.js";
 import { logWarning } from "./workflow-logger.js";
 import { resolveProfileDefaults as _resolveProfileDefaults } from "./preferences-models.js";
+import { applyPhaseDisciplinePreset } from "./phase-discipline/merge.js";
 
 import {
   KNOWN_PREFERENCE_KEYS,
@@ -94,6 +95,42 @@ export {
   resolveContextSelection,
   resolveSearchProviderFromPreferences,
 } from "./preferences-models.js";
+
+function restoreMergedBuiltins(
+  validatedHooks: PostUnitHookConfig[] | undefined,
+  mergedHooks: PostUnitHookConfig[] | undefined,
+): PostUnitHookConfig[] | undefined {
+  if (!validatedHooks?.length || !mergedHooks?.length) return validatedHooks;
+  const builtinsByName = new Map<string, string>();
+  for (const hook of mergedHooks) {
+    if (typeof hook.builtin === "string" && hook.builtin.trim()) {
+      builtinsByName.set(hook.name, hook.builtin.trim());
+    }
+  }
+  if (builtinsByName.size === 0) return validatedHooks;
+  return validatedHooks.map((hook) => {
+    const builtin = builtinsByName.get(hook.name);
+    return builtin ? { ...hook, builtin } : hook;
+  });
+}
+
+function restoreMergedPreDispatchBuiltins(
+  validatedHooks: PreDispatchHookConfig[] | undefined,
+  mergedHooks: PreDispatchHookConfig[] | undefined,
+): PreDispatchHookConfig[] | undefined {
+  if (!validatedHooks?.length || !mergedHooks?.length) return validatedHooks;
+  const builtinsByName = new Map<string, string>();
+  for (const hook of mergedHooks) {
+    if (typeof hook.builtin === "string" && hook.builtin.trim()) {
+      builtinsByName.set(hook.name, hook.builtin.trim());
+    }
+  }
+  if (builtinsByName.size === 0) return validatedHooks;
+  return validatedHooks.map((hook) => {
+    const builtin = builtinsByName.get(hook.name);
+    return builtin ? { ...hook, builtin } : hook;
+  });
+}
 
 // ─── Path Constants & Getters ───────────────────────────────────────────────
 
@@ -189,6 +226,33 @@ export function loadEffectiveGSDPreferences(basePath?: string): LoadedGSDPrefere
       preferences: applyModeDefaults(result.preferences.mode, result.preferences),
     };
   }
+
+  const presetMerge = applyPhaseDisciplinePreset(result.preferences);
+  const mergedWarnings = [...(result.warnings ?? []), ...presetMerge.warnings];
+  const mergedValidation = validatePreferences(presetMerge.preferences);
+  const mergedValidationWarnings = [
+    ...mergedValidation.warnings,
+    ...mergedValidation.errors,
+  ];
+  result = {
+    ...result,
+    preferences: {
+      ...mergedValidation.preferences,
+      post_unit_hooks: restoreMergedBuiltins(
+        mergedValidation.preferences.post_unit_hooks,
+        presetMerge.preferences.post_unit_hooks,
+      ),
+      pre_dispatch_hooks: restoreMergedPreDispatchBuiltins(
+        mergedValidation.preferences.pre_dispatch_hooks,
+        presetMerge.preferences.pre_dispatch_hooks,
+      ),
+    },
+    ...(
+      mergedWarnings.length > 0 || mergedValidationWarnings.length > 0
+        ? { warnings: [...mergedWarnings, ...mergedValidationWarnings] }
+        : {}
+    ),
+  };
 
   return result;
 }
@@ -413,6 +477,7 @@ function mergePreferences(base: GSDPreferences, override: GSDPreferences): GSDPr
     parallel: (base.parallel || override.parallel)
       ? { ...(base.parallel ?? {}), ...(override.parallel ?? {}) } as import("./types.js").ParallelConfig
       : undefined,
+    milestone_profile: override.milestone_profile ?? base.milestone_profile,
     verification_commands: mergeStringLists(base.verification_commands, override.verification_commands),
     verification_auto_fix: override.verification_auto_fix ?? base.verification_auto_fix,
     verification_max_retries: override.verification_max_retries ?? base.verification_max_retries,
@@ -577,8 +642,8 @@ export function renderPreferencesForSystemPrompt(preferences: GSDPreferences, re
  * Resolve enabled post-unit hooks from effective preferences.
  * Returns an empty array when no hooks are configured.
  */
-export function resolvePostUnitHooks(): PostUnitHookConfig[] {
-  const prefs = loadEffectiveGSDPreferences();
+export function resolvePostUnitHooks(basePath?: string): PostUnitHookConfig[] {
+  const prefs = loadEffectiveGSDPreferences(basePath);
   return (prefs?.preferences.post_unit_hooks ?? [])
     .filter(h => h.enabled !== false);
 }
@@ -587,8 +652,8 @@ export function resolvePostUnitHooks(): PostUnitHookConfig[] {
  * Resolve enabled pre-dispatch hooks from effective preferences.
  * Returns an empty array when no hooks are configured.
  */
-export function resolvePreDispatchHooks(): PreDispatchHookConfig[] {
-  const prefs = loadEffectiveGSDPreferences();
+export function resolvePreDispatchHooks(basePath?: string): PreDispatchHookConfig[] {
+  const prefs = loadEffectiveGSDPreferences(basePath);
   return (prefs?.preferences.pre_dispatch_hooks ?? [])
     .filter(h => h.enabled !== false);
 }

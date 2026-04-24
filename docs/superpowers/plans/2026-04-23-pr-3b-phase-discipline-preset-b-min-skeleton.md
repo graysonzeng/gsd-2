@@ -2,25 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Land the extension-side `phase-discipline-8step` preset on top of the current branch tip, where the PR-1 CLI tool-restriction chain and the PR-2 Stage-B `shared-harness/*` subset are already present, and close the remaining PR-3a validator/preset-consumer residue so auto-mode can inject the preset hooks, execute cross-review through `shared-harness/*`, and drive the B-min 8-step advisory skeleton without creating a second runtime.
+ **Goal:** Land the extension-side `phase-discipline-8step` preset on top of the current branch tip, where the PR-1 CLI tool-restriction chain and the PR-2 Stage-B `shared-harness/*` subset are already present, and close the remaining PR-3a validator/preset-consumer residue so auto-mode can inject the preset hooks, execute cross-review through `shared-harness/*`, and drive the B-min 8-step advisory skeleton without creating a second runtime.
 
-**Architecture:** Keep PR-3b focused on the real consumer layer. Preferences opt-in via `milestone_profile`, preset merge happens inside the existing preferences loading path, `profile-dispatch.ts` consumes the already-landed `action: "advise"` runtime contract, reviewer fan-out consumes the current branch's `shared-harness/*`, and this round also closes the remaining authoring/validation residue in `preferences-validation.ts`. One reality correction is required: current hook execution on the branch tip is still prompt-only, so PR-3b must add the smallest possible built-in phase-discipline hook glue for the named reviewer hooks and the profile-dispatch pre-dispatch handler; otherwise the new `phase-discipline/*.ts` files would never execute.
-
-**Tech Stack:** TypeScript, existing GSD preferences / rule-registry / auto-mode hook pipeline, the current branch's `shared-harness/*`, Node test runner (`node --test` via `resolve-ts.mjs`).
+ **Architecture:** Keep PR-3b focused on the real consumer layer. Preferences opt-in via `milestone_profile`, preset merge happens inside the existing preferences loading path, `profile-dispatch.ts` consumes the already-landed `action: "advise"` runtime contract, reviewer fan-out consumes the current branch's `shared-harness/*`, and this round also closes the remaining authoring/validation residue in `preferences-validation.ts`. One reality correction is required: current hook execution on the branch tip is still prompt-only, so PR-3b must add the smallest possible built-in phase-discipline hook glue for the named reviewer hooks and the profile-dispatch pre-dispatch handler; otherwise the new `phase-discipline/*.ts` files would never execute.
+ 
+ **Tech Stack:** TypeScript, existing GSD preferences / rule-registry / auto-mode hook pipeline, the current branch's `shared-harness/*`, Node test runner (`node --test` via `resolve-ts.mjs`).
+ 
+**2026-04-24 review disposition / execution mode:** this workspace is no longer at the greenfield state assumed by the original draft. `src/resources/extensions/gsd/phase-discipline/*` already exists as a partial, uncommitted PR-3b implementation on `feat/phase-discipline-preset-v1`, including a first-pass `README.md` and unit tests for `merge` / `profile-dispatch` / `reviewer-hook`, and PR-3a's runtime advise path is already present in the working tree. Execution for this session is therefore a **gap-closing hardening pass over the existing draft**, not a first-pass create-from-scratch implementation. Accepted review items for this pass are: add a real integration test, tighten the existing `phase-discipline/README.md` and test coverage where needed, move the built-in reviewer fast-path to `src/resources/extensions/gsd/auto/run-unit.ts` before `newSession()`, replace name-based built-in routing with explicit `builtin` markers on preset-owned hooks, add a hard timeout to reviewer execution, regression-lock `builtin` marker survival across merge + revalidation, and remove preset-level hardcoded `openai/gpt-5.4` defaults so the primary reviewer falls back to runtime/current-model resolution.
 
 ---
 
-## Locked scope for this PR
+ ## Locked scope for this PR
 
-### Hard dependency gate
-
-This plan executes against the **current workspace snapshot**, not an abstract future merge graph. The branch tip must still satisfy these three anchors before implementation starts:
-
-- CLI tool restriction chain present in root CLI (`src/cli-web-branch.ts` + `src/cli.ts` + `packages/pi-coding-agent/*`)
-- Stage-B `src/resources/extensions/gsd/shared-harness/*` present and consumable on this branch
-- PR-3a runtime contract present (`types.ts` / `rule-registry.ts` / `auto-dispatch.ts` / `auto/phases.ts` / `auto/loop-deps.ts`), with any remaining validator residue explicitly closed in this PR
-
-If the CLI chain or `shared-harness/*` anchor is missing, stop. Do **not** start PR-3b by re-implementing those dependencies inside this branch. If only the validator residue remains (for example `preferences-validation.ts` still rejects config-authored `action: "advise"`), close that residue as part of this PR instead of treating it as an external blocker.
+If the CLI chain or `shared-harness/*` anchor is missing, stop. Do **not** start PR-3b by re-implementing those dependencies inside this branch. If only the validator string is still `FOUND`, proceed and treat that as the first implementation task.
 
 On the current branch tip, the most subtle case is PR-3a residue: `types.ts` and dispatch runtime already contain the additive `advise` path, but `preferences-validation.ts` may still reject config-authored `action: "advise"`. This plan therefore treats validator acceptance + preset-consumer glue as in-scope work for PR-3b, while keeping all new kernel semantics out of scope.
 
@@ -33,7 +27,7 @@ These are not optional opinions; they are required boundary fixes from read-only
 - `preferences-validation.ts` is in the real load path today. If it still hardcodes `pre_dispatch_hooks.action` to `modify|skip|replace`, that is the remaining PR-3a authoring residue and this PR must close it as consumer-side glue. PR-3b may validate its **new hook fields**, but it must not introduce any new kernel semantics beyond accepting the already-landed `advise` authoring contract.
 - `preferences.ts` currently has only one real persisted merge stage: global + project preferences through `mergePreferences(...)`. There is no preset-injection layer yet, so PR-3b must add one through the existing `resolvePostUnitHooks()` / `resolvePreDispatchHooks()` path instead of inventing a parallel resolver surface.
 - `post-unit-hooks.ts` is only a facade over `RuleRegistry`; existing runtime callers still enter through `checkPostUnitHooks()` / `runPreDispatchHooks()`. Keep PR-3b glue compatible with that facade so tests and auto-loop consumers do not split into two hook paths.
-- Current post-unit hook execution is prompt-only: `rule-registry.ts` returns `HookDispatchResult { prompt, model, unitType: "hook/..." }`, and `auto.ts` turns that into `pi.sendMessage(...)`. That is sufficient for prompt-driven hooks, but **not** for `reviewer-hook.ts` fan-out or dynamic `profile-dispatch.ts` logic. PR-3b therefore needs the smallest possible built-in phase-discipline hook bridge instead of pretending the new files will execute automatically.
+- Current post-unit hook execution is prompt-only: `rule-registry.ts` returns `HookDispatchResult { prompt, model, unitType: "hook/${config.name}" }`, `auto.ts` dispatches the hook unit, and `auto/run-unit.ts` is the last pre-`pi.sendMessage(...)` choke-point. That is sufficient for prompt-driven hooks, but **not** for `reviewer-hook.ts` fan-out or dynamic `profile-dispatch.ts` logic. PR-3b therefore needs the smallest possible phase-discipline-specific built-in bridge, and in this workspace the reviewer fast-path must live in `auto/run-unit.ts` early enough to avoid wasting `newSession()`.
 - `phase-discipline-findings-to-memories` can stay prompt-driven. The required custom runtime glue is only for:
   - `phase-discipline-profile-dispatch` (sync, pre-dispatch)
   - `phase-discipline-code-review` / `phase-discipline-design-review` (async, post-unit reviewer fan-out)
@@ -45,20 +39,20 @@ These are not optional opinions; they are required boundary fixes from read-only
 - Modify: `src/resources/extensions/gsd/preferences-validation.ts`
 - Modify: `src/resources/extensions/gsd/preferences.ts`
 - Modify: `src/resources/extensions/gsd/rule-registry.ts`
-- Modify: `src/resources/extensions/gsd/auto.ts`
+- Modify: `src/resources/extensions/gsd/auto/run-unit.ts`
 - Modify: `src/resources/extensions/gsd/tests/preferences.test.ts`
 - Modify: `src/resources/extensions/gsd/tests/post-unit-hooks.test.ts`
 - Modify: `src/resources/extensions/gsd/tests/rule-registry.test.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/preset.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/merge.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/profile-map.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/profile-dispatch.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/reviewer-hook.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/findings-carry.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/README.md`
-- Create: `src/resources/extensions/gsd/phase-discipline/tests/merge.test.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/tests/profile-dispatch.test.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/tests/reviewer-hook.test.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/preset.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/merge.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/profile-map.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/profile-dispatch.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/reviewer-hook.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/findings-carry.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/README.md`
+- Modify: `src/resources/extensions/gsd/phase-discipline/tests/merge.test.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/tests/profile-dispatch.test.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/tests/reviewer-hook.test.ts`
 - Create: `src/tests/phase-discipline-integration.test.ts`
 
 ### Files intentionally out of scope
@@ -98,7 +92,7 @@ Expected:
 - `src/resources/extensions/gsd/preferences-validation.ts` may print either `FOUND must be modify, skip, or replace` (residue still open; close it in this PR) or `MISSING must be modify, skip, or replace` (validator already synced)
 - If either CLI-chain or `shared-harness/*` prints `MISSING`, stop. If only the validator string is still `FOUND`, proceed and treat that as the first implementation task.
 
-- [ ] **Step 2: Verify PR-3b has not already partially landed**
+- [ ] **Step 2: Detect whether PR-3b has already partially landed in the workspace**
 
 Run:
 
@@ -108,29 +102,30 @@ node -e "const fs=require('node:fs'); const paths=['src/resources/extensions/gsd
 
 Expected:
 
-- `src/resources/extensions/gsd/phase-discipline` prints `MISSING`
-- `src/tests/phase-discipline-integration.test.ts` prints `MISSING`
+- `src/resources/extensions/gsd/phase-discipline` may print either `EXISTS` or `MISSING`
+- `src/tests/phase-discipline-integration.test.ts` may print either `EXISTS` or `MISSING`
+- If any path already exists, treat this PR as a **gap-closing pass over partial implementation**: verify current behaviour, edit in place, and do **not** delete the directory just to make the original greenfield steps literally true.
 
 - [ ] **Step 3: Re-confirm the current hook-runtime reality correction**
 
 Run:
 
 ```bash
-node -e "const fs=require('node:fs'); const registry=fs.readFileSync('src/resources/extensions/gsd/rule-registry.ts','utf8'); const auto=fs.readFileSync('src/resources/extensions/gsd/auto.ts','utf8'); console.log('registry returns hook prompt only:', registry.includes('prompt,') && registry.includes('unitType: `hook/${config.name}`')); console.log('auto hook path sends prompt:', auto.includes('pi.sendMessage(') && auto.includes('const hookUnitType = `hook/${hookName}`'));"
+node -e "const fs=require('node:fs'); const registry=fs.readFileSync('src/resources/extensions/gsd/rule-registry.ts','utf8'); const auto=fs.readFileSync('src/resources/extensions/gsd/auto.ts','utf8'); const runUnit=fs.readFileSync('src/resources/extensions/gsd/auto/run-unit.ts','utf8'); console.log('registry returns hook prompt only:', registry.includes('prompt,') && registry.includes('unitType: `hook/${config.name}`')); console.log('auto hook path dispatches hook units:', auto.includes('const hookUnitType = `hook/${hookName}`')); console.log('run-unit remains last pre-send choke-point:', runUnit.includes('maybeRunPhaseDisciplineBuiltInHook') || runUnit.includes('pi.sendMessage('));"
 ```
 
 Expected:
 
-- Both probes print `true`
-- This confirms the minimal phase-discipline-specific hook bridge is still required
+- All probes print `true`
+- This confirms the minimal phase-discipline-specific hook bridge is still required, and that the fast-path fix belongs in `auto/run-unit.ts`
 
 ## Task 1: Add failing tests for the real PR-3b surface
 
 **Files:**
 
-- Create: `src/resources/extensions/gsd/phase-discipline/tests/merge.test.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/tests/profile-dispatch.test.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/tests/reviewer-hook.test.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/tests/merge.test.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/tests/profile-dispatch.test.ts`
+- Modify: `src/resources/extensions/gsd/phase-discipline/tests/reviewer-hook.test.ts`
 - Create: `src/tests/phase-discipline-integration.test.ts`
 - Modify: `src/resources/extensions/gsd/tests/preferences.test.ts`
 - Modify: `src/resources/extensions/gsd/tests/post-unit-hooks.test.ts`
@@ -201,6 +196,12 @@ test("cross_review_models count cannot exceed cross_review minus one", () => {
     }],
   } as any);
   assert.equal(valid.errors.length, 0);
+});
+
+test("builtin markers survive the effective preference resolver when milestone_profile is enabled", () => {
+  // Use the real preference fixture isolation pattern from this repo.
+  // Assert that resolvePostUnitHooks()/resolvePreDispatchHooks() still return
+  // preset-owned builtin markers after merge + revalidation.
 });
 
 ```
@@ -469,7 +470,7 @@ git commit -m "test: add failing coverage for phase-discipline preset"
 - Create: `src/resources/extensions/gsd/phase-discipline/preset.ts`
 - Create: `src/resources/extensions/gsd/phase-discipline/merge.ts`
 - Create: `src/resources/extensions/gsd/phase-discipline/findings-carry.ts`
-- Create: `src/resources/extensions/gsd/phase-discipline/README.md`
+- Modify: `src/resources/extensions/gsd/phase-discipline/README.md`
 
 - [ ] **Step 1: Extend the real hook config types in `types.ts`**
 
@@ -481,11 +482,13 @@ export interface PostUnitHookConfig {
   provider?: string;
   cross_review?: number;
   cross_review_models?: string[];
+  builtin?: string;
 }
 
 export interface PreDispatchHookConfig {
   // existing fields unchanged
   provider?: string;
+  builtin?: string;
 }
 ```
 
@@ -531,12 +534,12 @@ Additional rules:
 - `milestone_profile` accepts only `"auto" | "phase-discipline-8step"`
 - `provider` is a trimmed string when present
 - `advise` does **not** require `prompt`
+- preset-owned `builtin` markers must survive merged revalidation so runtime routing does not fall back to hook-name string checks
+- implementation may either preserve `builtin` directly in validation or restore it immediately after revalidation, but Task 1 must lock the behaviour with a real resolver-path regression
 
 - [ ] **Step 4: Add the preset and merge helpers under `phase-discipline/`**
 
 Create `preset.ts` with one authoritative export:
-
-`buildFindingsCarryPrompt()` lives in `findings-carry.ts` and is prompt-only in PR-3b: it may describe target paths and expected memory capture behaviour, but it must **not** write disk directly.
 
 ```ts
 export const phaseDiscipline8StepPreset = {
@@ -545,6 +548,7 @@ export const phaseDiscipline8StepPreset = {
       name: "phase-discipline-code-review",
       after: ["execute-task"],
       prompt: "[phase-discipline reviewer hook]",
+      builtin: "phase-discipline-code-review",
       artifact: "code-review-{taskId}.md",
       retry_on: "code-review-{taskId}-retry.md",
       max_cycles: 2,
@@ -554,6 +558,7 @@ export const phaseDiscipline8StepPreset = {
       name: "phase-discipline-design-review",
       after: ["plan-slice", "refine-slice"],
       prompt: "[phase-discipline reviewer hook]",
+      builtin: "phase-discipline-design-review",
       artifact: "design-review-{sliceId}.md",
       retry_on: "design-review-{sliceId}-retry.md",
       max_cycles: 2,
@@ -569,6 +574,7 @@ export const phaseDiscipline8StepPreset = {
   preDispatchHooks: [
     {
       name: "phase-discipline-profile-dispatch",
+      builtin: "phase-discipline-profile-dispatch",
       before: [
         "discuss-milestone",
         "research-milestone",
@@ -595,9 +601,10 @@ export function mergePhaseDisciplinePreset(
 ): { postUnitHooks: PostUnitHookConfig[]; preDispatchHooks: PreDispatchHookConfig[] }
 ```
 
-Ordering rule:
-
-- when the preset is enabled, `phase-discipline-profile-dispatch` must be placed first in `preDispatchHooks` so advisory gating runs before user-authored `modify` / `replace` hooks
+ Ordering rule:
+ 
+ - when the preset is enabled, `phase-discipline-profile-dispatch` must be placed first in `preDispatchHooks` so advisory gating runs before user-authored `modify` / `replace` hooks
+ - user hooks shadow preset hooks by name only at the merge layer; runtime built-in routing must key off explicit `builtin` markers, not the hook `name` string alone
 
 - [ ] **Step 5: Wire the two-stage validation + merge path in `preferences.ts`**
 
@@ -622,6 +629,7 @@ Concrete requirements:
 - `provider` is only a fallback qualifier for reviewer model strings that do **not** already include a provider prefix
 - if `model` or any item in `cross_review_models` is already provider-qualified, that explicit qualifier wins over `provider`
 - `phase-discipline-findings-to-memories` ignores `provider` entirely because it remains on the prompt path
+- the focused regression surface for this step includes proving that effective resolved hooks still expose `builtin` markers after merge + revalidation
 
 - [ ] **Step 6: Run the preference-focused test slice**
 
@@ -652,7 +660,7 @@ git commit -m "feat: add phase-discipline preset preference surface"
 - Create: `src/resources/extensions/gsd/phase-discipline/profile-dispatch.ts`
 - Create: `src/resources/extensions/gsd/phase-discipline/reviewer-hook.ts`
 - Modify: `src/resources/extensions/gsd/rule-registry.ts`
-- Modify: `src/resources/extensions/gsd/auto.ts`
+- Modify: `src/resources/extensions/gsd/auto/run-unit.ts`
 - Modify: `src/resources/extensions/gsd/tests/post-unit-hooks.test.ts`
 - Modify: `src/resources/extensions/gsd/tests/rule-registry.test.ts`
 - Test: `src/resources/extensions/gsd/phase-discipline/tests/profile-dispatch.test.ts`
@@ -696,6 +704,7 @@ export function evaluatePhaseDisciplineProfileDispatch(input: {
 Required behaviour:
 
 - read current milestone/slice state through the repo's existing state helpers and/or the real `.gsd/STATE.md` projection; do **not** introduce a new `STATE.json` runtime dependency in PR-3b
+- it is acceptable for PR-3b to keep a narrow `.gsd/STATE.md` projection parser if no canonical helper cleanly exposes the required fields on this branch tip; treat that as a documented implementation debt, not as scope for a new state runtime in this PR
 - if the scheduler pick already matches the expected next phase, return `{ action: "proceed", prompt }`
 - if P4→P5 strict gate is not satisfied because the current slice has no stable `execute-task` completion summary artifact yet, return `{ action: "advise", advisedUnitType: "execute-task", prompt }`
 - if the pick is out of sequence for a soft gate, return `{ action: "advise", advisedUnitType: expectedUnit, prompt }`
@@ -703,12 +712,12 @@ Required behaviour:
 
 Use a small module-local map for disagreement backoff. Do **not** invent a persisted sidecar file for this. Backoff is process-local and resets after restart.
 
-- [ ] **Step 3: Teach `rule-registry.ts` to execute the named phase-discipline pre-dispatch handler**
+- [ ] **Step 3: Teach `rule-registry.ts` to execute the preset-owned phase-discipline pre-dispatch handler**
 
 Keep the legacy declarative path intact. Add one narrow branch inside `evaluatePreDispatch()`:
 
 ```ts
-if (hook.name === "phase-discipline-profile-dispatch") {
+if (hook.builtin === "phase-discipline-profile-dispatch") {
   firedHooks.push(hook.name);
   return evaluatePhaseDisciplineProfileDispatch({ unitType, unitId, prompt: currentPrompt, basePath });
 }
@@ -716,7 +725,7 @@ if (hook.name === "phase-discipline-profile-dispatch") {
 
 Rules:
 
-- only special-case the single named hook
+- only special-case the single preset-owned built-in hook
 - evaluate this named branch **before** the generic `hook.action === "advise"` branch so dynamic phase-discipline advice is not swallowed by declarative `advise` handling
 - when `milestone_profile` is enabled, ensure the merged `phase-discipline-profile-dispatch` hook is evaluated first in the pre-dispatch list so any `advise` decision short-circuits before user `modify` / `replace` hooks compose
 - do **not** create a general hook-plugin registry
@@ -745,12 +754,13 @@ export async function runPhaseDisciplineReviewerHook(input: {
 
 Required semantics:
 
-- primary reviewer comes from `hookConfig.model` / `hookConfig.provider`
+- primary reviewer comes from `hookConfig.model` / `hookConfig.provider`, falling back to the current runtime model/provider when unset
 - extra reviewers come from `cross_review_models` or the picker
-- if `hookConfig.model` or any entry in `cross_review_models` is already provider-qualified, use it as-is; otherwise apply `hookConfig.provider` only as a fallback qualifier
+- if `hookConfig.model` or any entry in `cross_review_models` is already provider-qualified, use it as-is and infer the effective provider from the qualified value for logging / picker context; otherwise apply `hookConfig.provider` only as a fallback qualifier
 - production defaults import `pickCrossReviewers` / `runReview` from `shared-harness/*`; dependency injection exists only for tests
 - clamp `cross_review` at 5
 - run reviewers in parallel
+- apply an absolute hard timeout per reviewer invocation using the auto supervisor hard-timeout budget
 - union/dedupe findings, choose worst overall assessment
 - partial failures continue with successes
 - all-fail writes `reviewer_unavailable` artifact shape
@@ -760,12 +770,12 @@ Required semantics:
 - observability JSON must include at least `hookName`, `triggerUnitType`, `triggerUnitId`, `artifactPath`, `reviewers`, `succeeded`, `failed`, `overall`, `startedAt`, and `completedAt`
 - preserve artifact naming / retry file naming from the spec
 
-- [ ] **Step 5: Add the minimal post-unit bridge in `auto.ts` instead of a general hook runtime**
+- [ ] **Step 5: Add the minimal post-unit bridge in `auto/run-unit.ts` instead of a general hook runtime**
 
-Inside the existing hook-unit path, intercept only the named phase-discipline reviewer hooks before `pi.sendMessage(...)`:
+Inside the existing hook-unit path, intercept only the preset-owned phase-discipline reviewer hooks before `newSession()` / `pi.sendMessage(...)`:
 
 ```ts
-if (hookName === "phase-discipline-code-review" || hookName === "phase-discipline-design-review") {
+if (hookConfig?.builtin === "phase-discipline-code-review" || hookConfig?.builtin === "phase-discipline-design-review") {
   await runPhaseDisciplineReviewerHook({
     hookName,
     triggerUnitType,
@@ -781,6 +791,7 @@ Important constraints:
 
 - leave legacy hook-unit prompt execution byte-identical for all other hooks
 - keep `phase-discipline-findings-to-memories` on the prompt path
+- built-in hook detection must happen **before** `newSession()` so reviewer hooks do not burn a session only to short-circuit immediately
 - the bridge replaces only the hook body; `RuleRegistry` keeps owning `activeHook`, `cycleCounts`, and `_handleHookCompletion()` semantics, and `return true` is valid only after the reviewer hook has written the artifact / retry / observability files where the normal completion / retry scan expects them
 - do **not** widen `SidecarItem` or `HookDispatchResult` unless a compile error proves it necessary
 
@@ -797,12 +808,12 @@ Expected:
 - Exit code `0`
 - `profile-dispatch.test.ts` proves real advisory decisions from state fixtures
 - `reviewer-hook.test.ts` proves fan-out, clamp, merge, and all-fail artifact behaviour
-- `phase-discipline-integration.test.ts` proves the preset reaches the real resolver chain
+- `phase-discipline-integration.test.ts` proves the preset reaches the real resolver chain and that preset-owned `builtin` markers survive merge + revalidation on the real preference loader path
 
 - [ ] **Step 7: Commit the B-min skeleton and hook bridge**
 
 ```bash
-git add src/resources/extensions/gsd/rule-registry.ts src/resources/extensions/gsd/auto.ts src/resources/extensions/gsd/tests/post-unit-hooks.test.ts src/resources/extensions/gsd/tests/rule-registry.test.ts src/resources/extensions/gsd/phase-discipline/profile-map.ts src/resources/extensions/gsd/phase-discipline/profile-dispatch.ts src/resources/extensions/gsd/phase-discipline/reviewer-hook.ts src/resources/extensions/gsd/phase-discipline/tests/profile-dispatch.test.ts src/resources/extensions/gsd/phase-discipline/tests/reviewer-hook.test.ts src/tests/phase-discipline-integration.test.ts
+git add src/resources/extensions/gsd/rule-registry.ts src/resources/extensions/gsd/auto/run-unit.ts src/resources/extensions/gsd/tests/post-unit-hooks.test.ts src/resources/extensions/gsd/tests/rule-registry.test.ts src/resources/extensions/gsd/phase-discipline/profile-map.ts src/resources/extensions/gsd/phase-discipline/profile-dispatch.ts src/resources/extensions/gsd/phase-discipline/reviewer-hook.ts src/resources/extensions/gsd/phase-discipline/tests/profile-dispatch.test.ts src/resources/extensions/gsd/phase-discipline/tests/reviewer-hook.test.ts src/tests/phase-discipline-integration.test.ts
 git commit -m "feat: add phase-discipline b-min skeleton"
 ```
 
@@ -830,7 +841,7 @@ Expected:
 Run:
 
 ```bash
-git diff --stat -- src/resources/extensions/gsd/types.ts src/resources/extensions/gsd/preferences-types.ts src/resources/extensions/gsd/preferences-validation.ts src/resources/extensions/gsd/preferences.ts src/resources/extensions/gsd/rule-registry.ts src/resources/extensions/gsd/auto.ts src/resources/extensions/gsd/tests/preferences.test.ts src/resources/extensions/gsd/tests/post-unit-hooks.test.ts src/resources/extensions/gsd/tests/rule-registry.test.ts src/resources/extensions/gsd/phase-discipline src/tests/phase-discipline-integration.test.ts
+git diff --stat -- src/resources/extensions/gsd/types.ts src/resources/extensions/gsd/preferences-types.ts src/resources/extensions/gsd/preferences-validation.ts src/resources/extensions/gsd/preferences.ts src/resources/extensions/gsd/rule-registry.ts src/resources/extensions/gsd/auto/run-unit.ts src/resources/extensions/gsd/tests/preferences.test.ts src/resources/extensions/gsd/tests/post-unit-hooks.test.ts src/resources/extensions/gsd/tests/rule-registry.test.ts src/resources/extensions/gsd/phase-discipline src/tests/phase-discipline-integration.test.ts
 ```
 
 Expected:
@@ -850,7 +861,7 @@ PR-3b exceeded its consumer-only boundary. The current branch needs a generalize
 - [ ] **Step 4: Create the final implementation commit**
 
 ```bash
-git add src/resources/extensions/gsd/types.ts src/resources/extensions/gsd/preferences-types.ts src/resources/extensions/gsd/preferences-validation.ts src/resources/extensions/gsd/preferences.ts src/resources/extensions/gsd/rule-registry.ts src/resources/extensions/gsd/auto.ts src/resources/extensions/gsd/tests/preferences.test.ts src/resources/extensions/gsd/tests/post-unit-hooks.test.ts src/resources/extensions/gsd/tests/rule-registry.test.ts src/resources/extensions/gsd/phase-discipline src/tests/phase-discipline-integration.test.ts
+git add src/resources/extensions/gsd/types.ts src/resources/extensions/gsd/preferences-types.ts src/resources/extensions/gsd/preferences-validation.ts src/resources/extensions/gsd/preferences.ts src/resources/extensions/gsd/rule-registry.ts src/resources/extensions/gsd/auto/run-unit.ts src/resources/extensions/gsd/tests/preferences.test.ts src/resources/extensions/gsd/tests/post-unit-hooks.test.ts src/resources/extensions/gsd/tests/rule-registry.test.ts src/resources/extensions/gsd/phase-discipline src/tests/phase-discipline-integration.test.ts
 git commit -m "feat: add phase-discipline preset and b-min skeleton"
 ```
 
@@ -869,8 +880,11 @@ git commit -m "feat: add phase-discipline preset and b-min skeleton"
 
 - `types.ts` is included because that is where hook config fields really live
 - `preferences-validation.ts` is included because the real loader still rejects `advise` otherwise
-- `rule-registry.ts` and `auto.ts` are included only for the smallest possible phase-discipline-specific execution bridge
+- `rule-registry.ts` and `auto/run-unit.ts` are included only for the smallest possible phase-discipline-specific execution bridge
 - only `hook/phase-discipline-code-review` and `hook/phase-discipline-design-review` branch off the prompt path; all other `hook/*` units remain on the legacy `pi.sendMessage(...)` route
+- runtime built-in routing keys off explicit preset-owned `builtin` markers, not raw hook names, so user shadow hooks are not silently hijacked
+- `phase-discipline/README.md` already exists in the workspace; this pass updates and re-verifies it instead of treating README creation as missing work
+- the current branch still has no `src/tests/phase-discipline-integration.test.ts`; integration coverage remains a real gap until that file lands
 - no attempt is made to build a generic second hook platform
 
 ### Placeholder scan
@@ -905,73 +919,6 @@ Plan complete and saved to `docs/superpowers/plans/2026-04-23-pr-3b-phase-discip
 **Which approach?**
 
 ---
-
-## 评审记录（Cursor Opus 4.7, 2026-04-23）
-
-> 评审范围：本计划 (`PR-3b`) 的合理性 / 正确性 / 完整性。基线：`specs/phase-discipline-preset.md` v7.1、`specs/README.md`，以及 `main` 分支当前源码（`types.ts`、`preferences-validation.ts`、`preferences.ts`、`rule-registry.ts`、`auto.ts`）。
-
-### 1. 与 spec/代码一致性核验（已验证事实）
-
-以下计划中声明的"当前代码现实"经 Cursor 核实属实：
-
-| 计划声明 | 核验结果 |
-| --- | --- |
-| `PostUnitHookConfig` / `PreDispatchHookConfig` 定义在 `types.ts` | ✅ `src/resources/extensions/gsd/types.ts` 确实导出这两个接口；`preferences-types.ts` 仅承载 `GSDPreferences` / `KNOWN_PREFERENCE_KEYS` |
-| `preferences-validation.ts` 硬编码 `action: modify\|skip\|replace` | ✅ 第 525 行 `invalid action: ${action} (must be modify, skip, or replace)`，白名单不含 `"advise"` |
-| `rule-registry.ts` 返回 prompt-only 的 `HookDispatchResult` | ✅ 第 187/228/519 行 `unitType: \`hook/${hook.name}\``，仅含 `prompt` / `model` |
-| `auto.ts` 的 hook-unit 路径靠 `pi.sendMessage` 驱动 | ✅ 第 1795–1869 行 `const hookUnitType = \`hook/${hookName}\``、`pi.sendMessage(...)` 与计划 Task 3 Step 5 描述一致 |
-| `resolvePostUnitHooks` / `resolvePreDispatchHooks` 在 `preferences.ts` | ✅ 第 580 / 590 行，返回 `filter(h => h.enabled !== false)` |
-| `evaluatePreDispatch` 在 `rule-registry.ts` 实现 `modify/skip/replace` compose | ✅ 第 276–342 行，`action` 类型为 `"proceed" \| "skip" \| "replace"`，确认 PR-3a 之前不支持 `"advise"` |
-
-结论：计划的"现实纠偏"章节没有编造。三大依赖锚点（PR-1 `resolveCreateAgentSessionToolOptions`、PR-2 `shared-harness/`、PR-3a `action: "advise"`）在 `main` 当前代码中确实都不存在，硬依赖门是真门，不是摆设。
-
-### 2. 合理的设计决策（值得保留）
-
-| 决策 | 评价 |
-| --- | --- |
-| 硬依赖门 + "stop. Do not start PR-3b by partially re-implementing the dependency" | 好。明确阻断"把 PR-3a 在这个 PR 里顺手补"的反模式 |
-| 最小桥接（仅 `profile-dispatch`、两个 reviewer；`findings-to-memories` 继续走 prompt） | 好。识别了哪些 hook 必须 runtime glue，哪些仅靠 prompt 即可 |
-| 预算守门（`~140-220 / ~260-380 / ~260-420`）+ 反通用化条款（Task 4 Step 3 的 no-go 文案） | 好。阻止悄悄长出"通用 hook 插件框架" |
-| 两阶段校验：`validatePreferences(rawPrefs)` → `mergePhaseDisciplinePreset` → `validatePost/PreDispatchHookList(merged)` | 好。让 preset 注入的错误在加载期而不是 hook-fire 期暴露 |
-| 先写失败测试再实现（Task 1 必须先 commit 失败用例） | 好。TDD 顺序清晰 |
-| Shadow 语义：完全替换 + 强制 `cross_review` 默认为 1 + 告警 | 好。避免"用户只覆盖 `prompt`、却沿用 preset 的 `cross_review: 2` 触发意料外 fan-out" |
-| 把 `profile-map.ts` 作为数据表（`PHASE_DISCIPLINE_8STEP_SEQUENCE`），不让 `profile-dispatch.ts` 内联硬编码 | 好。便于后续调参而不碰逻辑 |
-
-### 3. 需要在开工前对齐的遗漏 / 错误（Blocking 或 Semi-blocking）
-
-#### 3.1 【Blocking 测试保真度】`profile-dispatch.test.ts` 测试夹具写 `.gsd/STATE.json`，但真实运行期是 `.gsd/STATE.md`
-
-- 证据：`gitignore.ts:37` 列的是 `".gsd/STATE.md"`；`tests/**/*.test.ts`、`tests/integration/worktree-e2e.test.ts:42` 等全部写 `STATE.md`，仓库里从未出现过 `STATE.json`。
-- 影响：Task 1 Step 3 的夹具写 `.gsd/STATE.json`，暗示 `profile-dispatch.ts` 必须读 `STATE.json`。但真实 auto-mode state 是 `STATE.md` 或由 `state.ts:compute*` 动态计算（没有硬盘 `STATE.json`）。如果按计划实现，`profile-dispatch.ts` 将读不到真实 state，线上永远 fallback 回 `proceed`，preset 静默失效；而测试却绿灯。
-- 修复建议：改成读真实 state 的通道。两种路径任选：
-  1. 让 `profile-dispatch.ts` 通过 `state.ts` 现有的 `computeState()` / `loadState()` API 取 `activeMilestone` / `activeSlice`，测试夹具构造真实 `.gsd/milestones/<MID>/` 目录 + `<MID>-ROADMAP.md` + slice 目录，而不是捏造 `STATE.json`。
-  2. 或者显式声明"B-min 只从 `unitId` 和 `basePath` 推 milestone/slice，不读任何 state 文件"，删掉 `STATE.json` 夹具，把测试简化为纯输入映射断言。
-- 责任：必须在 Task 1 Step 3 / Task 3 Step 2 开工前二选一，否则测试谎报通过。
-
-#### 3.2 【Blocking kernel 契约】计划未交叉校验 PR-3a 的 `DISPATCH_RULES` 真的会消费 `action: "advise"`
-
-- 证据：spec v7.1 要求 PR-3a 除了扩展 `PreDispatchResult.action`，还要在 `DISPATCH_RULES` 顶部插入 `honour-phase-discipline-advice` 前缀规则，把 `advise` 结果真实地转向 `advisedUnitType`。计划的 Pre-flight Step 1 只 grep 了 `types.ts` 里的字符串，没有 grep `auto-dispatch.ts` 是否已经加了这条规则。
-- 影响：如果 PR-3a 只合并了类型扩展却漏掉 DISPATCH_RULES 接线，`profile-dispatch.ts` 返回的 `advise` 结果会被 kernel 当成"未知 action"忽略或降级为 `proceed`，PR-3b 的所有单测都可能通过（因为都在 mock 层），但生产环境里 B-min 根本不生效。
-- 修复建议：在 Pre-flight checks 增加一条：
-  ```bash
-  node -e "const fs=require('node:fs');const src=fs.readFileSync('src/resources/extensions/gsd/auto-dispatch.ts','utf8');console.log('has advise rule:', src.includes('honour-phase-discipline-advice') || src.includes('\"advise\"'))"
-  ```
-  必须 `true` 才能继续；否则 PR-3a 未完成，停工。
-- 同时要求：`phase-discipline-integration.test.ts` 增加一个 end-to-end 断言：mock `DISPATCH_RULES` 跑一圈，验证当 profile-dispatch 返回 `advise` 时，`getOrCreateRegistry().decide*()` 的下一次 pick 是 `advisedUnitType` 而不是原请求的 `unitType`。
-
-#### 3.3 【Semi-blocking】pre-dispatch 多 hook 共存时的合成语义未定义
-
-- 问题：`rule-registry.evaluatePreDispatch` 的现有 compose 语义是 `modify` 叠加 / `skip`/`replace` 早返回。计划 Task 3 Step 3 在循环内新增：
-  ```ts
-  if (hook.name === "phase-discipline-profile-dispatch") {
-    firedHooks.push(hook.name);
-    return evaluatePhaseDisciplineProfileDispatch({ unitType, unitId, prompt: currentPrompt, basePath });
-  }
-  ```
-  但 spec 没规定此 hook 在 `pre_dispatch_hooks` 数组里该排第几位。如果用户同时配置了 `modify` 类 hook（例如通用 `prepend`）并且排在 `phase-discipline-profile-dispatch` 之前，那么 `prepend` 会被应用到 `currentPrompt` 上，然后 profile-dispatch 早返回 `advise` — 但 `advise` 丢弃 `prompt` 的语义下，这次 `prepend` 被静默吞掉；反过来，如果排在之后，则 `advise` 早返回，`prepend` 永不触发。
-- 修复建议：在 `merge.ts` 里把 preset 的 `phase-discipline-profile-dispatch` 排在 `preDispatchHooks` 数组**首位**（最先评估），并在 spec/README 中明确声明"preset 的 pre-dispatch hook 总是优先执行；`advise` 一旦触发，其它用户 pre-dispatch hook 不再 compose"。同时加一个专门的单元测试断言这条顺序。
-
-#### 3.4 【Semi-blocking】post-unit 桥接未描述 cycle / retry 反馈
 
 - 问题：Task 3 Step 5 的桥接写的是：
   ```ts

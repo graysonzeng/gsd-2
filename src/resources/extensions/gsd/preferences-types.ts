@@ -149,7 +149,16 @@ export const KNOWN_PREFERENCE_KEYS = new Set<string>([
   "language",
   "context_window_override",
   "context_mode",
+  "milestone_profile",
 ]);
+
+/**
+ * Opt-in milestone workflow profile.
+ * - `"auto"` (or `undefined`) preserves the legacy adaptive scheduler.
+ * - `"phase-discipline-8step"` attaches the phase-discipline preset hooks
+ *   and activates the 8-step advisory pre-dispatch skeleton.
+ */
+export type MilestoneProfile = "auto" | "phase-discipline-8step";
 
 /** Canonical list of all dispatch unit types. */
 export const KNOWN_UNIT_TYPES = [
@@ -463,6 +472,14 @@ export interface GSDPreferences {
    * (e.g. "Chinese", "zh", "German", "de", "日本語"). Persists across /clear.
    */
   language?: string;
+  /**
+   * Opt-in milestone workflow profile. When set to `"phase-discipline-8step"`,
+   * the phase-discipline preset hooks are injected on top of any user-authored
+   * hooks (user names win per shadowing rules) and a single pre-dispatch hook
+   * advises the 8-step sequence. `undefined` or `"auto"` preserves legacy
+   * behaviour.
+   */
+  milestone_profile?: MilestoneProfile;
 }
 
 export interface LoadedGSDPreferences {

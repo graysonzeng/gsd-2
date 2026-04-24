@@ -1,7 +1,8 @@
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import {
   resolveAgentEnd,
@@ -16,6 +17,7 @@ import {
   type AgentEndEvent,
   type LoopDeps,
 } from "../auto-loop.js";
+import { checkPostUnitHooks, resetHookState } from "../post-unit-hooks.ts";
 import type { SessionLockStatus } from "../session-lock.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -183,6 +185,59 @@ test("runUnit returns cancelled when session creation fails", async () => {
   assert.equal(result.event, undefined);
   // sendMessage should NOT have been called
   assert.equal(pi.calls.length, 0);
+});
+
+test("runUnit short-circuits phase-discipline built-in reviewer hooks before newSession", async () => {
+  _resetPendingResolve();
+  resetHookState();
+
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const project = mkdtempSync(join(tmpdir(), "gsd-rununit-phase-project-"));
+  const home = mkdtempSync(join(tmpdir(), "gsd-rununit-phase-home-"));
+
+  try {
+    mkdirSync(join(project, ".gsd", "milestones", "M001", "slices", "S01", "tasks"), { recursive: true });
+    writeFileSync(
+      join(project, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "version: 1",
+        "milestone_profile: phase-discipline-8step",
+        "---",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.env.GSD_HOME = home;
+    process.chdir(project);
+
+    const hookDispatch = checkPostUnitHooks("execute-task", "M001/S01/T01", project);
+    assert.notEqual(hookDispatch, null);
+
+    let newSessionCalls = 0;
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const s = makeMockSession({
+      onNewSessionStart: () => {
+        newSessionCalls += 1;
+      },
+    });
+    s.basePath = project;
+
+    const result = await runUnit(ctx, pi, s, hookDispatch!.unitType, hookDispatch!.unitId, hookDispatch!.prompt);
+
+    assert.equal(result.status, "completed");
+    assert.equal(newSessionCalls, 0);
+    assert.equal(pi.calls.length, 0);
+  } finally {
+    resetHookState();
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(project, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("runUnit returns cancelled when session creation times out", async () => {

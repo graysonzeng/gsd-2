@@ -470,6 +470,42 @@ export function validatePreferences(preferences: GSDPreferences): {
       if (typeof hook.model === "string" && hook.model.trim()) {
         validHook.model = hook.model.trim();
       }
+      if (typeof hook.provider === "string" && hook.provider.trim()) {
+        validHook.provider = hook.provider.trim();
+      }
+      if (hook.cross_review !== undefined) {
+        const cr = typeof hook.cross_review === "number" ? hook.cross_review : Number(hook.cross_review);
+        if (Number.isFinite(cr)) {
+          validHook.cross_review = Math.max(1, Math.min(5, Math.round(cr)));
+        } else {
+          errors.push(`post_unit_hooks "${name}" cross_review must be a number`);
+          continue;
+        }
+      }
+      if (hook.cross_review_models !== undefined) {
+        if (Array.isArray(hook.cross_review_models)) {
+          const models = hook.cross_review_models
+            .filter((value): value is string => typeof value === "string")
+            .map((value) => value.trim())
+            .filter(Boolean);
+          if (models.length !== hook.cross_review_models.length) {
+            errors.push(`post_unit_hooks "${name}" cross_review_models must be an array of non-empty strings`);
+            continue;
+          }
+          if ((validHook.cross_review ?? 1) <= 1) {
+            errors.push(`post_unit_hooks "${name}" cross_review_models requires cross_review >= 2`);
+            continue;
+          }
+          if (models.length > (validHook.cross_review! - 1)) {
+            errors.push(`post_unit_hooks "${name}" cross_review_models length must be <= cross_review - 1`);
+            continue;
+          }
+          validHook.cross_review_models = models;
+        } else {
+          errors.push(`post_unit_hooks "${name}" cross_review_models must be an array of strings`);
+          continue;
+        }
+      }
       if (typeof hook.artifact === "string" && hook.artifact.trim()) {
         validHook.artifact = hook.artifact.trim();
       }
@@ -495,7 +531,7 @@ export function validatePreferences(preferences: GSDPreferences): {
     const validPreHooks: PreDispatchHookConfig[] = [];
     const seenPreNames = new Set<string>();
     const knownUnitTypes = new Set<string>(KNOWN_UNIT_TYPES);
-    const validActions = new Set(["modify", "skip", "replace"]);
+    const validActions = new Set(["modify", "skip", "replace", "advise"]);
     for (const hook of preferences.pre_dispatch_hooks) {
       if (!hook || typeof hook !== "object") {
         errors.push("pre_dispatch_hooks entry must be an object");
@@ -522,7 +558,7 @@ export function validatePreferences(preferences: GSDPreferences): {
       }
       const action = typeof hook.action === "string" ? hook.action.trim() : "";
       if (!validActions.has(action)) {
-        errors.push(`pre_dispatch_hooks "${name}" invalid action: ${action} (must be modify, skip, or replace)`);
+        errors.push(`pre_dispatch_hooks "${name}" invalid action: ${action} (must be modify, skip, replace, or advise)`);
         continue;
       }
       const validHook: PreDispatchHookConfig = { name, before, action: action as PreDispatchHookConfig["action"] };
@@ -532,6 +568,7 @@ export function validatePreferences(preferences: GSDPreferences): {
       if (typeof hook.unit_type === "string" && hook.unit_type.trim()) validHook.unit_type = hook.unit_type.trim();
       if (typeof hook.skip_if === "string" && hook.skip_if.trim()) validHook.skip_if = hook.skip_if.trim();
       if (typeof hook.model === "string" && hook.model.trim()) validHook.model = hook.model.trim();
+      if (typeof hook.provider === "string" && hook.provider.trim()) validHook.provider = hook.provider.trim();
       if (hook.enabled !== undefined) validHook.enabled = !!hook.enabled;
 
       // Validation: action-specific required fields
@@ -541,6 +578,10 @@ export function validatePreferences(preferences: GSDPreferences): {
       }
       if (action === "modify" && !validHook.prepend && !validHook.append) {
         errors.push(`pre_dispatch_hooks "${name}" action "modify" requires prepend or append`);
+        continue;
+      }
+      if (action === "advise" && !validHook.unit_type) {
+        errors.push(`pre_dispatch_hooks "${name}" action "advise" requires unit_type`);
         continue;
       }
 
@@ -1219,6 +1260,18 @@ export function validatePreferences(preferences: GSDPreferences): {
       validated.language = trimmed;
     } else {
       errors.push(`language must be a non-empty string up to 50 characters with no newlines (e.g. "Chinese", "de", "日本語")`);
+    }
+  }
+
+  // ─── Milestone Profile ───────────────────────────────────────────────
+  if (preferences.milestone_profile !== undefined) {
+    if (
+      preferences.milestone_profile === "auto"
+      || preferences.milestone_profile === "phase-discipline-8step"
+    ) {
+      validated.milestone_profile = preferences.milestone_profile;
+    } else {
+      errors.push(`milestone_profile must be one of: auto, phase-discipline-8step`);
     }
   }
 

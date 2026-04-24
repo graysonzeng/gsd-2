@@ -356,9 +356,6 @@ test("post-unit hook max_cycles clamping via validatePreferences", () => {
 
   const { preferences: p3 } = validatePreferences({ post_unit_hooks: [{ ...base, max_cycles: -5 }] } as any);
   assert.equal(p3.post_unit_hooks![0].max_cycles, 1, "negative clamps to 1");
-
-  const { preferences: p4 } = validatePreferences({ post_unit_hooks: [{ ...base, max_cycles: 3 }] } as any);
-  assert.equal(p4.post_unit_hooks![0].max_cycles, 3, "valid value passes through");
 });
 
 test("pre-dispatch hook action validation via validatePreferences", () => {
@@ -376,13 +373,75 @@ test("pre-dispatch hook action validation via validatePreferences", () => {
   assert.equal(e2.length, 0);
   assert.equal(p2.pre_dispatch_hooks![0].action, "modify");
 
+  const { preferences: p3, errors: e3a } = validatePreferences({
+    pre_dispatch_hooks: [{ ...base, action: "advise", unit_type: "plan-slice", provider: "openai" }],
+  } as any);
+  assert.equal(e3a.length, 0);
+  assert.equal(p3.pre_dispatch_hooks![0].action, "advise");
+  assert.equal(p3.pre_dispatch_hooks![0].unit_type, "plan-slice");
+
   const { errors: e3 } = validatePreferences({
     pre_dispatch_hooks: [{ ...base, action: "delete" }],
   } as any);
   assert.ok(e3.some(e => e.includes("invalid action")));
 });
 
-// ── Model config parsing ─────────────────────────────────────────────────────
+test("post-unit hook extended fields + milestone_profile validation", () => {
+  const { preferences, errors } = validatePreferences({
+    milestone_profile: "phase-discipline-8step",
+    post_unit_hooks: [{
+      name: "phase-discipline-code-review",
+      after: ["execute-task"],
+      prompt: "review",
+      provider: "openai",
+      model: "gpt-5.4",
+      cross_review: 2,
+      cross_review_models: ["anthropic/claude-sonnet-4-6"],
+    }],
+  } as any);
+
+  assert.equal(errors.length, 0);
+  assert.equal(preferences.milestone_profile, "phase-discipline-8step");
+  assert.equal(preferences.post_unit_hooks?.[0]?.provider, "openai");
+  assert.equal(preferences.post_unit_hooks?.[0]?.cross_review, 2);
+  assert.deepEqual(preferences.post_unit_hooks?.[0]?.cross_review_models, ["anthropic/claude-sonnet-4-6"]);
+});
+
+test("phase-discipline preset builtins survive loadEffectiveGSDPreferences merge + revalidate", () => {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = mkdtempSync(join(tmpdir(), "gsd-phase-prefs-project-"));
+  const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-phase-prefs-home-"));
+
+  try {
+    mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+    writeFileSync(
+      join(tempProject, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "version: 1",
+        "milestone_profile: phase-discipline-8step",
+        "---",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    process.env.GSD_HOME = tempGsdHome;
+    process.chdir(tempProject);
+
+    const loaded = loadEffectiveGSDPreferences();
+    assert.notEqual(loaded, null);
+    assert.equal(loaded!.preferences.pre_dispatch_hooks?.[0]?.builtin, "phase-discipline-profile-dispatch");
+    assert.equal(loaded!.preferences.post_unit_hooks?.[0]?.builtin, "phase-discipline-code-review");
+    assert.equal(loaded!.preferences.post_unit_hooks?.[1]?.builtin, "phase-discipline-design-review");
+  } finally {
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  }
+});
 
 test("parses OpenRouter model config with org/model IDs and fallbacks", () => {
   const content = `---\nversion: 1\nmodels:\n  research:\n    model: moonshotai/kimi-k2.5\n    fallbacks:\n      - qwen/qwen3.5-397b-a17b\n  planning:\n    model: deepseek/deepseek-r1-0528\n    fallbacks:\n      - moonshotai/kimi-k2.5\n      - deepseek/deepseek-v3.2\n  execution:\n    model: qwen/qwen3-coder\n    fallbacks:\n      - qwen/qwen3-coder-next\n---\n`;

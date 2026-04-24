@@ -22,6 +22,7 @@ import { resolvePostUnitHooks, resolvePreDispatchHooks } from "./preferences.js"
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseUnitId } from "./unit-id.js";
+import { evaluatePhaseDisciplineProfileDispatch } from "./phase-discipline/profile-dispatch.js";
 
 // ─── Artifact Path Resolution ──────────────────────────────────────────────
 
@@ -169,7 +170,7 @@ export class RuleRegistry {
     }
 
     // Check if any hooks are configured for this unit type
-    const hooks = resolvePostUnitHooks().filter(h =>
+    const hooks = resolvePostUnitHooks(basePath).filter(h =>
       h.after.includes(completedUnitType),
     );
     if (hooks.length === 0) return null;
@@ -237,7 +238,7 @@ export class RuleRegistry {
 
   private _handleHookCompletion(basePath: string): HookDispatchResult | null {
     const hook = this.activeHook!;
-    const hooks = resolvePostUnitHooks();
+    const hooks = resolvePostUnitHooks(basePath);
     const config = hooks.find(h => h.name === hook.hookName);
 
     // Check if retry was requested via retry_on artifact
@@ -284,7 +285,7 @@ export class RuleRegistry {
       return { action: "proceed", prompt, firedHooks: [] };
     }
 
-    const hooks = resolvePreDispatchHooks().filter(h =>
+    const hooks = resolvePreDispatchHooks(basePath).filter(h =>
       h.before.includes(unitType),
     );
     if (hooks.length === 0) {
@@ -318,6 +319,20 @@ export class RuleRegistry {
           prompt: substitute(hook.prompt ?? ""),
           unitType: hook.unit_type,
           model: hook.model,
+          firedHooks,
+        };
+      }
+
+      if (hook.builtin === "phase-discipline-profile-dispatch") {
+        firedHooks.push(hook.name);
+        const result = evaluatePhaseDisciplineProfileDispatch({
+          unitType,
+          unitId,
+          prompt: currentPrompt,
+          basePath,
+        });
+        return {
+          ...result,
           firedHooks,
         };
       }
