@@ -490,3 +490,43 @@ observability 记录：
 
 - `~/.gsd/agent/models.json` 当前仍把 `providers.openai.baseUrl` 指向 `https://api.sandboxai.top/v1`。若希望**默认**（非临时 HOME）也走 zhumuai，应把这一条也清掉，改写 `providers.openai.baseUrl = https://zhumuai.com/v1` 并注入 `headers.User-Agent`。本轮保守起见未动。
 - `~/.gsd/agent/auth.json` 里 openai/anthropic 都是旧的 sandboxai key（对官方与新通道都会 401）。若要直接在本机 `auth.json` 使用 zhumuai，可以手动替换；否则继续用临时 HOME 隔离方式即可。
+
+## 11. 2026-04-24 晚间 zhumuai 充值后 real full-loop 验证成功
+
+### 11.1 主干全流程全部跑通
+
+- research-slice：scout fan-out 3/3 ✓，`S01-RESEARCH.md` 写出
+- plan-slice：`S01-PLAN.md` / `T01-PLAN.md` 写出
+- impl-plan-validator：`IMPL-PLAN-VALIDATION.md` 写出
+- execute-task T01：runtime 真实 `edit docs/notes.md`，自跑 bash 验证，`gsd_complete_task` + 自动 git commit（`9bfed32 docs: Appended a concise validation note to docs/notes.md.`，trailer `GSD-Task: S01/T01`）
+- complete-slice：`S01-SUMMARY.md` + `S01-UAT.md` 写出
+- validate-milestone：`gsd_validate_milestone M001` 成功，verdict=`needs-remediation`
+- Runtime 按设计 pause 等待 remediation slice / 人工介入
+
+### 11.2 配套观察
+
+- `[gsd] Iteration error: Explicit reviewer claude-code/claude-opus-4-6 is not available. Retrying.` → preset override 把 reviewer 切到 `anthropic/claude-opus-4-6` 成功，验证 PR-3b reviewer-hook fallback 正确
+- `[gsd] Safety: 1 unexpected file change(s) outside task plan` → `.gitignore` 变更被正确识别，但没 block
+- `[gsd] Verification gate: 1/1 checks passed`
+
+### 11.3 副作用（下一次验证要规避）
+
+isolated repo 的 `.gsd` 是 symlink，被运行时重写到临时 HOME 下的 project dir。临时 HOME 被 `shred -uz` + `rm -rf` 清理时，M001 的 `.gsd/milestones/*` runtime state 一起被删除。**下次验证模板要把 `~/.gsd/projects/<hash>` 放稳定位置，只把 `agent/auth.json` 与 `agent/models.json` 放临时路径。**
+
+### 11.4 仍可继续推进的尾段
+
+由于 verdict=`needs-remediation`，以下 phase 本次没有真实跑：
+
+- `verify-fuse`
+- `complete-milestone`
+- `findings-to-memories`
+
+下一轮想跑通这段，需要：
+
+- 在 M001-CONTEXT 里给出更明确的 "append-one-line 即通过" 的 acceptance，让 validator 出 verdict=pass；或者
+- 按 runtime 提示手动追加一个 remediation slice 然后 resume auto
+
+### 11.5 证据文件
+
+- `docs/superpowers/plans/2026-04-24-phase-discipline-auto-mode-validation-findings.md` §9 包含完整事件序列与 artifact 列表。
+- commit `9bfed32` 在 isolated repo 的 `main` 分支上，是 runtime 自己做的真实 task-level commit。

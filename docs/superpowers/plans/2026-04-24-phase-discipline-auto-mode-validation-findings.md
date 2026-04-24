@@ -649,3 +649,120 @@ Scout prior_art failed | provider=openai | model=gpt-5.4 |
 ### 8.5 下一步
 
 给 zhumuai 账户充值（~$5 足够 smoke），或换一把余额充足的 key；继续用**临时 HOME + 临时 models.json(含 User-Agent) + 临时 auth.json + `env -u`** 的隔离模板，重跑 `prior_art` smoke，再跑 `headless auto`，观察能否通过 3/3 scout 并进入 plan-slice / admission / reviewer / execute-task / validate-milestone / verify-fuse。
+
+## 9. 2026-04-24 晚间真实 full-loop 验证（zhumuai 充值后）
+
+### 9.1 一句话结论
+
+充值后用同一隔离模板真实跑通了 phase-discipline seeded-auto 的**主干全流程**：research-slice → plan-slice → execute-task → complete-slice → validate-milestone，全部命中 canonical artifact 与 gate，最后 runtime 在 `validate-milestone verdict=needs-remediation` 时按设计 pause 等待 remediation slice。**无 runtime bug 被发现**。
+
+### 9.2 真实事件序列（摘自两次 headless auto stderr）
+
+第一轮 auto（316.3 s，exit 0）：
+
+- `[gsd] Pre-dispatch hook: phase-discipline-profile-dispatch`
+- scout fan-out 3/3 成功，`S01-RESEARCH.md` 写出
+- `gsd_plan_slice M001/S01` 成功，`S01-PLAN.md` / `T01-PLAN.md` 写出
+- `[gsd] Hook model override: anthropic/claude-opus-4-6`
+- `[gsd] Iteration error: Explicit reviewer claude-code/claude-opus-4-6 is not available — provider not ready. Retrying.`（随后 retry 成功，反映 preset override 起作用）
+- `edit docs/notes.md` + 自写 bash verification
+- `gsd_complete_task M001/S01/T01 Appended a concise validation note to docs/notes.md`
+- `[gsd] Committed: docs: Appended a concise validation note to docs/notes.md.`
+- `[gsd] Safety: 1 unexpected file change(s) outside task plan` — .gitignore 变更
+- `[gsd] Verification gate: 1/1 checks passed`
+- `gsd_complete_slice M001/S01 Added a single concise validation note to docs/...`
+- `[text] Slice S01 complete.`
+- 第一轮 auto 自然 exit 0，headless 报 `Status: complete` — 单轮 auto 未继续 milestone-level phase
+
+第二轮 auto（136.5 s，exit 0）：
+
+- `[gsd] Auto-mode started. Will loop until milestone complete.`
+- `[gsd] Pre-flight: 4 milestones queued. All have full context.`
+- subagent（57.9 s）→ `gsd_validate_milestone M001` 成功
+- `[text] Milestone M001 validation complete — verdict: needs-remediation.`
+- `[gsd] Milestone M001 validation returned verdict=needs-remediation but no remediation slices were added. Pausing for human review.`
+- `[gsd] Auto-mode paused (Escape).`
+
+### 9.3 canonical artifacts（在 runtime 丢失前观测到）
+
+```text
+.gsd/milestones/M001/M001-CONTEXT.md
+.gsd/milestones/M001/M001-ROADMAP.md
+.gsd/milestones/M001/anchors/plan-slice.json
+.gsd/milestones/M001/slices/S01/.phase-discipline/
+    phase-discipline-scout-fanout-M001-S01.json                          (observability)
+    phase-discipline-scout-fanout-M001-S01-scout-codebase_scan-stdout.log
+    phase-discipline-scout-fanout-M001-S01-scout-constraints_risks-stdout.log
+    phase-discipline-scout-fanout-M001-S01-scout-prior_art-stdout.log
+.gsd/milestones/M001/slices/S01/IMPL-PLAN-VALIDATION.md
+.gsd/milestones/M001/slices/S01/S01-PLAN.md
+.gsd/milestones/M001/slices/S01/S01-RESEARCH.md
+.gsd/milestones/M001/slices/S01/S01-SUMMARY.md
+.gsd/milestones/M001/slices/S01/S01-UAT.md
+.gsd/milestones/M001/slices/S01/tasks/T01-PLAN.md
+.gsd/milestones/M001/slices/S01/tasks/T01-SUMMARY.md
+.gsd/milestones/M001/slices/S01/tasks/T01-VERIFY.json
+```
+
+### 9.4 真实代码改动（已进 git）
+
+isolated repo 的 `docs/notes.md` 被 runtime 真实 append：
+
+```text
+# Notes
+
+Initial note for docs-only validation.
+
+Validation note recorded.
+```
+
+新 commit：
+
+```text
+9bfed32 docs: Appended a concise validation note to docs/notes.md.
+```
+
+trailer `GSD-Task: S01/T01` 正确写入。
+
+### 9.5 一个重要副作用（非 runtime bug）
+
+isolated repo 的 `.gsd` 是一个 **symlink**，运行过程中被重写到**临时 HOME** 下的 project dir。当脚本末尾用 `shred -uz` + `rm -rf` 清理临时 HOME 时，所有 `.gsd/milestones/M001/*` runtime state 都随之删除。
+
+后果：
+
+- M001 milestone 目录及 slice artifacts 从文件系统消失
+- `headless query` 重回 "No milestones found"
+
+这不是 phase-discipline runtime bug，也不是 auto-mode 的问题，而是**隔离模板和 `.gsd` 的 symlink 语义叠加**产生的副作用。下一会话若要重做一轮干净的全流程验证，**不要在运行结束后立即清理临时 HOME**；或改为把 `~/.gsd/projects/<hash>` 放在**稳定位置**，仅把 `agent/auth.json` 和 `agent/models.json` 放临时路径。
+
+### 9.6 另一个观察（preset 反映到实际 runtime）
+
+preset 默认 reviewer 是 `claude-code/claude-opus-4-6`，但 `claude-code` 这条 external CLI provider 未登录。runtime 清晰地按以下顺序处理：
+
+1. 先按配置尝试 `claude-code/claude-opus-4-6` → provider not ready → `Iteration error`
+2. 走 preset hook override → `anthropic/claude-opus-4-6` → 在 zhumuai 上成功
+3. 整条 loop 继续推进
+
+这说明 PR-3b 的 reviewer-hook 与 phaseDiscipline8StepDefaultModels 默认配合良好：外部 CLI 不可用时能顺畅 fall-back 到 anthropic provider。
+
+### 9.7 未跑通的 milestone-level 末段
+
+- `validate-milestone` 已跑完，但 verdict = `needs-remediation`
+- 没有 `verify-fuse` 真实执行（因为 close guard 在 needs-remediation 时会先 block）
+- 没有 `complete-milestone`
+- 没有 `findings-to-memories`
+
+这是 runtime 的**设计性 pause**，不是 bug：`verify_fuse_on_fail=true` 与 auto-dispatch `complete-milestone guard` 在 verdict != pass 时会要求人工介入或 remediation slice。
+
+### 9.8 真实 blocker（若想跑过 needs-remediation）
+
+下一步两条路：
+
+1. **提供更明确的 milestone 验收条件** — 当前 M001 的内容只是 docs-only 一行 note，milestone validator 可能因为缺少文档结构证据判为 needs-remediation。可以在 M001-CONTEXT 里补充"仅允许追加一行 note 即视为完成"的明确 acceptance。
+2. **为 M001 追加一个 remediation slice** — 手工在 roadmap 里 seed S02 作为 remediation，再重跑 auto。
+
+### 9.9 下一会话最小继续动作
+
+1. 修复隔离模板：保留 `~/.gsd/projects/<hash>` 持久路径（不要清理），只把 `agent/auth.json`+`agent/models.json` 放到 tmp；或使用 `mktemp -d ...` 后**不 rm**，让用户显式清理。
+2. 可选：在 isolated repo 重 seed M001，或修改 M001-CONTEXT 让 validate-milestone verdict=pass；然后再跑一轮 full-loop，观察 verify-fuse / complete-milestone / findings-to-memories。
+3. 本轮已经从事实上证明 phase-discipline runtime 主干全部工作，**不需要**再改 runtime 主实现。
