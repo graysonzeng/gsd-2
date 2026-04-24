@@ -34,7 +34,7 @@ function makeMockDeps(overrides: Partial<LoopDeps> = {}): LoopDeps & {
   const deps: LoopDeps = {
     lockBase: () => "/tmp/test-lock",
     buildSnapshotOpts: () => ({}),
-    stopAuto: async (_ctx, _pi, reason) => {
+    stopAuto: async (_ctx: unknown, _pi: unknown, reason: string | undefined) => {
       stopAutoCalls.push(reason ?? "");
     },
     pauseAuto: async () => {
@@ -125,10 +125,10 @@ function makeMockDeps(overrides: Partial<LoopDeps> = {}): LoopDeps & {
     runPostUnitVerification: async () => ({ action: "continue" } as any),
     postUnitPostVerification: async () => "continue",
     getSessionFile: () => "/tmp/session.json",
-    emitJournalEvent: (entry) => {
+    emitJournalEvent: (entry: { eventType: string; data?: Record<string, unknown> }) => {
       journalEvents.push({ eventType: entry.eventType, data: entry.data });
     },
-    runPhaseDisciplineScoutFanOut: async ({ unitType, unitId }) => {
+    runPhaseDisciplineScoutFanOut: async ({ unitType, unitId }: { unitType: string; unitId: string }) => {
       fanOutCalls.push({ unitType, unitId });
       return {
         researchArtifactPath: "/tmp/S01-RESEARCH.md",

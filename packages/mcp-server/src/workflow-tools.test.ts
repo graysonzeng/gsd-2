@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 
 import { symlinkSync, realpathSync } from "node:fs";
 
-import { _getAdapter, closeDatabase } from "../../../src/resources/extensions/gsd/gsd-db.ts";
+import { _getAdapter, closeDatabase, openDatabase } from "../../../src/resources/extensions/gsd/gsd-db.ts";
 import { registerWorkflowTools, WORKFLOW_TOOL_NAMES, validateProjectDir } from "./workflow-tools.ts";
 
 function makeTmpBase(): string {
@@ -850,6 +850,7 @@ export const executeTaskComplete = async (params, projectDir) => {
 
       assert.match((result as any).content[0].text as string, /Saved requirement R\d+/);
       assert.ok(existsSync(join(base, ".gsd", "REQUIREMENTS.md")), "REQUIREMENTS.md should be written to disk");
+      assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true, "test should be able to reopen the workflow DB for verification");
       const row = _getAdapter()!
         .prepare("SELECT id, class, description FROM requirements WHERE description = ?")
         .get("Inline MCP requirement save regression") as Record<string, unknown> | undefined;
@@ -934,6 +935,11 @@ export const executeTaskComplete = async (params, projectDir) => {
         existsSync(join(base, ".gsd", "milestones", "M010", "slices", "S10", "tasks", "T11-PLAN.md")),
         "T11 plan should be written after reopening the DB",
       );
+      assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true, "test should be able to reopen the workflow DB for verification");
+      const removedTask = _getAdapter()!.prepare(
+        "SELECT id FROM tasks WHERE milestone_id = ? AND slice_id = ? AND id = ?",
+      ).get("M010", "S10", "T11");
+      assert.ok(removedTask, "T11 should be written to the database");
     } finally {
       cleanup(base);
     }
@@ -1080,6 +1086,7 @@ export const executeTaskComplete = async (params, projectDir) => {
         existsSync(join(base, ".gsd", "milestones", "M099", "slices", "S09", "S09-PLAN.md")),
         "updated plan should exist on disk",
       );
+      assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true, "test should be able to reopen the workflow DB for verification");
       const removedTask = _getAdapter()!.prepare(
         "SELECT id FROM tasks WHERE milestone_id = ? AND slice_id = ? AND id = ?",
       ).get("M099", "S09", "T11");
@@ -1437,11 +1444,13 @@ export const executeTaskComplete = async (params, projectDir) => {
         findings: "No new attack surface was introduced.",
       });
       assert.match((gateResult as any).content[0].text as string, /Gate Q3 result saved/);
-      // #4472: executor `details` must be adapted to MCP `structuredContent`
-      // so it survives the protocol transport intact. Asserting property
-      // *absence* rather than `=== undefined` so a future regression that
-      // explicitly sets `details: undefined` (rather than removing it) still
-      // fails this contract test.
+      assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true, "test should be able to reopen the workflow DB for verification");
+      const gateRows = _getAdapter()!.prepare(
+        "SELECT status, verdict, rationale FROM quality_gates WHERE milestone_id = ? AND slice_id = ? AND gate_id = ?",
+      ).all("M006", "S06", "Q3") as Array<Record<string, unknown>>;
+      assert.equal(gateRows.length, 1);
+      assert.equal(gateRows[0]["status"], "complete");
+      assert.equal(gateRows[0]["verdict"], "pass");
       assert.equal(
         Object.prototype.hasOwnProperty.call(gateResult, "details"),
         false,
@@ -1452,12 +1461,6 @@ export const executeTaskComplete = async (params, projectDir) => {
         { operation: "save_gate_result", gateId: "Q3", verdict: "pass" },
         "executor details must be forwarded on the MCP `structuredContent` channel",
       );
-      const gateRows = _getAdapter()!.prepare(
-        "SELECT status, verdict, rationale FROM quality_gates WHERE milestone_id = ? AND slice_id = ? AND gate_id = ?",
-      ).all("M006", "S06", "Q3") as Array<Record<string, unknown>>;
-      assert.equal(gateRows.length, 1);
-      assert.equal(gateRows[0]["status"], "complete");
-      assert.equal(gateRows[0]["verdict"], "pass");
 
       await taskTool!.handler({
         projectDir: base,
