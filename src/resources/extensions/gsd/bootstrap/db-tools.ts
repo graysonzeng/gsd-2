@@ -533,7 +533,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
         inputs: Type.Array(Type.String(), { description: "Input files or references" }),
         expectedOutput: Type.Array(Type.String(), { description: "Expected output files or artifacts" }),
         observabilityImpact: Type.Optional(Type.String({ description: "Task observability impact" })),
-      }), { description: "Planned tasks for the slice" }),
+      }), { description: "Planned tasks for the slice", minItems: 1 }),
       // ── Enrichment metadata (optional — defaults to empty) ────────────
       successCriteria: Type.Optional(Type.String({ description: "Slice success criteria block" })),
       proofLevel: Type.Optional(Type.String({ description: "Slice proof level" })),

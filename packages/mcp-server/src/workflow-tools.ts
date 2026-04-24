@@ -962,7 +962,7 @@ const planSliceParams = {
     inputs: nonEmptyStringArray("inputs"),
     expectedOutput: nonEmptyStringArray("expectedOutput"),
     observabilityImpact: optionalNonEmptyString("observabilityImpact"),
-  })).describe("Planned tasks for the slice"),
+  })).min(1, "tasks must contain at least one item").describe("Planned tasks for the slice"),
   successCriteria: z.string().optional(),
   proofLevel: z.string().optional(),
   integrationClosure: z.string().optional(),

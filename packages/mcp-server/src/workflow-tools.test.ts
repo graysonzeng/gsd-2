@@ -679,6 +679,49 @@ export const executeTaskComplete = async (params, projectDir) => {
     }
   });
 
+  it("gsd_plan_slice rejects an empty tasks array at the MCP schema layer", async () => {
+    // Regression for the phase-discipline v1.1-v1.4 end-to-end review Minor-2:
+    // `planSliceParams.tasks` previously lacked `.min(1)`, so empty tasks[]
+    // only failed inside plan-slice.ts::validateTasks() after the executor
+    // opened a DB transaction. Locking in schema-layer pre-rejection here so
+    // callers get a fast Zod error before any workflow side effects.
+    const base = makeTmpBase();
+    try {
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const tool = server.tools.find((t) => t.name === "gsd_plan_slice");
+      assert.ok(tool, "gsd_plan_slice tool should be registered");
+
+      let caught: unknown;
+      try {
+        await tool!.handler({
+          projectDir: base,
+          milestoneId: "M001",
+          sliceId: "S01",
+          goal: "Persist slice plan over MCP.",
+          tasks: [],
+        });
+      } catch (err) {
+        caught = err;
+      }
+      assert.ok(caught, "empty tasks should be rejected");
+      const message = caught instanceof Error ? caught.message : String(caught);
+      assert.ok(
+        message.includes("tasks") && message.includes("at least one"),
+        `expected Zod tasks-min error, got: ${message}`,
+      );
+      // The executor's own error prefix must NOT appear — the rejection must
+      // happen at parse time before parseWorkflowArgs hands off to the
+      // executor.
+      assert.ok(
+        !message.includes("validation failed: tasks must be a non-empty array"),
+        `rejection should be schema-layer, not executor-layer; got: ${message}`,
+      );
+    } finally {
+      cleanup(base);
+    }
+  });
+
   it("gsd_plan_milestone rejects empty slice fields up front with all violations", async () => {
     const base = makeTmpBase();
     try {
