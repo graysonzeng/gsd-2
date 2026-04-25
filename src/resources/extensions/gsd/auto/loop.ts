@@ -18,6 +18,8 @@ import {
   type LoopState,
   type IterationContext,
   type IterationData,
+  type AutoLoopReport,
+  type AutoLoopStopReason,
 } from "./types.js";
 import { _clearCurrentResolve } from "./resolve.js";
 import {
@@ -39,6 +41,7 @@ import { ExecutionGraphScheduler } from "../uok/execution-graph.js";
 import type { UokGraphNode } from "../uok/contracts.js";
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import type { GSDState } from "../types.js";
 
 // ── Stuck detection persistence (#3704) ──────────────────────────────────
 // Persist stuck detection state to disk so it survives session restarts.
@@ -151,6 +154,74 @@ type DispatchContract = "legacy-direct" | "uok-scheduler";
 
 interface AutoLoopOptions {
   dispatchContract?: DispatchContract;
+  maxIterations?: number;
+  maxDurationMs?: number;
+  stopOnStateUnchanged?: boolean;
+  writeReport?: boolean;
+}
+
+interface ResolvedAutoLoopOptions {
+  maxIterations: number;
+  deadlineMs: number | null;
+  stopOnStateUnchanged: boolean;
+  writeReport: boolean;
+}
+
+function resolvePositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
+}
+
+function resolveBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function resolveAutoLoopOptions(
+  options: AutoLoopOptions | undefined,
+  prefs: { auto_loop?: { max_iterations?: number; max_duration_ms?: number; stop_on_state_unchanged?: boolean; write_report?: boolean } } | undefined,
+): ResolvedAutoLoopOptions {
+  const maxIterations = resolvePositiveInteger(options?.maxIterations)
+    ?? resolvePositiveInteger(prefs?.auto_loop?.max_iterations)
+    ?? MAX_LOOP_ITERATIONS;
+  const maxDurationMs = resolvePositiveInteger(options?.maxDurationMs)
+    ?? resolvePositiveInteger(prefs?.auto_loop?.max_duration_ms);
+  return {
+    maxIterations,
+    deadlineMs: maxDurationMs ? Date.now() + maxDurationMs : null,
+    stopOnStateUnchanged: resolveBoolean(options?.stopOnStateUnchanged)
+      ?? resolveBoolean(prefs?.auto_loop?.stop_on_state_unchanged)
+      ?? false,
+    writeReport: resolveBoolean(options?.writeReport)
+      ?? resolveBoolean(prefs?.auto_loop?.write_report)
+      ?? true,
+  };
+}
+
+function stateProgressSignature(state: GSDState): string {
+  return JSON.stringify({
+    phase: state.phase,
+    activeMilestone: state.activeMilestone?.id ?? null,
+    activeSlice: state.activeSlice?.id ?? null,
+    activeTask: state.activeTask?.id ?? null,
+    registry: state.registry.map((entry) => ({ id: entry.id, status: entry.status })),
+    progress: state.progress ?? null,
+    requirements: state.requirements ?? null,
+    blockers: state.blockers,
+    lastCompletedMilestone: state.lastCompletedMilestone?.id ?? null,
+  });
+}
+
+function writeAutoLoopReport(basePath: string, deps: LoopDeps, report: AutoLoopReport): void {
+  try {
+    const runtimeDir = join(gsdRoot(basePath), "runtime");
+    mkdirSync(runtimeDir, { recursive: true });
+    deps.atomicWriteSync(
+      join(runtimeDir, "auto-loop-report.json"),
+      JSON.stringify(report, null, 2) + "\n",
+    );
+  } catch (err) {
+    debugLog("autoLoop", { phase: "write-loop-report-failed", error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 function checkMemoryPressure(): { pressured: boolean; heapMB: number; limitMB: number; pct: number } {
@@ -254,6 +325,22 @@ export async function autoLoop(
   debugLog("autoLoop", { phase: "enter" });
   let iteration = 0;
   const dispatchContract = options?.dispatchContract ?? "legacy-direct";
+  const loopOptions = resolveAutoLoopOptions(options, deps.loadEffectiveGSDPreferences()?.preferences);
+  const loopStartedAt = new Date().toISOString();
+  const loopStartedMs = Date.now();
+  const report: AutoLoopReport = {
+    status: "completed",
+    stopReason: "inactive",
+    startedAt: loopStartedAt,
+    endedAt: loopStartedAt,
+    durationMs: 0,
+    totalIterations: 0,
+    iterations: [],
+  };
+  const markLoopStop = (status: AutoLoopReport["status"], reason: AutoLoopStopReason): void => {
+    report.status = status;
+    report.stopReason = reason;
+  };
   // Load persisted stuck state so counters survive session restarts (#3704)
   const persisted = loadStuckState(s.basePath);
   const loopState: LoopState = {
@@ -287,6 +374,21 @@ export async function autoLoop(
     ): void => {
       if (turnFinished) return;
       turnFinished = true;
+      const finishedAt = new Date().toISOString();
+      report.iterations.push({
+        index: iteration,
+        unitType: observedUnitType,
+        unitId: observedUnitId,
+        status,
+        failureClass,
+        startedAt: turnStartedAt,
+        finishedAt,
+        durationMs: Date.parse(finishedAt) - Date.parse(turnStartedAt),
+        ...(error ? { error } : {}),
+      });
+      if (status === "failed") report.status = "failed";
+      else if (status === "paused" && report.status !== "failed") report.status = "paused";
+      else if (status === "stopped" && report.status !== "failed") report.status = "stopped";
       deps.uokObserver?.onTurnResult({
         traceId: flowId,
         turnId,
@@ -298,7 +400,7 @@ export async function autoLoop(
         phaseResults: [],
         error,
         startedAt: turnStartedAt,
-        finishedAt: new Date().toISOString(),
+        finishedAt,
       });
       s.currentTraceId = null;
       s.currentTurnId = null;
@@ -311,18 +413,27 @@ export async function autoLoop(
       startedAt: turnStartedAt,
     });
 
-    if (iteration > MAX_LOOP_ITERATIONS) {
+    if (iteration > loopOptions.maxIterations) {
       debugLog("autoLoop", {
         phase: "exit",
         reason: "max-iterations",
         iteration,
       });
+      markLoopStop("stopped", "max-iterations");
       await deps.stopAuto(
         ctx,
         pi,
-        `Safety: loop exceeded ${MAX_LOOP_ITERATIONS} iterations — possible runaway`,
+        `Safety: loop exceeded ${loopOptions.maxIterations} iterations — possible runaway`,
       );
       finishTurn("stopped", "manual-attention", "max-iterations");
+      break;
+    }
+
+    if (loopOptions.deadlineMs !== null && Date.now() > loopOptions.deadlineMs) {
+      debugLog("autoLoop", { phase: "exit", reason: "timeout", iteration });
+      markLoopStop("stopped", "timeout");
+      await deps.stopAuto(ctx, pi, "Safety: loop exceeded configured max duration");
+      finishTurn("stopped", "timeout", "timeout");
       break;
     }
 
@@ -333,6 +444,7 @@ export async function autoLoop(
       debugLog("autoLoop", { phase: "memory-check", ...mem });
       if (mem.pressured) {
         logWarning("dispatch", `Memory pressure: ${mem.heapMB}MB / ${mem.limitMB}MB (${Math.round(mem.pct * 100)}%) — stopping auto-mode to prevent OOM kill`);
+        markLoopStop("stopped", "memory-pressure");
         await deps.stopAuto(
           ctx,
           pi,
@@ -347,6 +459,7 @@ export async function autoLoop(
 
     if (!s.cmdCtx) {
       debugLog("autoLoop", { phase: "exit", reason: "no-cmdCtx" });
+      markLoopStop("stopped", "missing-command-context");
       finishTurn("stopped", "manual-attention", "missing-command-context");
       break;
     }
@@ -355,6 +468,7 @@ export async function autoLoop(
       // ── Blanket try/catch: one bad iteration must not kill the session
       const prefs = deps.loadEffectiveGSDPreferences()?.preferences;
       const uokFlags = resolveUokFlags(prefs);
+      let beforeProgressSignature: string | null = null;
 
       // ── Check sidecar queue before deriveState ──
       let sidecarItem: SidecarItem | undefined;
@@ -392,6 +506,7 @@ export async function autoLoop(
             reason: "session-lock-lost",
             detail: lockStatus.failureReason ?? "unknown",
           });
+          markLoopStop("stopped", "session-lock-lost");
           break;
         }
       }
@@ -418,6 +533,7 @@ export async function autoLoop(
 
         const engineState = await engine.deriveState(s.basePath);
         if (engineState.isComplete) {
+          markLoopStop("completed", "custom-engine-complete");
           await deps.stopAuto(ctx, pi, "Workflow complete");
           break;
         }
@@ -426,6 +542,7 @@ export async function autoLoop(
         const dispatch = await engine.resolveDispatch(engineState, { basePath: s.basePath });
 
         if (dispatch.action === "stop") {
+          markLoopStop("stopped", "custom-engine-stop");
           await deps.stopAuto(ctx, pi, dispatch.reason ?? "Engine stopped");
           break;
         }
@@ -462,6 +579,7 @@ export async function autoLoop(
           unitId: iterData.unitId,
         });
         if (guardsResult.action === "break") {
+          markLoopStop("stopped", "guard-break");
           finishTurn("stopped", "manual-attention", "guard-break");
           break;
         }
@@ -478,6 +596,7 @@ export async function autoLoop(
           unitId: iterData.unitId,
         });
         if (unitPhaseResult.action === "break") {
+          markLoopStop("stopped", "unit-break");
           finishTurn("stopped", "execution", "unit-break");
           break;
         }
@@ -487,6 +606,7 @@ export async function autoLoop(
         const verifyResult = await policy.verify(iterData.unitType, iterData.unitId, { basePath: s.basePath });
         if (verifyResult === "pause") {
           await deps.pauseAuto(ctx, pi);
+          markLoopStop("paused", "custom-engine-verify-pause");
           deps.uokObserver?.onPhaseResult("custom-engine", "pause", {
             unitType: iterData.unitType,
             unitId: iterData.unitId,
@@ -510,10 +630,12 @@ export async function autoLoop(
             const recovery = await policy.recover(iterData.unitType, iterData.unitId, { basePath: s.basePath });
             if (recovery.outcome === "pause") {
               await deps.pauseAuto(ctx, pi);
+              markLoopStop("paused", "custom-engine-verify-retry-exhausted");
               finishTurn("paused", "manual-attention", recovery.reason ?? "custom-engine-verify-retry-exhausted");
               break;
             }
             if (recovery.outcome === "skip") {
+              markLoopStop("stopped", "custom-engine-verify-retry-exhausted");
               await deps.stopAuto(
                 ctx,
                 pi,
@@ -530,6 +652,7 @@ export async function autoLoop(
               pi,
               recovery.outcome === "stop" && recovery.reason ? recovery.reason : exhaustedReason,
             );
+            markLoopStop("stopped", "custom-engine-verify-retry-exhausted");
             finishTurn("stopped", "manual-attention", "custom-engine-verify-retry-exhausted");
             break;
           }
@@ -557,6 +680,7 @@ export async function autoLoop(
         debugLog("autoLoop", { phase: "iteration-complete", iteration });
 
         if (reconcileResult.outcome === "milestone-complete") {
+          markLoopStop("completed", "custom-engine-complete");
           await deps.stopAuto(ctx, pi, "Workflow complete");
           deps.uokObserver?.onPhaseResult("custom-engine", "milestone-complete", {
             unitType: iterData.unitType,
@@ -567,6 +691,7 @@ export async function autoLoop(
         }
         if (reconcileResult.outcome === "pause") {
           await deps.pauseAuto(ctx, pi);
+          markLoopStop("paused", "custom-engine-reconcile-pause");
           deps.uokObserver?.onPhaseResult("custom-engine", "pause", {
             unitType: iterData.unitType,
             unitId: iterData.unitId,
@@ -575,6 +700,7 @@ export async function autoLoop(
           break;
         }
         if (reconcileResult.outcome === "stop") {
+          markLoopStop("stopped", "custom-engine-stop");
           await deps.stopAuto(ctx, pi, reconcileResult.reason ?? "Engine stopped");
           deps.uokObserver?.onPhaseResult("custom-engine", "stop", {
             unitType: iterData.unitType,
@@ -597,6 +723,7 @@ export async function autoLoop(
         const preDispatchResult = await runPreDispatch(ic, loopState);
         deps.uokObserver?.onPhaseResult("pre-dispatch", preDispatchResult.action);
         if (preDispatchResult.action === "break") {
+          markLoopStop("stopped", "pre-dispatch-break");
           finishTurn("stopped", "manual-attention", "pre-dispatch-break");
           break;
         }
@@ -611,6 +738,7 @@ export async function autoLoop(
         const guardsResult = await runGuards(ic, preData.mid);
         deps.uokObserver?.onPhaseResult("guard", guardsResult.action);
         if (guardsResult.action === "break") {
+          markLoopStop("stopped", "guard-break");
           finishTurn("stopped", "manual-attention", "guard-break");
           break;
         }
@@ -619,6 +747,7 @@ export async function autoLoop(
         const dispatchResult = await runDispatch(ic, preData, loopState);
         deps.uokObserver?.onPhaseResult("dispatch", dispatchResult.action);
         if (dispatchResult.action === "break") {
+          markLoopStop("stopped", "dispatch-break");
           finishTurn("stopped", "manual-attention", "dispatch-break");
           break;
         }
@@ -629,6 +758,7 @@ export async function autoLoop(
         iterData = dispatchResult.data;
         observedUnitType = iterData.unitType;
         observedUnitId = iterData.unitId;
+        beforeProgressSignature = stateProgressSignature(iterData.state);
       } else {
         // ── Sidecar path: use values from the sidecar item directly ──
         const sidecarState = await deps.deriveState(s.basePath);
@@ -645,6 +775,7 @@ export async function autoLoop(
         };
         observedUnitType = iterData.unitType;
         observedUnitId = iterData.unitId;
+        beforeProgressSignature = stateProgressSignature(iterData.state);
         deps.uokObserver?.onPhaseResult("dispatch", "sidecar", {
           unitType: iterData.unitType,
           unitId: iterData.unitId,
@@ -664,6 +795,7 @@ export async function autoLoop(
         unitId: iterData.unitId,
       });
       if (unitPhaseResult.action === "break") {
+        markLoopStop("stopped", "unit-break");
         finishTurn("stopped", "execution", "unit-break");
         break;
       }
@@ -679,6 +811,7 @@ export async function autoLoop(
         const finalizeFailureClass = finalizeResult.reason === "git-closeout-failure"
           ? "git"
           : "closeout";
+        markLoopStop("stopped", "finalize-break");
         finishTurn("stopped", finalizeFailureClass, "finalize-break");
         break;
       }
@@ -690,6 +823,18 @@ export async function autoLoop(
       consecutiveErrors = 0; // Iteration completed successfully
       consecutiveCooldowns = 0;
       recentErrorMessages.length = 0;
+      if (loopOptions.stopOnStateUnchanged && beforeProgressSignature) {
+        const afterState = await deps.deriveState(s.basePath);
+        if (stateProgressSignature(afterState) === beforeProgressSignature) {
+          markLoopStop("stopped", "state-unchanged");
+          deps.emitJournalEvent({ ts: new Date().toISOString(), flowId, seq: nextSeq(), eventType: "iteration-end", data: { iteration, stopReason: "state-unchanged" } });
+          await deps.stopAuto(ctx, pi, "State unchanged after unit completion — no progress made");
+          saveStuckState(s.basePath, loopState);
+          debugLog("autoLoop", { phase: "exit", reason: "state-unchanged", iteration });
+          finishTurn("stopped", "manual-attention", "state-unchanged");
+          break;
+        }
+      }
       deps.emitJournalEvent({ ts: new Date().toISOString(), flowId, seq: nextSeq(), eventType: "iteration-end", data: { iteration } });
       saveStuckState(s.basePath, loopState); // persist across session restarts (#4382)
       debugLog("autoLoop", { phase: "iteration-complete", iteration });
@@ -718,6 +863,7 @@ export async function autoLoop(
           `Auto-mode stopped: infrastructure error ${infraCode} — ${msg}`,
           "error",
         );
+        markLoopStop("failed", "infrastructure-error");
         await deps.stopAuto(
           ctx,
           pi,
@@ -749,6 +895,7 @@ export async function autoLoop(
             `Auto-mode stopped: ${consecutiveCooldowns} consecutive credential cooldowns — rate limit or quota may be persistently exhausted.`,
             "error",
           );
+          markLoopStop("stopped", "cooldown-budget-exceeded");
           await deps.stopAuto(
             ctx,
             pi,
@@ -787,6 +934,7 @@ export async function autoLoop(
           `Auto-mode stopped: ${consecutiveErrors} consecutive iteration failures:\n${errorHistory}`,
           "error",
         );
+        markLoopStop("failed", "consecutive-iteration-failures");
         await deps.stopAuto(
           ctx,
           pi,
@@ -810,6 +958,12 @@ export async function autoLoop(
   }
 
   _clearCurrentResolve();
+  report.endedAt = new Date().toISOString();
+  report.durationMs = Date.now() - loopStartedMs;
+  report.totalIterations = iteration;
+  if (loopOptions.writeReport) {
+    writeAutoLoopReport(s.basePath, deps, report);
+  }
   debugLog("autoLoop", { phase: "exit", totalIterations: iteration });
 }
 

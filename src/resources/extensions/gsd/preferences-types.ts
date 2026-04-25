@@ -102,6 +102,7 @@ export const KNOWN_PREFERENCE_KEYS = new Set<string>([
   "skill_discovery",
   "skill_staleness_days",
   "auto_supervisor",
+  "auto_loop",
   "uat_dispatch",
   "unique_milestone_ids",
   "budget_ceiling",
@@ -238,6 +239,13 @@ export interface AutoSupervisorConfig {
   hard_timeout_minutes?: number;
 }
 
+export interface AutoLoopConfig {
+  max_iterations?: number;
+  max_duration_ms?: number;
+  stop_on_state_unchanged?: boolean;
+  write_report?: boolean;
+}
+
 export interface RemoteQuestionsConfig {
   channel: "slack" | "discord" | "telegram";
   channel_id: string | number;
@@ -318,6 +326,7 @@ export interface GSDPreferences {
   skill_discovery?: SkillDiscoveryMode;
   skill_staleness_days?: number;  // Skills unused for N days get deprioritized (#599). 0 = disabled. Default: 60.
   auto_supervisor?: AutoSupervisorConfig;
+  auto_loop?: AutoLoopConfig;
   uat_dispatch?: boolean;
   unique_milestone_ids?: boolean;
   budget_ceiling?: number;

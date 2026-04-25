@@ -95,6 +95,50 @@ export interface LoopState {
   consecutiveFinalizeTimeouts: number;
 }
 
+export type AutoLoopStopReason =
+  | "max-iterations"
+  | "timeout"
+  | "memory-pressure"
+  | "missing-command-context"
+  | "session-lock-lost"
+  | "custom-engine-complete"
+  | "custom-engine-stop"
+  | "custom-engine-verify-pause"
+  | "custom-engine-verify-retry-exhausted"
+  | "custom-engine-reconcile-pause"
+  | "guard-break"
+  | "pre-dispatch-break"
+  | "dispatch-break"
+  | "unit-break"
+  | "finalize-break"
+  | "state-unchanged"
+  | "infrastructure-error"
+  | "cooldown-budget-exceeded"
+  | "consecutive-iteration-failures"
+  | "inactive";
+
+export interface AutoLoopIterationReport {
+  index: number;
+  unitType?: string;
+  unitId?: string;
+  status: "completed" | "failed" | "paused" | "stopped" | "skipped" | "retry";
+  failureClass: "none" | "unknown" | "manual-attention" | "timeout" | "execution" | "closeout" | "git";
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  error?: string;
+}
+
+export interface AutoLoopReport {
+  status: "completed" | "stopped" | "failed" | "paused";
+  stopReason: AutoLoopStopReason;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  totalIterations: number;
+  iterations: AutoLoopIterationReport[];
+}
+
 /** Max consecutive finalize timeouts before hard-stopping auto-mode. */
 export const MAX_FINALIZE_TIMEOUTS = 3;
 

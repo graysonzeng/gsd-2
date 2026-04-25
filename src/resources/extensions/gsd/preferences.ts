@@ -422,6 +422,9 @@ function mergePreferences(base: GSDPreferences, override: GSDPreferences): GSDPr
     skill_discovery: override.skill_discovery ?? base.skill_discovery,
     skill_staleness_days: override.skill_staleness_days ?? base.skill_staleness_days,
     auto_supervisor: { ...(base.auto_supervisor ?? {}), ...(override.auto_supervisor ?? {}) },
+    auto_loop: (base.auto_loop || override.auto_loop)
+      ? { ...(base.auto_loop ?? {}), ...(override.auto_loop ?? {}) }
+      : undefined,
     uat_dispatch: override.uat_dispatch ?? base.uat_dispatch,
     unique_milestone_ids: override.unique_milestone_ids ?? base.unique_milestone_ids,
     budget_ceiling: override.budget_ceiling ?? base.budget_ceiling,

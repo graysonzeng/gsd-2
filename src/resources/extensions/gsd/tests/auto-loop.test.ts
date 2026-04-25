@@ -997,6 +997,71 @@ test("autoLoop passes structured session-lock failure details to the handler", a
   );
 });
 
+test("autoLoop honors maxIterations option and writes loop report", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+  let stopReason = "";
+  let reportContent = "";
+
+  const deps = makeMockDeps({
+    stopAuto: async (_ctx?: any, _pi?: any, reason?: string) => {
+      deps.callLog.push("stopAuto");
+      stopReason = reason ?? "";
+      s.active = false;
+    },
+    atomicWriteSync: (_path: string, content: string) => {
+      reportContent = content;
+    },
+  });
+
+  const loopPromise = autoLoop(ctx, pi, s, deps, { maxIterations: 1 });
+
+  await new Promise((r) => setTimeout(r, 30));
+  resolveAgentEnd(makeEvent());
+
+  await loopPromise;
+
+  assert.ok(stopReason.includes("1 iterations"), `stop reason should mention configured maxIterations, got: ${stopReason}`);
+  assert.ok(reportContent, "loop report should be written");
+  const report = JSON.parse(reportContent);
+  assert.equal(report.stopReason, "max-iterations");
+  assert.equal(report.totalIterations, 2);
+  assert.equal(report.iterations[0].unitId, "M001/S01/T01");
+  assert.equal(report.iterations[1].status, "stopped");
+});
+
+test("autoLoop stops on unchanged state when enabled", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+  let stopReason = "";
+
+  const deps = makeMockDeps({
+    stopAuto: async (_ctx?: any, _pi?: any, reason?: string) => {
+      deps.callLog.push("stopAuto");
+      stopReason = reason ?? "";
+      s.active = false;
+    },
+  });
+
+  const loopPromise = autoLoop(ctx, pi, s, deps, { stopOnStateUnchanged: true });
+
+  await new Promise((r) => setTimeout(r, 30));
+  resolveAgentEnd(makeEvent());
+
+  await loopPromise;
+
+  assert.ok(stopReason.includes("State unchanged"), `stop reason should mention unchanged state, got: ${stopReason}`);
+  assert.ok(deps.callLog.includes("stopAuto"), "stopAuto should be called for unchanged state");
+});
+
 test("autoLoop exits on terminal blocked state", async (t) => {
   _resetPendingResolve();
 

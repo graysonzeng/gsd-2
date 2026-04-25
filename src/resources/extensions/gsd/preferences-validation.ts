@@ -383,6 +383,33 @@ export function validatePreferences(preferences: GSDPreferences): {
       errors.push("auto_supervisor must be an object");
     }
   }
+  if (preferences.auto_loop !== undefined) {
+    if (preferences.auto_loop && typeof preferences.auto_loop === "object") {
+      const raw = preferences.auto_loop as Record<string, unknown>;
+      const autoLoop: NonNullable<GSDPreferences["auto_loop"]> = {};
+      if (raw.max_iterations !== undefined) {
+        const value = Number(raw.max_iterations);
+        if (Number.isFinite(value) && value > 0) autoLoop.max_iterations = Math.floor(value);
+        else errors.push("auto_loop.max_iterations must be a positive number");
+      }
+      if (raw.max_duration_ms !== undefined) {
+        const value = Number(raw.max_duration_ms);
+        if (Number.isFinite(value) && value > 0) autoLoop.max_duration_ms = Math.floor(value);
+        else errors.push("auto_loop.max_duration_ms must be a positive number");
+      }
+      if (raw.stop_on_state_unchanged !== undefined) {
+        if (typeof raw.stop_on_state_unchanged === "boolean") autoLoop.stop_on_state_unchanged = raw.stop_on_state_unchanged;
+        else errors.push("auto_loop.stop_on_state_unchanged must be a boolean");
+      }
+      if (raw.write_report !== undefined) {
+        if (typeof raw.write_report === "boolean") autoLoop.write_report = raw.write_report;
+        else errors.push("auto_loop.write_report must be a boolean");
+      }
+      validated.auto_loop = autoLoop;
+    } else {
+      errors.push("auto_loop must be an object");
+    }
+  }
 
   // ─── Notifications ──────────────────────────────────────────────────
   if (preferences.notifications !== undefined) {

@@ -957,7 +957,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     try {
       const { deriveHeadlessSnapshot } = await import('./headless-query.js')
       workflowSnapshot = workflowSnapshotFromQuery(await deriveHeadlessSnapshot(process.cwd()))
-      exitCode = applyFailOnIncompleteExitCode(commandExitCode, workflowSnapshot, options.failOnIncomplete)
+      exitCode = applyFailOnIncompleteExitCode(commandExitCode, workflowSnapshot, options.failOnIncomplete ?? false)
     } catch (err) {
       workflowSnapshot = { status: 'unknown' }
       if (!options.json) {
