@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { deriveAutoModeTimeline, deriveAutoModeRuntimeSummary, type AutoModeTimelineItem, type PowerModeTone } from "@/lib/power-mode-context"
+import { extractSubagentSnapshotGroups, type SubagentSnapshotGroup, type SubagentSnapshotItem } from "@/lib/auto-mode-subagent-details"
 import { useGSDWorkspaceState, type ActiveToolExecution, type CompletedToolExecution } from "@/lib/gsd-workspace-store"
 import { NotificationsBadge } from "@/components/gsd/notifications-badge"
 
@@ -219,6 +220,65 @@ function DiffLine({ line }: { line: string }) {
   )
 }
 
+function SubagentSnapshotLine({ item }: { item: SubagentSnapshotItem }) {
+  if (item.type === "assistant-text") {
+    return <div className="whitespace-pre-wrap break-words text-foreground">{item.text}</div>
+  }
+
+  if (item.type === "tool-call") {
+    const argSummary = summarizeToolArgs(item.args)
+    return (
+      <div className="space-y-1">
+        <div className="flex items-start gap-1.5">
+          <span className="text-info">▸</span>
+          <span className="font-medium text-foreground">{item.name}</span>
+          {argSummary ? <span className="whitespace-pre-wrap break-words text-muted-foreground">{shortPath(argSummary)}</span> : null}
+        </div>
+        {item.resultText ? (
+          <div className={cn("ml-5 border-l border-border/40 pl-2 whitespace-pre-wrap break-words", item.resultIsError ? "text-destructive" : "text-muted-foreground")}>
+            <span className="text-muted-foreground/70">↳ result</span>
+            <span>{`: ${item.resultText}`}</span>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn("whitespace-pre-wrap break-words", item.isError ? "text-destructive" : "text-muted-foreground")}>
+      <span className="text-muted-foreground/70">↳ {item.toolName}</span>
+      {item.text ? <span>{`: ${item.text}`}</span> : null}
+    </div>
+  )
+}
+
+function SubagentSnapshotBody({
+  groups,
+  liveTag,
+}: {
+  groups: SubagentSnapshotGroup[]
+  liveTag: React.ReactNode
+}) {
+  return (
+    <div className="ml-[164px] mr-2 rounded-sm border-l border-border/50 bg-background/40 px-3 py-1.5 font-mono text-[11px] leading-[1.45]">
+      {liveTag}
+      {groups.map((group, groupIndex) => (
+        <div key={`${group.agent}-${group.step ?? "na"}-${groupIndex}`} className={cn(groupIndex > 0 ? "mt-3 border-t border-border/40 pt-2" : "") }>
+          <div className="mb-1 text-muted-foreground/70">
+            {group.agent}
+            {typeof group.step === "number" ? <span>{` · step ${group.step}`}</span> : null}
+          </div>
+          <div className="space-y-1">
+            {group.items.map((item, itemIndex) => (
+              <SubagentSnapshotLine key={`${group.agent}-${group.step ?? "na"}-${itemIndex}`} item={item} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ToolBody({
   tool,
   resultText,
@@ -234,6 +294,7 @@ function ToolBody({
     "result" in tool && typeof tool.result?.details?.diff === "string"
       ? (tool.result.details.diff as string)
       : null
+  const subagentSnapshot = extractSubagentSnapshotGroups(tool.result?.details)
 
   const liveTag = isActive ? (
     <div className="mb-1 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.16em] text-info">
@@ -241,6 +302,10 @@ function ToolBody({
       live · partial output
     </div>
   ) : null
+
+  if (subagentSnapshot) {
+    return <SubagentSnapshotBody groups={subagentSnapshot} liveTag={liveTag} />
+  }
 
   // Edit / MultiEdit with diff: colored unified diff
   if (kind === "edit" && diff) {
@@ -323,7 +388,8 @@ function ToolRow({
   const [expanded, setExpanded] = useState(item.kind === "active-tool")
   const argSummary = summarizeToolArgs(tool.args)
   const resultText = extractResultText(tool.result?.content)
-  const hasBody = resultText.length > 0 || normalizedToolName(tool.name) === "edit"
+  const hasSubagentSnapshot = Boolean(extractSubagentSnapshotGroups(tool.result?.details))
+  const hasBody = resultText.length > 0 || normalizedToolName(tool.name) === "edit" || hasSubagentSnapshot
 
   return (
     <div className="flex flex-col gap-0.5">
