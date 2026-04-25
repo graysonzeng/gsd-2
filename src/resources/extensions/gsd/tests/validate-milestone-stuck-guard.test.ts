@@ -16,6 +16,7 @@ import {
 } from "../gsd-db.ts";
 import { invalidateAllCaches } from "../cache.ts";
 import { _clearGsdRootCache } from "../paths.ts";
+import { VALIDATION_ERROR_CODES } from "../validation-error-codes.ts";
 
 let tempDir: string;
 let dbPath: string;
@@ -162,7 +163,7 @@ describe("validate-milestone stuck-loop guard (#4094)", () => {
     assert.equal(pauseAutoMock.mock.callCount(), 0);
   });
 
-  test("continues when no VALIDATION file exists yet", async () => {
+  test("records a structured code when no VALIDATION file exists yet", async () => {
     insertMilestone({ id: "M001" });
     insertSlice({ id: "S01", milestoneId: "M001", title: "Slice 1", status: "complete" });
 
@@ -174,6 +175,7 @@ describe("validate-milestone stuck-loop guard (#4094)", () => {
     const result = await runPostUnitVerification({ s, ctx, pi } as VerificationContext, pauseAutoMock);
 
     assert.equal(result, "continue");
+    assert.equal(s.lastVerificationErrorCode, VALIDATION_ERROR_CODES.ARTIFACT_MISSING);
     assert.equal(pauseAutoMock.mock.callCount(), 0);
   });
 });

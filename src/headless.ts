@@ -253,7 +253,7 @@ export async function runHeadless(options: HeadlessOptions): Promise<void> {
   }
 }
 
-function workflowSnapshotFromQuery(snapshot: {
+export function workflowSnapshotFromQuery(snapshot: {
   state: {
     phase: string
     activeMilestone?: { id?: string } | null
@@ -278,6 +278,21 @@ function workflowSnapshotFromQuery(snapshot: {
     lastCompletedMilestone: snapshot.state.lastCompletedMilestone?.id,
     next: snapshot.next,
   }
+}
+
+export function applyFailOnIncompleteExitCode(
+  commandExitCode: number,
+  workflowSnapshot: HeadlessWorkflowSnapshot | undefined,
+  failOnIncomplete: boolean,
+): number {
+  if (
+    commandExitCode === EXIT_SUCCESS
+    && workflowSnapshot?.status === 'needs-continue'
+    && failOnIncomplete
+  ) {
+    return EXIT_INCOMPLETE
+  }
+  return commandExitCode
 }
 
 async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): Promise<{ exitCode: number; interrupted: boolean }> {
@@ -942,9 +957,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     try {
       const { deriveHeadlessSnapshot } = await import('./headless-query.js')
       workflowSnapshot = workflowSnapshotFromQuery(await deriveHeadlessSnapshot(process.cwd()))
-      if (workflowSnapshot.status === 'needs-continue' && options.failOnIncomplete) {
-        exitCode = EXIT_INCOMPLETE
-      }
+      exitCode = applyFailOnIncompleteExitCode(commandExitCode, workflowSnapshot, options.failOnIncomplete)
     } catch (err) {
       workflowSnapshot = { status: 'unknown' }
       if (!options.json) {

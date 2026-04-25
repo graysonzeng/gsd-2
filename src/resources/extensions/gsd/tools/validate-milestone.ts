@@ -27,6 +27,10 @@ import { logWarning } from "../workflow-logger.js";
 import { UokGateRunner } from "../uok/gate-runner.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { resolveUokFlags } from "../uok/flags.js";
+import {
+  type ValidationErrorCode,
+  VALIDATION_ERROR_CODES,
+} from "../validation-error-codes.js";
 
 export interface ValidateMilestoneParams {
   milestoneId: string;
@@ -51,6 +55,11 @@ export interface ValidateMilestoneOptions {
   uokGatesEnabled?: boolean;
   traceId?: string;
   turnId?: string;
+}
+
+export interface ValidateMilestoneError {
+  error: string;
+  code: ValidationErrorCode;
 }
 
 function renderValidationMarkdown(params: ValidateMilestoneParams): string {
@@ -92,12 +101,24 @@ export async function handleValidateMilestone(
   params: ValidateMilestoneParams,
   basePath: string,
   opts?: ValidateMilestoneOptions,
-): Promise<ValidateMilestoneResult | { error: string }> {
+): Promise<ValidateMilestoneResult | ValidateMilestoneError> {
   if (!params.milestoneId || typeof params.milestoneId !== "string" || params.milestoneId.trim() === "") {
-    return { error: "milestoneId is required and must be a non-empty string" };
+    return {
+      error: "milestoneId is required and must be a non-empty string",
+      code: VALIDATION_ERROR_CODES.MILESTONE_ID_INVALID,
+    };
   }
   if (!isValidMilestoneVerdict(params.verdict)) {
-    return { error: `verdict must be one of: ${VALIDATION_VERDICTS.join(", ")}` };
+    return {
+      error: `verdict must be one of: ${VALIDATION_VERDICTS.join(", ")}`,
+      code: VALIDATION_ERROR_CODES.VERDICT_INVALID,
+    };
+  }
+  if (params.verdict === "needs-remediation" && !params.remediationPlan?.trim()) {
+    return {
+      error: "remediationPlan is required when verdict is needs-remediation",
+      code: VALIDATION_ERROR_CODES.REMEDIATION_REQUIRED_BUT_NO_PLAN,
+    };
   }
 
   // ── Resolve paths and render markdown ────────────────────────────────
@@ -156,7 +177,10 @@ export async function handleValidateMilestone(
   } catch (renderErr) {
     logWarning("tool", `validate_milestone — disk render failed, rolling back DB row: ${(renderErr as Error).message}`);
     deleteAssessmentByScope(params.milestoneId, 'milestone-validation');
-    return { error: `disk render failed: ${(renderErr as Error).message}` };
+    return {
+      error: `disk render failed: ${(renderErr as Error).message}`,
+      code: VALIDATION_ERROR_CODES.ARTIFACT_RENDER_FAILED,
+    };
   }
 
   invalidateStateCache();

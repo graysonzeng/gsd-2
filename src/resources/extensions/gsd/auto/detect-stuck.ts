@@ -6,6 +6,7 @@
 
 import type { WindowEntry } from "./types.js";
 import { summarizeLogs } from "../workflow-logger.js";
+import { isValidationStuckErrorCode } from "../validation-error-codes.js";
 
 /**
  * Pattern matching ENOENT errors with a file path.
@@ -24,6 +25,7 @@ const ENOENT_PATH_RE = /ENOENT[^']*'([^']+)'/;
  * Rule 3: Oscillation A→B→A→B in last 4 entries → stuck.
  * Rule 4: Same ENOENT path in any 2 entries within the window → stuck (#3575).
  *         Missing files don't self-heal between retries — retrying wastes budget.
+ * Rule 5: Same structured validation error code in any 2 entries → stuck.
  */
 export function detectStuck(
   window: readonly WindowEntry[],
@@ -99,6 +101,20 @@ export function detectStuck(
       };
     }
     enoentPaths.set(filePath, count);
+  }
+
+  // Rule 5: Same structured validation code seen twice in window
+  const validationCodes = new Map<string, number>();
+  for (const entry of window) {
+    if (!entry.error || !isValidationStuckErrorCode(entry.error)) continue;
+    const count = (validationCodes.get(entry.error) ?? 0) + 1;
+    if (count >= 2) {
+      return {
+        stuck: true,
+        reason: `Structured validation error repeated: ${entry.error}${suffix}`,
+      };
+    }
+    validationCodes.set(entry.error, count);
   }
 
   return null;

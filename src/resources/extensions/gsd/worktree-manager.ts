@@ -20,6 +20,7 @@ import { execFileSync } from "node:child_process";
 import { join, resolve, sep } from "node:path";
 import { GSDError, GSD_PARSE_ERROR, GSD_STALE_STATE, GSD_LOCK_HELD, GSD_GIT_ERROR, GSD_MERGE_CONFLICT } from "./errors.js";
 import { logWarning } from "./workflow-logger.js";
+import { buildMilestoneFileName, gsdRoot, resolveMilestoneFile, resolveMilestonePath } from "./paths.js";
 import {
   nativeBranchDelete,
   nativeBranchExists,
@@ -183,6 +184,35 @@ export function resolveCanonicalMilestoneRoot(
   }
 
   return wtPath;
+}
+
+export function resolveCanonicalMilestonePath(
+  basePath: string,
+  milestoneId: string,
+): string {
+  const canonicalBase = resolveCanonicalMilestoneRoot(basePath, milestoneId);
+  return resolveMilestonePath(canonicalBase, milestoneId)
+    ?? join(gsdRoot(canonicalBase), "milestones", milestoneId);
+}
+
+export function resolveCanonicalMilestoneArtifactPath(
+  basePath: string,
+  milestoneId: string,
+  suffix: string,
+): string {
+  return join(
+    resolveCanonicalMilestonePath(basePath, milestoneId),
+    buildMilestoneFileName(milestoneId, suffix),
+  );
+}
+
+export function resolveCanonicalMilestoneFile(
+  basePath: string,
+  milestoneId: string,
+  suffix: string,
+): string | null {
+  const canonicalBase = resolveCanonicalMilestoneRoot(basePath, milestoneId);
+  return resolveMilestoneFile(canonicalBase, milestoneId, suffix);
 }
 
 // ─── Core Operations ───────────────────────────────────────────────────────

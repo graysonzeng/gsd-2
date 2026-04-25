@@ -363,7 +363,7 @@ export async function executeValidateMilestone(
     if ("error" in result) {
       return {
         content: [{ type: "text", text: `Error validating milestone: ${result.error}` }],
-        details: { operation: "validate_milestone", error: result.error },
+        details: { operation: "validate_milestone", error: result.error, code: result.code },
       isError: true,
       };
     }

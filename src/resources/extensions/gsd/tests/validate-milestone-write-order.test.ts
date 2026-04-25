@@ -9,6 +9,7 @@ import { handleValidateMilestone } from "../tools/validate-milestone.js";
 import { openDatabase, closeDatabase, _getAdapter, insertMilestone, insertSlice } from "../gsd-db.js";
 import { clearPathCache } from "../paths.js";
 import { clearParseCache } from "../files.js";
+import { VALIDATION_ERROR_CODES } from "../validation-error-codes.js";
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-val-handler-${randomUUID()}`);
@@ -85,6 +86,23 @@ describe("handleValidateMilestone write ordering (#2725)", () => {
     assert.doesNotMatch(validationMd, /## Verification Class Compliance/);
   });
 
+  it("rejects needs-remediation without remediationPlan", async () => {
+    base = makeTmpBase();
+    const dbPath = join(base, ".gsd", "gsd.db");
+    openDatabase(dbPath);
+    insertMilestone({ id: "M001" });
+    insertSlice({ id: "S01", milestoneId: "M001" });
+
+    const result = await handleValidateMilestone(
+      { ...VALID_PARAMS, verdict: "needs-remediation", remediationPlan: undefined },
+      base,
+    );
+
+    assert.ok("error" in result, "should return error when remediationPlan is missing");
+    assert.equal(result.code, VALIDATION_ERROR_CODES.REMEDIATION_REQUIRED_BUT_NO_PLAN);
+    assert.match(result.error, /remediationPlan is required/);
+  });
+
   it("rolls back DB row when disk write fails", async () => {
     base = makeTmpBase();
     const dbPath = join(base, ".gsd", "gsd.db");
@@ -104,6 +122,7 @@ describe("handleValidateMilestone write ordering (#2725)", () => {
     // Should return error
     assert.ok("error" in result, "should return error when disk write fails");
     assert.ok(result.error.includes("disk render failed"));
+    assert.equal(result.code, VALIDATION_ERROR_CODES.ARTIFACT_RENDER_FAILED);
 
     // DB row should have been rolled back (deleted)
     const adapter = _getAdapter()!;

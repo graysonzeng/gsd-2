@@ -46,6 +46,48 @@ interface HeadlessOptions {
   failOnIncomplete?: boolean
 }
 
+function workflowSnapshotFromQuery(snapshot: {
+  state: {
+    phase: string
+    activeMilestone?: { id?: string } | null
+    lastCompletedMilestone?: { id?: string } | null
+  }
+  next: {
+    action: string
+    unitType?: string
+    unitId?: string
+    reason?: string
+  }
+}): HeadlessWorkflowSnapshot {
+  const status = snapshot.state.phase === 'complete' && !snapshot.state.activeMilestone
+    ? 'complete'
+    : snapshot.next.action === 'dispatch'
+      ? 'needs-continue'
+      : 'unknown'
+  return {
+    status,
+    phase: snapshot.state.phase,
+    activeMilestone: snapshot.state.activeMilestone?.id,
+    lastCompletedMilestone: snapshot.state.lastCompletedMilestone?.id,
+    next: snapshot.next,
+  }
+}
+
+function applyFailOnIncompleteExitCode(
+  commandExitCode: number,
+  workflowSnapshot: HeadlessWorkflowSnapshot | undefined,
+  failOnIncomplete: boolean,
+): number {
+  if (
+    commandExitCode === EXIT_SUCCESS
+    && workflowSnapshot?.status === 'needs-continue'
+    && failOnIncomplete
+  ) {
+    return EXIT_INCOMPLETE
+  }
+  return commandExitCode
+}
+
 function parseHeadlessArgs(argv: string[]): HeadlessOptions {
   const options: HeadlessOptions = {
     timeout: 300_000,
@@ -249,6 +291,43 @@ test('mapStatusToExitCode: needs-continue → 12', () => {
 test('mapStatusToExitCode: unknown status defaults to EXIT_ERROR', () => {
   assert.equal(mapStatusToExitCode('unknown'), EXIT_ERROR)
   assert.equal(mapStatusToExitCode(''), EXIT_ERROR)
+})
+
+test('workflowSnapshotFromQuery: dispatch next means needs-continue', () => {
+  const snapshot = workflowSnapshotFromQuery({
+    state: {
+      phase: 'validating-milestone',
+      activeMilestone: { id: 'M007' },
+      lastCompletedMilestone: { id: 'M006' },
+    },
+    next: {
+      action: 'dispatch',
+      unitType: 'validate-milestone',
+      unitId: 'M007',
+    },
+  })
+
+  assert.equal(snapshot.status, 'needs-continue')
+  assert.equal(snapshot.phase, 'validating-milestone')
+  assert.equal(snapshot.activeMilestone, 'M007')
+})
+
+test('applyFailOnIncompleteExitCode preserves exit 0 in default mode', () => {
+  const workflow = workflowSnapshotFromQuery({
+    state: { phase: 'executing', activeMilestone: { id: 'M007' } },
+    next: { action: 'dispatch', unitType: 'execute-task', unitId: 'M007/S02/T02' },
+  })
+
+  assert.equal(applyFailOnIncompleteExitCode(EXIT_SUCCESS, workflow, false), EXIT_SUCCESS)
+})
+
+test('applyFailOnIncompleteExitCode upgrades exit 0 to 12 when requested', () => {
+  const workflow = workflowSnapshotFromQuery({
+    state: { phase: 'executing', activeMilestone: { id: 'M007' } },
+    next: { action: 'dispatch', unitType: 'execute-task', unitId: 'M007/S02/T02' },
+  })
+
+  assert.equal(applyFailOnIncompleteExitCode(EXIT_SUCCESS, workflow, true), EXIT_INCOMPLETE)
 })
 
 // ─── HeadlessJsonResult type shape ─────────────────────────────────────────

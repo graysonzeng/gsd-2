@@ -69,6 +69,8 @@ import {
   type TaskRow,
 } from './gsd-db.js';
 
+import { resolveCanonicalMilestoneFile } from './worktree-manager.js';
+
 /**
  * A "ghost" milestone directory contains only META.json (and no substantive
  * files like CONTEXT, CONTEXT-DRAFT, ROADMAP, or SUMMARY).  These appear when
@@ -94,7 +96,7 @@ export function isGhostMilestone(basePath: string, mid: string): boolean {
       if (dbRow.status === 'queued') {
         const hasContent = resolveMilestoneFile(basePath, mid, "CONTEXT")
           || resolveMilestoneFile(basePath, mid, "ROADMAP")
-          || resolveMilestoneFile(basePath, mid, "SUMMARY");
+          || resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
         return !hasContent;
       }
       return false;
@@ -110,7 +112,7 @@ export function isGhostMilestone(basePath: string, mid: string): boolean {
   const context   = resolveMilestoneFile(basePath, mid, "CONTEXT");
   const draft     = resolveMilestoneFile(basePath, mid, "CONTEXT-DRAFT");
   const roadmap   = resolveMilestoneFile(basePath, mid, "ROADMAP");
-  const summary   = resolveMilestoneFile(basePath, mid, "SUMMARY");
+  const summary   = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
   return !context && !draft && !roadmap && !summary;
 }
 
@@ -219,13 +221,13 @@ export async function getActiveMilestoneId(basePath: string): Promise<string | n
     const roadmapFile = resolveMilestoneFile(basePath, mid, "ROADMAP");
     const content = roadmapFile ? await loadFile(roadmapFile) : null;
     if (!content) {
-      const summaryFile = resolveMilestoneFile(basePath, mid, "SUMMARY");
+      const summaryFile = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
       if (summaryFile && await isTerminalMilestoneSummaryFile(summaryFile, loadFile)) continue;
       if (isGhostMilestone(basePath, mid)) continue;
       return mid;
     }
     const roadmap = parseRoadmap(content);
-    const summaryFile = resolveMilestoneFile(basePath, mid, "SUMMARY");
+    const summaryFile = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
     if (summaryFile && await isTerminalMilestoneSummaryFile(summaryFile, loadFile)) continue;
     if (!isMilestoneComplete(roadmap)) return mid;
     return mid;
@@ -454,7 +456,7 @@ async function buildRegistryAndFindActive(
     if (completeMilestoneIds.has(m.id)) {
       let title = stripMilestonePrefix(m.title) || m.id;
       if (!m.title) {
-        const summaryFile = resolveMilestoneFile(basePath, m.id, "SUMMARY");
+        const summaryFile = resolveCanonicalMilestoneFile(basePath, m.id, "SUMMARY");
         if (summaryFile) {
           const summaryContent = await loadFile(summaryFile);
           if (summaryContent) {
@@ -499,7 +501,7 @@ async function buildRegistryAndFindActive(
       }
 
       if (allSlicesDone) {
-        const validationFile = resolveMilestoneFile(basePath, m.id, "VALIDATION");
+        const validationFile = resolveCanonicalMilestoneFile(basePath, m.id, "VALIDATION");
         const validationContent = validationFile ? await loadFile(validationFile) : null;
         const validationTerminal = validationContent ? isValidationTerminal(validationContent) : false;
 
@@ -617,7 +619,7 @@ async function handleAllSlicesDone(
   milestoneProgress: { done: number, total: number },
   sliceProgress: { done: number, total: number }
 ): Promise<GSDState> {
-  const validationFile = resolveMilestoneFile(basePath, activeMilestone.id, "VALIDATION");
+  const validationFile = resolveCanonicalMilestoneFile(basePath, activeMilestone.id, "VALIDATION");
   const validationContent = validationFile ? await loadFile(validationFile) : null;
   const validationTerminal = validationContent ? isValidationTerminal(validationContent) : false;
   const verdict = validationContent ? extractVerdict(validationContent) : undefined;
@@ -1163,7 +1165,7 @@ export async function _deriveStateImpl(basePath: string): Promise<GSDState> {
     const rf = resolveMilestoneFile(basePath, mid, "ROADMAP");
     const rc = rf ? await cachedLoadFile(rf) : null;
     if (!rc) {
-      const sf = resolveMilestoneFile(basePath, mid, "SUMMARY");
+      const sf = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
       if (sf && await isTerminalMilestoneSummaryFile(sf, cachedLoadFile)) completeMilestoneIds.add(mid);
       continue;
     }
@@ -1172,11 +1174,11 @@ export async function _deriveStateImpl(basePath: string): Promise<GSDState> {
     if (!isMilestoneComplete(rmap)) {
       // Summary is the terminal artifact — if it exists, the milestone is
       // complete even when roadmap checkboxes weren't ticked (#864).
-      const sf = resolveMilestoneFile(basePath, mid, "SUMMARY");
+      const sf = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
       if (sf && await isTerminalMilestoneSummaryFile(sf, cachedLoadFile)) completeMilestoneIds.add(mid);
       continue;
     }
-    const sf = resolveMilestoneFile(basePath, mid, "SUMMARY");
+    const sf = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
     if (sf && await isTerminalMilestoneSummaryFile(sf, cachedLoadFile)) completeMilestoneIds.add(mid);
   }
 
@@ -1202,7 +1204,7 @@ export async function _deriveStateImpl(basePath: string): Promise<GSDState> {
 
     if (!roadmap) {
       // No roadmap — check if a summary exists (completed milestone without roadmap)
-      const summaryFile = resolveMilestoneFile(basePath, mid, "SUMMARY");
+      const summaryFile = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
       if (summaryFile) {
         const summaryContent = await cachedLoadFile(summaryFile);
         if (summaryContent != null && isTerminalMilestoneSummaryContent(summaryContent)) {
@@ -1260,8 +1262,8 @@ export async function _deriveStateImpl(basePath: string): Promise<GSDState> {
 
     if (complete) {
       // All slices done — check validation and summary state
-      const summaryFile = resolveMilestoneFile(basePath, mid, "SUMMARY");
-      const validationFile = resolveMilestoneFile(basePath, mid, "VALIDATION");
+      const summaryFile = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
+      const validationFile = resolveCanonicalMilestoneFile(basePath, mid, "VALIDATION");
       const validationContent = validationFile ? await cachedLoadFile(validationFile) : null;
       const validationTerminal = validationContent ? isValidationTerminal(validationContent) : false;
       const verdict = validationContent ? extractVerdict(validationContent) : undefined;
@@ -1293,7 +1295,7 @@ export async function _deriveStateImpl(basePath: string): Promise<GSDState> {
     } else {
       // Roadmap slices not all checked — but if a summary exists, the milestone
       // is still complete. The summary is the terminal artifact (#864).
-      const summaryFile = resolveMilestoneFile(basePath, mid, "SUMMARY");
+      const summaryFile = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
       if (summaryFile && await isTerminalMilestoneSummaryFile(summaryFile, cachedLoadFile)) {
         registry.push({ id: mid, title, status: 'complete' });
       } else if (!activeMilestoneFound) {
@@ -1465,7 +1467,7 @@ export async function _deriveStateImpl(basePath: string): Promise<GSDState> {
 
   // Check if active milestone needs validation or completion (all slices done)
   if (isMilestoneComplete(activeRoadmap)) {
-    const validationFile = resolveMilestoneFile(basePath, activeMilestone.id, "VALIDATION");
+    const validationFile = resolveCanonicalMilestoneFile(basePath, activeMilestone.id, "VALIDATION");
     const validationContent = validationFile ? await cachedLoadFile(validationFile) : null;
     const validationTerminal = validationContent ? isValidationTerminal(validationContent) : false;
     const verdict = validationContent ? extractVerdict(validationContent) : undefined;

@@ -1522,6 +1522,7 @@ export async function runUnitPhase(
   s.lastGitActionStatus = null;
   setCurrentPhase(unitType);
   s.lastToolInvocationError = null; // #2883: clear stale error from previous unit
+  s.lastVerificationErrorCode = null;
   const unitStartSeq = ic.nextSeq();
   deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: unitStartSeq, eventType: "unit-start", data: { unitType, unitId } });
   deps.captureAvailableSkills();
@@ -2100,6 +2101,13 @@ export async function runFinalize(
   }
 
   const preResult = preResultGuard.value;
+  if (s.lastVerificationErrorCode) {
+    const lastEntry = loopState.recentUnits[loopState.recentUnits.length - 1];
+    if (lastEntry) {
+      lastEntry.error = s.lastVerificationErrorCode;
+    }
+    s.lastVerificationErrorCode = null;
+  }
   if (preResult === "dispatched") {
     const dispatchedReason = s.lastGitActionFailure
       ? "git-closeout-failure"
@@ -2156,6 +2164,14 @@ export async function runFinalize(
       { s, ctx, pi },
       deps.pauseAuto,
     );
+
+    if (s.lastVerificationErrorCode) {
+      const lastEntry = loopState.recentUnits[loopState.recentUnits.length - 1];
+      if (lastEntry) {
+        lastEntry.error = s.lastVerificationErrorCode;
+      }
+      s.lastVerificationErrorCode = null;
+    }
 
     if (verificationResult === "pause") {
       debugLog("autoLoop", { phase: "exit", reason: "verification-pause" });

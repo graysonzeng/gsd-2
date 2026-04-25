@@ -16,7 +16,7 @@ import { resolveSliceFile, resolveSlicePath, resolveMilestoneFile } from "./path
 import { parseUnitId } from "./unit-id.js";
 import { isDbAvailable, getTask, getSliceTasks, getMilestoneSlices, type TaskRow } from "./gsd-db.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
-import { extractVerdict } from "./verdict-parser.js";
+import { extractVerdict, isValidMilestoneVerdict } from "./verdict-parser.js";
 import { isClosedStatus } from "./status-guards.js";
 import { loadFile } from "./files.js";
 import { parseRoadmap } from "./parsers-legacy.js";
@@ -35,6 +35,8 @@ import type { VerificationResult as VerificationGateResult } from "./types.js";
 import { join } from "node:path";
 import { resolveUokFlags } from "./uok/flags.js";
 import { UokGateRunner } from "./uok/gate-runner.js";
+import { VALIDATION_ERROR_CODES } from "./validation-error-codes.js";
+import { resolveCanonicalMilestoneFile } from "./worktree-manager.js";
 
 export interface VerificationContext {
   s: AutoSession;
@@ -105,14 +107,25 @@ async function runValidateMilestonePostCheck(
   const { milestone: mid } = parseUnitId(s.currentUnit.id);
   if (!mid) return "continue";
 
-  const validationFile = resolveMilestoneFile(s.basePath, mid, "VALIDATION");
-  if (!validationFile) return "continue";
+  const validationFile = resolveCanonicalMilestoneFile(s.basePath, mid, "VALIDATION");
+  if (!validationFile) {
+    s.lastVerificationErrorCode = VALIDATION_ERROR_CODES.ARTIFACT_MISSING;
+    return "continue";
+  }
 
   const validationContent = await loadFile(validationFile);
-  if (!validationContent) return "continue";
+  if (!validationContent) {
+    s.lastVerificationErrorCode = VALIDATION_ERROR_CODES.VERDICT_INVALID;
+    return "continue";
+  }
 
   const verdict = extractVerdict(validationContent);
+  if (!verdict || !isValidMilestoneVerdict(verdict)) {
+    s.lastVerificationErrorCode = VALIDATION_ERROR_CODES.VERDICT_INVALID;
+    return "continue";
+  }
   if (verdict !== "needs-remediation") {
+    s.lastVerificationErrorCode = null;
     await persistMilestoneValidationGate(
       "pass",
       "none",
@@ -139,6 +152,7 @@ async function runValidateMilestonePostCheck(
     return "continue";
   }
 
+  s.lastVerificationErrorCode = VALIDATION_ERROR_CODES.REMEDIATION_REQUIRED_BUT_NO_SLICE;
   ctx.ui.notify(
     `Milestone ${mid} validation returned verdict=needs-remediation but no remediation slices were added. Pausing for human review.`,
     "error",

@@ -14,9 +14,9 @@ import type { GSDPreferences } from "./preferences.js";
 import type { UatType } from "./files.js";
 import type { MinimalModelRegistry } from "./context-budget.js";
 import { loadFile, extractUatType, loadActiveOverrides } from "./files.js";
-import { isDbAvailable, getMilestoneSlices, getPendingGates, markAllGatesOmitted, getMilestone, updateMilestoneStatus } from "./gsd-db.js";
+import { isDbAvailable, getMilestoneSlices, getPendingGates, markAllGatesOmitted, getMilestone, updateMilestoneStatus, getAssessment } from "./gsd-db.js";
 import { isClosedStatus } from "./status-guards.js";
-import { extractVerdict, isAcceptableUatVerdict } from "./verdict-parser.js";
+import { extractVerdict, isAcceptableUatVerdict, isValidMilestoneVerdict } from "./verdict-parser.js";
 
 import {
   gsdRoot,
@@ -61,6 +61,8 @@ import { resolveModelWithFallbacksForUnit } from "./preferences-models.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { selectReactiveDispatchBatch } from "./uok/execution-graph.js";
 import { EXECUTION_ENTRY_PHASES, hasFinalizedMilestoneContext } from "./uok/plan-v2.js";
+import { VALIDATION_ERROR_CODES } from "./validation-error-codes.js";
+import { resolveCanonicalMilestoneArtifactPath, resolveCanonicalMilestoneFile, resolveCanonicalMilestonePath } from "./worktree-manager.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -105,6 +107,45 @@ function missingSliceStop(mid: string, phase: string): DispatchAction {
     action: "stop",
     reason: `${mid}: phase "${phase}" has no active slice — run /gsd doctor.`,
     level: "error",
+  };
+}
+
+function resolveExpectedMilestoneArtifactPath(
+  basePath: string,
+  milestoneId: string,
+  kind: "VALIDATION" | "SUMMARY",
+): string {
+  return resolveCanonicalMilestoneArtifactPath(basePath, milestoneId, kind);
+}
+
+async function readValidationArtifactGuard(basePath: string, milestoneId: string): Promise<{
+  validationPath: string;
+  fileExists: boolean;
+  assessmentExists: boolean;
+  verdict: string | null;
+  verdictValid: boolean;
+}> {
+  const validationPath = resolveExpectedMilestoneArtifactPath(basePath, milestoneId, "VALIDATION");
+  const fileExists = existsSync(validationPath);
+  const assessmentExists = isDbAvailable() ? Boolean(getAssessment(validationPath)) : false;
+  if (!fileExists) {
+    return {
+      validationPath,
+      fileExists,
+      assessmentExists,
+      verdict: null,
+      verdictValid: false,
+    };
+  }
+
+  const validationContent = await loadFile(validationPath);
+  const verdict = validationContent ? (extractVerdict(validationContent) ?? null) : null;
+  return {
+    validationPath,
+    fileExists,
+    assessmentExists,
+    verdict,
+    verdictValid: verdict !== null && isValidMilestoneVerdict(verdict),
   };
 }
 
@@ -929,9 +970,25 @@ export const DISPATCH_RULES: DispatchRule[] = [
         };
       }
 
+      const validationArtifact = await readValidationArtifactGuard(basePath, mid);
+      if (validationArtifact.assessmentExists && !validationArtifact.fileExists) {
+        return {
+          action: "stop",
+          reason: `${VALIDATION_ERROR_CODES.ARTIFACT_DESYNCED}: expected ${validationArtifact.validationPath} to exist because milestone-validation DB state already exists for ${mid}. Re-render VALIDATION.md before retrying auto-dispatch.`,
+          level: "error",
+        };
+      }
+      if (validationArtifact.fileExists && !validationArtifact.verdictValid) {
+        return {
+          action: "stop",
+          reason: `${VALIDATION_ERROR_CODES.VERDICT_INVALID}: ${validationArtifact.validationPath} is missing a valid verdict frontmatter value for ${mid}.`,
+          level: "error",
+        };
+      }
+
       // Skip preference: write a minimal pass-through VALIDATION file
       if (prefs?.phases?.skip_milestone_validation) {
-        const mDir = resolveMilestonePath(basePath, mid);
+        const mDir = resolveCanonicalMilestonePath(basePath, mid);
         if (mDir) {
           if (!existsSync(mDir)) mkdirSync(mDir, { recursive: true });
           const validationPath = join(
@@ -976,7 +1033,23 @@ export const DISPATCH_RULES: DispatchRule[] = [
         }
       }
 
-      const existingSummary = resolveMilestoneFile(basePath, mid, "SUMMARY");
+      const validationArtifact = await readValidationArtifactGuard(basePath, mid);
+      if (!validationArtifact.fileExists) {
+        return {
+          action: "stop",
+          reason: `${VALIDATION_ERROR_CODES.ARTIFACT_MISSING}: expected ${validationArtifact.validationPath} before completing milestone ${mid}.`,
+          level: "error",
+        };
+      }
+      if (!validationArtifact.verdictValid || !validationArtifact.verdict) {
+        return {
+          action: "stop",
+          reason: `${VALIDATION_ERROR_CODES.VERDICT_INVALID}: ${validationArtifact.validationPath} is missing a valid verdict frontmatter value for ${mid}.`,
+          level: "error",
+        };
+      }
+
+      const existingSummary = resolveCanonicalMilestoneFile(basePath, mid, "SUMMARY");
       let summaryOutcome: "success" | "failure" | "unknown" = "unknown";
       if (existingSummary) {
         const summaryContent = await loadFile(existingSummary);
@@ -989,34 +1062,40 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // needs-remediation. The state machine treats needs-remediation as
       // terminal (to prevent validate-milestone loops per #832), but
       // completing-milestone should NOT proceed — remediation work is needed.
-      const validationFile = resolveMilestoneFile(basePath, mid, "VALIDATION");
-      if (validationFile) {
-        const validationContent = await loadFile(validationFile);
-        if (validationContent) {
-          const verdict = extractVerdict(validationContent);
-          const hasExplicitValidationFailure = verdict === "needs-attention" || verdict === "needs-remediation";
-          const verifyFuseDecision = hasExplicitValidationFailure
-            ? shouldBlockMilestoneClose({
-                basePath,
-                milestoneId: mid,
-                validationPassed: false,
-              })
-            : { blocked: false };
-          if (verifyFuseDecision.blocked) {
+      const verdict = validationArtifact.verdict;
+      if (verdict) {
+        const hasExplicitValidationFailure = verdict === "needs-attention" || verdict === "needs-remediation";
+        const verifyFuseDecision = hasExplicitValidationFailure
+          ? shouldBlockMilestoneClose({
+              basePath,
+              milestoneId: mid,
+              validationPassed: false,
+            })
+          : { blocked: false };
+        if (verifyFuseDecision.blocked) {
+          return {
+            action: "stop",
+            reason: verifyFuseDecision.reason
+              ?? `Cannot complete milestone ${mid}: VALIDATION verdict is "${verdict}" and verify_fuse_on_fail is enabled.`,
+            level: "warning",
+          };
+        }
+        if (verdict === "needs-remediation") {
+          const incompleteSliceCount = isDbAvailable()
+            ? getMilestoneSlices(mid).filter((slice) => !isClosedStatus(slice.status)).length
+            : null;
+          if (incompleteSliceCount === 0) {
             return {
               action: "stop",
-              reason: verifyFuseDecision.reason
-                ?? `Cannot complete milestone ${mid}: VALIDATION verdict is "${verdict}" and verify_fuse_on_fail is enabled.`,
+              reason: `${VALIDATION_ERROR_CODES.REMEDIATION_REQUIRED_BUT_NO_SLICE}: milestone ${mid} has verdict "needs-remediation" but no open remediation slices.`,
               level: "warning",
             };
           }
-          if (verdict === "needs-remediation") {
-            return {
-              action: "stop",
-              reason: `Cannot complete milestone ${mid}: VALIDATION verdict is "needs-remediation". Address the remediation findings and re-run validation, or update the verdict manually.`,
-              level: "warning",
-            };
-          }
+          return {
+            action: "stop",
+            reason: `Cannot complete milestone ${mid}: VALIDATION verdict is "needs-remediation". Address the remediation findings and re-run validation, or update the verdict manually.`,
+            level: "warning",
+          };
         }
       }
 
@@ -1052,7 +1131,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           const milestone = getMilestone(mid);
           if (milestone?.verification_operational &&
               !isVerificationNotApplicable(milestone.verification_operational)) {
-            const validationPath = resolveMilestoneFile(basePath, mid, "VALIDATION");
+            const validationPath = resolveCanonicalMilestoneFile(basePath, mid, "VALIDATION");
             if (validationPath) {
               const validationContent = await loadFile(validationPath);
               if (validationContent) {

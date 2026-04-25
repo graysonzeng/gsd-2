@@ -16,7 +16,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
-import { resolveCanonicalMilestoneRoot } from "../worktree-manager.ts";
+import {
+  resolveCanonicalMilestoneArtifactPath,
+  resolveCanonicalMilestoneFile,
+  resolveCanonicalMilestoneRoot,
+} from "../worktree-manager.ts";
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-canon-test-${randomUUID()}`);

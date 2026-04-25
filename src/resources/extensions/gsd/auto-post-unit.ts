@@ -64,6 +64,8 @@ import { resolveSafetyHarnessConfig } from "./safety/safety-harness.js";
 import { resolveExpectedArtifactPath as resolveArtifactForContent } from "./auto-artifact-paths.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { getSliceTasks } from "./gsd-db.js";
+import { extractVerdict, isValidMilestoneVerdict } from "./verdict-parser.js";
+import { VALIDATION_ERROR_CODES } from "./validation-error-codes.js";
 import { runPreExecutionChecks, type PreExecutionResult } from "./pre-execution-checks.js";
 import { writePreExecutionEvidence } from "./verification-evidence.js";
 import { ensureCodebaseMapFresh } from "./codebase-generator.js";
@@ -72,11 +74,32 @@ import { UokGateRunner } from "./uok/gate-runner.js";
 import { writeTurnGitTransaction } from "./uok/gitops.js";
 import { isClosedStatus } from "./status-guards.js";
 import { detectAbandonMilestone } from "./abandon-detect.js";
+import { resolveCanonicalMilestoneFile } from "./worktree-manager.js";
 
 /** Maximum verification retry attempts before escalating to blocker placeholder (#2653). */
 const MAX_VERIFICATION_RETRIES = 3;
 const COMPLETE_MILESTONE_DB_SETTLE_MS = 1500;
 const COMPLETE_MILESTONE_DB_SETTLE_POLL_MS = 100;
+
+async function getValidateMilestoneArtifactErrorCode(s: AutoSession): Promise<string | null> {
+  if (s.currentUnit?.type !== "validate-milestone") return null;
+
+  const { milestone: mid } = parseUnitId(s.currentUnit.id);
+  if (!mid) return VALIDATION_ERROR_CODES.ARTIFACT_MISSING;
+
+  const validationFile = resolveCanonicalMilestoneFile(s.basePath, mid, "VALIDATION");
+  if (!validationFile || !existsSync(validationFile)) {
+    return VALIDATION_ERROR_CODES.ARTIFACT_MISSING;
+  }
+
+  const validationContent = await loadFile(validationFile);
+  const verdict = validationContent ? extractVerdict(validationContent) : null;
+  if (!verdict || !isValidMilestoneVerdict(verdict)) {
+    return VALIDATION_ERROR_CODES.VERDICT_INVALID;
+  }
+
+  return null;
+}
 
 async function waitForMilestoneDbClose(mid: string): Promise<boolean> {
   const deadline = Date.now() + COMPLETE_MILESTONE_DB_SETTLE_MS;
@@ -351,6 +374,7 @@ export async function autoCommitUnit(
  */
 export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreVerificationOpts): Promise<"dispatched" | "continue" | "retry"> {
   const { s, ctx, pi, buildSnapshotOpts, stopAuto, pauseAuto } = pctx;
+  s.lastVerificationErrorCode = null;
 
   // ── Parallel worker signal check ──
   const milestoneLock = process.env.GSD_MILESTONE_LOCK;
@@ -853,14 +877,26 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
 
     // Artifact verification
     let triggerArtifactVerified = false;
+    let validationArtifactErrorCode: string | null = null;
     if (!s.currentUnit.type.startsWith("hook/")) {
       try {
         triggerArtifactVerified = verifyExpectedArtifact(s.currentUnit.type, s.currentUnit.id, s.basePath);
         if (triggerArtifactVerified) {
-          invalidateAllCaches();
+          validationArtifactErrorCode = await getValidateMilestoneArtifactErrorCode(s);
+          if (validationArtifactErrorCode) {
+            triggerArtifactVerified = false;
+          } else {
+            invalidateAllCaches();
+          }
+        } else {
+          validationArtifactErrorCode = await getValidateMilestoneArtifactErrorCode(s);
         }
       } catch (e) {
         debugLog("postUnit", { phase: "artifact-verify", error: String(e) });
+      }
+
+      if (validationArtifactErrorCode) {
+        s.lastVerificationErrorCode = validationArtifactErrorCode;
       }
 
       // If verification failed, attempt to regenerate missing projection files
@@ -977,10 +1013,12 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
               attempt,
               maxRetries: MAX_VERIFICATION_RETRIES,
             });
-            const reason = `Artifact verification failed after ${MAX_VERIFICATION_RETRIES} retries for ${s.currentUnit.type} "${s.currentUnit.id}".`;
+            const reason = validationArtifactErrorCode
+              ? `Artifact verification failed after ${MAX_VERIFICATION_RETRIES} retries for ${s.currentUnit.type} "${s.currentUnit.id}": ${validationArtifactErrorCode}.`
+              : `Artifact verification failed after ${MAX_VERIFICATION_RETRIES} retries for ${s.currentUnit.type} "${s.currentUnit.id}".`;
             writeBlockerPlaceholder(s.currentUnit.type, s.currentUnit.id, s.basePath, reason);
             ctx.ui.notify(
-              `${s.currentUnit.type} ${s.currentUnit.id} — verification retries exhausted (${MAX_VERIFICATION_RETRIES}), wrote blocker placeholder to advance pipeline`,
+              `${s.currentUnit.type} ${s.currentUnit.id} — verification retries exhausted (${MAX_VERIFICATION_RETRIES})${validationArtifactErrorCode ? ` [${validationArtifactErrorCode}]` : ""}, wrote blocker placeholder to advance pipeline`,
               "warning",
             );
             // Reset retry count and fall through to "continue" so the loop
@@ -991,7 +1029,9 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
           } else {
             s.pendingVerificationRetry = {
               unitId: s.currentUnit.id,
-              failureContext: `Artifact verification failed: expected artifact for ${s.currentUnit.type} "${s.currentUnit.id}" was not found on disk after unit execution (attempt ${attempt}).`,
+              failureContext: validationArtifactErrorCode
+                ? `Artifact verification failed: ${validationArtifactErrorCode} for ${s.currentUnit.type} "${s.currentUnit.id}" (attempt ${attempt}).`
+                : `Artifact verification failed: expected artifact for ${s.currentUnit.type} "${s.currentUnit.id}" was not found on disk after unit execution (attempt ${attempt}).`,
               attempt,
             };
             debugLog("postUnit", { phase: "artifact-verify-retry", unitType: s.currentUnit.type, unitId: s.currentUnit.id, attempt });
