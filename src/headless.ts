@@ -35,6 +35,7 @@ import {
   isInteractiveHeadlessTool,
   IDLE_TIMEOUT_MS,
   NEW_MILESTONE_IDLE_TIMEOUT_MS,
+  MAX_AUTO_DURATION_MS,
   EXIT_SUCCESS,
   EXIT_ERROR,
   EXIT_BLOCKED,
@@ -519,6 +520,11 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   function resetIdleTimer(): void {
     if (idleTimer) clearTimeout(idleTimer)
+    // Auto-mode has long synchronous phases (deriveState, resolveDispatch, finalize)
+    // where no RPC events fire for 15+ seconds. The idle fallback incorrectly treats
+    // this silence as completion. Rely on the terminal notification from stopAuto()
+    // as the sole completion signal for auto mode.
+    if (isAutoMode) return
     if (shouldArmHeadlessIdleTimeout(toolCallCount, interactiveToolCallIds.size)) {
       idleTimer = setTimeout(() => {
         completed = true
@@ -538,6 +544,18 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
         exitCode = EXIT_ERROR
         resolveCompletion()
       }, options.timeout)
+    : null
+
+  // Auto-mode safety net: if terminal notification never fires (child froze
+  // silently), exit after 2h instead of hanging forever. Only applies to
+  // auto-mode since idle fallback is disabled for it.
+  const autoMaxDurationTimer = isAutoMode
+    ? setTimeout(() => {
+        process.stderr.write(`[headless] Auto-mode exceeded max duration (${MAX_AUTO_DURATION_MS / 1000 / 60}min) — forcing exit\n`)
+        timedOut = true
+        exitCode = EXIT_ERROR
+        resolveCompletion()
+      }, MAX_AUTO_DURATION_MS)
     : null
 
   // Event handler
@@ -796,6 +814,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
       process.stderr.write(`[headless] Warning: failed to stop child process: ${error instanceof Error ? error.message : String(error)}\n`)
     })
     if (timeoutTimer) clearTimeout(timeoutTimer)
+    if (autoMaxDurationTimer) clearTimeout(autoMaxDurationTimer)
     if (idleTimer) clearTimeout(idleTimer)
     // Emit batch JSON result if in json mode before exiting
     if (options.outputFormat === 'json') {
@@ -936,6 +955,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   // Cleanup
   if (timeoutTimer) clearTimeout(timeoutTimer)
+  if (autoMaxDurationTimer) clearTimeout(autoMaxDurationTimer)
   if (idleTimer) clearTimeout(idleTimer)
   pendingResponseTimers.forEach((timer) => clearTimeout(timer))
   pendingResponseTimers.clear()

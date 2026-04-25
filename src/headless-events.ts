@@ -100,6 +100,11 @@ export const IDLE_TIMEOUT_MS = 15_000
 // between tool calls (e.g. after mkdir, before writing files). Use a
 // longer idle timeout to avoid killing the session prematurely (#808).
 export const NEW_MILESTONE_IDLE_TIMEOUT_MS = 120_000
+// Auto-mode completes via terminal notification from stopAuto(). The idle
+// fallback is disabled for auto-mode to avoid killing long synchronous phases
+// (deriveState, resolveDispatch, finalize). Use a generous hard ceiling instead
+// so headless doesn't hang forever if the child freezes silently.
+export const MAX_AUTO_DURATION_MS = 2 * 60 * 60 * 1000 // 2 hours
 const INTERACTIVE_HEADLESS_TOOLS = new Set(['ask_user_questions', 'secure_env_collect'])
 
 export function isTerminalNotification(event: Record<string, unknown>): boolean {
