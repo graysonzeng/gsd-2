@@ -9,6 +9,7 @@
  * remains in auto.ts — this module handles only the fresh-start path.
  */
 
+import { validateAndNotifyAutoModeApiKey, getAutoModeApiKey } from "./auto-mode-validator.js";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -331,6 +332,18 @@ export async function bootstrapAutoSession(
     releaseSessionLock(base);
     clearLock(base);
     return false;
+  }
+
+  // ── Auto-mode API Key Validation ────────────────────────────────────────
+  // Validate sandboxai API key before proceeding with auto-mode bootstrap.
+  // This ensures the key is available and valid before any dispatch attempts.
+  // If validation fails, return false and notify the user.
+  const autoModeApiKey = getAutoModeApiKey();
+  if (autoModeApiKey) {
+    const keyValid = await validateAndNotifyAutoModeApiKey(ctx, { ui: ctx.ui });
+    if (!keyValid) {
+      return releaseLockAndReturn();
+    }
   }
 
   // Capture the user's session model before guided-flow dispatch can apply a
