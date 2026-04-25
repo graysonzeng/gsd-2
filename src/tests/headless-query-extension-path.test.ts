@@ -18,6 +18,12 @@ test("headless-query resolves from agent extensions dir (#3471)", () => {
   );
 });
 
+test("headless-query exposes stdout-free snapshot derivation", () => {
+  const src = readFileSync(join(__dirname, "..", "headless-query.ts"), "utf-8");
+  assert.ok(src.includes("export async function deriveHeadlessSnapshot"));
+  assert.ok(src.includes("const snapshot = await deriveHeadlessSnapshot(basePath)"));
+});
+
 test("cli.ts calls initResources before headless (#3471)", () => {
   const src = readFileSync(join(__dirname, "..", "cli.ts"), "utf-8");
   const headlessBlock = src.slice(src.indexOf("gsd headless"));

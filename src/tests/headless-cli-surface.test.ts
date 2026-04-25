@@ -16,10 +16,11 @@ import {
   EXIT_ERROR,
   EXIT_BLOCKED,
   EXIT_CANCELLED,
+  EXIT_INCOMPLETE,
   mapStatusToExitCode,
 } from '../headless-events.js'
 
-import type { OutputFormat, HeadlessJsonResult } from '../headless-types.js'
+import type { OutputFormat, HeadlessJsonResult, HeadlessWorkflowSnapshot } from '../headless-types.js'
 import { VALID_OUTPUT_FORMATS } from '../headless-types.js'
 
 // ─── Extracted parsing logic (mirrors headless.ts) ─────────────────────────
@@ -42,6 +43,7 @@ interface HeadlessOptions {
   eventFilter?: Set<string>
   resumeSession?: string
   bare?: boolean
+  failOnIncomplete?: boolean
 }
 
 function parseHeadlessArgs(argv: string[]): HeadlessOptions {
@@ -106,6 +108,8 @@ function parseHeadlessArgs(argv: string[]): HeadlessOptions {
         options.resumeSession = args[++i]
       } else if (arg === '--bare') {
         options.bare = true
+      } else if (arg === '--fail-on-incomplete') {
+        options.failOnIncomplete = true
       }
     } else if (options.command === 'auto') {
       options.command = arg
@@ -184,6 +188,12 @@ test('no --resume means undefined', () => {
   assert.equal(opts.resumeSession, undefined)
 })
 
+test('--fail-on-incomplete parses flag', () => {
+  const opts = parseHeadlessArgs(['node', 'gsd', 'headless', '--fail-on-incomplete', 'auto'])
+  assert.equal(opts.failOnIncomplete, true)
+  assert.equal(opts.command, 'auto')
+})
+
 // ─── Exit code constants ───────────────────────────────────────────────────
 
 test('EXIT_SUCCESS is 0', () => {
@@ -200,6 +210,10 @@ test('EXIT_BLOCKED is 10', () => {
 
 test('EXIT_CANCELLED is 11', () => {
   assert.equal(EXIT_CANCELLED, 11)
+})
+
+test('EXIT_INCOMPLETE is 12', () => {
+  assert.equal(EXIT_INCOMPLETE, 12)
 })
 
 // ─── mapStatusToExitCode ───────────────────────────────────────────────────
@@ -228,6 +242,10 @@ test('mapStatusToExitCode: cancelled → 11', () => {
   assert.equal(mapStatusToExitCode('cancelled'), EXIT_CANCELLED)
 })
 
+test('mapStatusToExitCode: needs-continue → 12', () => {
+  assert.equal(mapStatusToExitCode('needs-continue'), EXIT_INCOMPLETE)
+})
+
 test('mapStatusToExitCode: unknown status defaults to EXIT_ERROR', () => {
   assert.equal(mapStatusToExitCode('unknown'), EXIT_ERROR)
   assert.equal(mapStatusToExitCode(''), EXIT_ERROR)
@@ -241,6 +259,15 @@ test('HeadlessJsonResult satisfies expected shape', () => {
   const result: HeadlessJsonResult = {
     status: 'success',
     exitCode: 0,
+    commandStatus: 'complete',
+    workflowStatus: 'needs-continue',
+    workflow: {
+      status: 'needs-continue',
+      phase: 'validating-milestone',
+      activeMilestone: 'M001',
+      lastCompletedMilestone: 'M000',
+      next: { action: 'dispatch', unitType: 'validate-milestone', unitId: 'M001' },
+    },
     duration: 12345,
     cost: { total: 0.05, input_tokens: 1000, output_tokens: 500, cache_read_tokens: 200, cache_write_tokens: 100 },
     toolCalls: 15,
@@ -248,6 +275,9 @@ test('HeadlessJsonResult satisfies expected shape', () => {
   }
   assert.equal(result.status, 'success')
   assert.equal(result.exitCode, 0)
+  assert.equal(result.commandStatus, 'complete')
+  assert.equal(result.workflowStatus, 'needs-continue')
+  assert.equal(result.workflow?.phase, 'validating-milestone')
   assert.equal(typeof result.duration, 'number')
   assert.ok(result.cost)
   assert.equal(typeof result.cost.total, 'number')
@@ -278,6 +308,17 @@ test('HeadlessJsonResult accepts optional fields', () => {
   assert.equal(result.milestone, 'M001')
   assert.deepEqual(result.artifacts, ['ROADMAP.md'])
   assert.deepEqual(result.commits, ['abc1234'])
+})
+
+test('HeadlessWorkflowSnapshot supports complete workflow state', () => {
+  const workflow: HeadlessWorkflowSnapshot = {
+    status: 'complete',
+    phase: 'complete',
+    lastCompletedMilestone: 'M001',
+    next: { action: 'stop', reason: 'All milestones complete.' },
+  }
+  assert.equal(workflow.status, 'complete')
+  assert.equal(workflow.lastCompletedMilestone, 'M001')
 })
 
 // ─── VALID_OUTPUT_FORMATS set ──────────────────────────────────────────────

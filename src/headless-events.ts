@@ -17,6 +17,7 @@ export const EXIT_SUCCESS = 0
 export const EXIT_ERROR = 1
 export const EXIT_BLOCKED = 10
 export const EXIT_CANCELLED = 11
+export const EXIT_INCOMPLETE = 12
 
 /**
  * Map a headless session status string to its standardized exit code.
@@ -44,6 +45,9 @@ export function mapStatusToExitCode(status: string): number {
       return EXIT_BLOCKED
     case 'cancelled':
       return EXIT_CANCELLED
+    case 'incomplete':
+    case 'needs-continue':
+      return EXIT_INCOMPLETE
     default:
       return EXIT_ERROR
   }
@@ -53,9 +57,10 @@ export function mapStatusToExitCode(status: string): number {
   blocked: boolean
   exitCode: number
   timedOut: boolean
- }): 'complete' | 'blocked' | 'cancelled' | 'error' | 'timeout' {
+ }): 'complete' | 'blocked' | 'cancelled' | 'error' | 'timeout' | 'needs-continue' {
   if (args.blocked) return 'blocked'
   if (args.exitCode === EXIT_CANCELLED) return 'cancelled'
+  if (args.exitCode === EXIT_INCOMPLETE) return 'needs-continue'
   if (args.exitCode === EXIT_ERROR) return args.timedOut ? 'timeout' : 'error'
   return 'complete'
  }
@@ -67,6 +72,7 @@ export function mapStatusToExitCode(status: string): number {
  }): HeadlessJsonResult['status'] {
   if (args.blocked) return 'blocked'
   if (args.exitCode === EXIT_CANCELLED) return 'cancelled'
+  if (args.exitCode === EXIT_INCOMPLETE) return 'incomplete'
   if (args.exitCode === EXIT_ERROR) return args.timedOut ? 'timeout' : 'error'
   return 'success'
  }

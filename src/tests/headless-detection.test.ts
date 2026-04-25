@@ -69,6 +69,10 @@ test("detects 'Step-mode stopped.' as terminal", () => {
   assert.ok(isTerminalNotification(makeNotify("Step-mode stopped.")))
 })
 
+test("does NOT match 'Auto-mode paused' as terminal", () => {
+  assert.ok(!isTerminalNotification(makeNotify("Auto-mode paused (Escape). Run /gsd auto to resume.")))
+})
+
 // ─── False positives that previously triggered early exit (#879) ────────────
 
 test("does NOT match 'All slices are complete — nothing to discuss.'", () => {

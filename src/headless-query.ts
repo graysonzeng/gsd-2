@@ -77,7 +77,7 @@ export interface QueryResult {
 
 // ─── Implementation ─────────────────────────────────────────────────────────
 
-export async function handleQuery(basePath: string): Promise<QueryResult> {
+export async function deriveHeadlessSnapshot(basePath: string): Promise<QuerySnapshot> {
   const {
     openProjectDbIfPresent,
     deriveState,
@@ -128,6 +128,11 @@ export async function handleQuery(basePath: string): Promise<QueryResult> {
     cost: { workers, total: workers.reduce((sum, w) => sum + w.cost, 0) },
   }
 
+  return snapshot
+}
+
+export async function handleQuery(basePath: string): Promise<QueryResult> {
+  const snapshot = await deriveHeadlessSnapshot(basePath)
   process.stdout.write(JSON.stringify(snapshot) + '\n')
   return { exitCode: 0, data: snapshot }
 }

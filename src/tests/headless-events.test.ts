@@ -156,6 +156,7 @@ import {
   EXIT_ERROR,
   EXIT_BLOCKED,
   EXIT_CANCELLED,
+  EXIT_INCOMPLETE,
   resolveHeadlessJsonStatus,
   resolveHeadlessTextStatus,
   isInteractiveHeadlessTool,
@@ -192,6 +193,10 @@ test('mapStatusToExitCode: "cancelled" returns EXIT_CANCELLED', () => {
   assert.equal(mapStatusToExitCode('cancelled'), EXIT_CANCELLED)
 })
 
+test('mapStatusToExitCode: "needs-continue" returns EXIT_INCOMPLETE', () => {
+  assert.equal(mapStatusToExitCode('needs-continue'), EXIT_INCOMPLETE)
+})
+
 test('mapStatusToExitCode: unknown status returns EXIT_ERROR', () => {
   assert.equal(mapStatusToExitCode('unknown'), EXIT_ERROR)
 })
@@ -204,12 +209,20 @@ test('resolveHeadlessTextStatus: actual timeout reports timeout', () => {
   assert.equal(resolveHeadlessTextStatus({ blocked: false, exitCode: EXIT_ERROR, timedOut: true }), 'timeout')
 })
 
+test('resolveHeadlessTextStatus: incomplete reports needs-continue', () => {
+  assert.equal(resolveHeadlessTextStatus({ blocked: false, exitCode: EXIT_INCOMPLETE, timedOut: false }), 'needs-continue')
+})
+
 test('resolveHeadlessJsonStatus: provider/runtime errors stay error when not timed out', () => {
   assert.equal(resolveHeadlessJsonStatus({ blocked: false, exitCode: EXIT_ERROR, timedOut: false }), 'error')
 })
 
 test('resolveHeadlessJsonStatus: actual timeout reports timeout', () => {
   assert.equal(resolveHeadlessJsonStatus({ blocked: false, exitCode: EXIT_ERROR, timedOut: true }), 'timeout')
+})
+
+test('resolveHeadlessJsonStatus: incomplete reports incomplete', () => {
+  assert.equal(resolveHeadlessJsonStatus({ blocked: false, exitCode: EXIT_INCOMPLETE, timedOut: false }), 'incomplete')
 })
 
 test('isInteractiveHeadlessTool: ask_user_questions is interactive', () => {

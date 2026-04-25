@@ -39,9 +39,10 @@ import {
   EXIT_ERROR,
   EXIT_BLOCKED,
   EXIT_CANCELLED,
+  EXIT_INCOMPLETE,
 } from './headless-events.js'
 
-import type { OutputFormat, HeadlessJsonResult } from './headless-types.js'
+import type { OutputFormat, HeadlessJsonResult, HeadlessCommandStatus, HeadlessWorkflowSnapshot } from './headless-types.js'
 import { VALID_OUTPUT_FORMATS } from './headless-types.js'
 
 import {
@@ -83,6 +84,7 @@ export interface HeadlessOptions {
   eventFilter?: Set<string>  // filter JSONL output to specific event types
   resumeSession?: string // session ID to resume (--resume <id>)
   bare?: boolean         // --bare: suppress CLAUDE.md/AGENTS.md, user skills, project preferences
+  failOnIncomplete?: boolean
 }
 
 interface TrackedEvent {
@@ -204,6 +206,8 @@ export function parseHeadlessArgs(argv: string[]): HeadlessOptions {
         options.resumeSession = args[++i]
       } else if (arg === '--bare') {
         options.bare = true
+      } else if (arg === '--fail-on-incomplete') {
+        options.failOnIncomplete = true
       }
     } else if (options.command === 'auto') {
       options.command = arg
@@ -227,7 +231,7 @@ export async function runHeadless(options: HeadlessOptions): Promise<void> {
     const result = await runHeadlessOnce(options, restartCount)
 
     // Success or blocked — exit normally
-    if (result.exitCode === EXIT_SUCCESS || result.exitCode === EXIT_BLOCKED) {
+    if (result.exitCode === EXIT_SUCCESS || result.exitCode === EXIT_BLOCKED || result.exitCode === EXIT_INCOMPLETE) {
       process.exit(result.exitCode)
     }
 
@@ -249,6 +253,33 @@ export async function runHeadless(options: HeadlessOptions): Promise<void> {
   }
 }
 
+function workflowSnapshotFromQuery(snapshot: {
+  state: {
+    phase: string
+    activeMilestone?: { id?: string } | null
+    lastCompletedMilestone?: { id?: string } | null
+  }
+  next: {
+    action: string
+    unitType?: string
+    unitId?: string
+    reason?: string
+  }
+}): HeadlessWorkflowSnapshot {
+  const status = snapshot.state.phase === 'complete' && !snapshot.state.activeMilestone
+    ? 'complete'
+    : snapshot.next.action === 'dispatch'
+      ? 'needs-continue'
+      : 'unknown'
+  return {
+    status,
+    phase: snapshot.state.phase,
+    activeMilestone: snapshot.state.activeMilestone?.id,
+    lastCompletedMilestone: snapshot.state.lastCompletedMilestone?.id,
+    next: snapshot.next,
+  }
+}
+
 async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): Promise<{ exitCode: number; interrupted: boolean }> {
   let interrupted = false
   const startTime = Date.now()
@@ -263,6 +294,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   // per-unit timeout via auto-supervisor. Disable the overall timeout unless the
   // user explicitly set --timeout.
   const isAutoMode = options.command === 'auto'
+  let ranAutoMode = isAutoMode
   // discuss and plan are multi-turn: they involve multiple question rounds,
   // codebase scanning, and artifact writing before the workflow completes (#3547).
   const isMultiTurnCommand = options.command === 'auto' || options.command === 'next' || options.command === 'discuss' || options.command === 'plan'
@@ -381,6 +413,8 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   let cumulativeCacheReadTokens = 0
   let cumulativeCacheWriteTokens = 0
   let lastSessionId: string | undefined
+  let commandStatus: HeadlessCommandStatus | undefined
+  let workflowSnapshot: HeadlessWorkflowSnapshot | undefined
 
   // Verbose text-mode state
   const toolStartTimes = new Map<string, number>()
@@ -402,6 +436,9 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     const result: HeadlessJsonResult = {
       status,
       exitCode,
+      commandStatus,
+      workflowStatus: workflowSnapshot?.status,
+      workflow: workflowSnapshot,
       sessionId: lastSessionId,
       duration,
       cost: {
@@ -870,6 +907,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     })
 
     try {
+      ranAutoMode = true
       await client.prompt('/gsd auto')
     } catch (err) {
       process.stderr.write(`[headless] Error: Failed to start auto-mode: ${err instanceof Error ? err.message : String(err)}\n`)
@@ -893,15 +931,50 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   await client.stop()
 
-  // Summary
-  const duration = ((Date.now() - startTime) / 1000).toFixed(1)
-  const status = resolveHeadlessTextStatus({
+  const commandExitCode = exitCode
+  commandStatus = resolveHeadlessTextStatus({
     blocked,
-    exitCode,
+    exitCode: commandExitCode,
     timedOut,
   })
 
+  if (ranAutoMode && commandExitCode === EXIT_SUCCESS && !blocked) {
+    try {
+      const { deriveHeadlessSnapshot } = await import('./headless-query.js')
+      workflowSnapshot = workflowSnapshotFromQuery(await deriveHeadlessSnapshot(process.cwd()))
+      if (workflowSnapshot.status === 'needs-continue' && options.failOnIncomplete) {
+        exitCode = EXIT_INCOMPLETE
+      }
+    } catch (err) {
+      workflowSnapshot = { status: 'unknown' }
+      if (!options.json) {
+        process.stderr.write(`[headless] Warning: failed to derive workflow status: ${err instanceof Error ? err.message : String(err)}\n`)
+      }
+    }
+  }
+
+  // Summary
+  const duration = ((Date.now() - startTime) / 1000).toFixed(1)
+  const status = commandStatus
+
   process.stderr.write(`[headless] Status: ${status}\n`)
+  if (workflowSnapshot) {
+    process.stderr.write(`[headless] Command Status: ${commandStatus}\n`)
+    process.stderr.write(`[headless] Workflow Status: ${workflowSnapshot.status}\n`)
+    if (workflowSnapshot.phase) {
+      process.stderr.write(`[headless] Workflow Phase: ${workflowSnapshot.phase}\n`)
+    }
+    if (workflowSnapshot.activeMilestone) {
+      process.stderr.write(`[headless] Active Milestone: ${workflowSnapshot.activeMilestone}\n`)
+    }
+    if (workflowSnapshot.lastCompletedMilestone) {
+      process.stderr.write(`[headless] Last Completed Milestone: ${workflowSnapshot.lastCompletedMilestone}\n`)
+    }
+    if (workflowSnapshot.next) {
+      const nextDetail = [workflowSnapshot.next.unitType, workflowSnapshot.next.unitId].filter(Boolean).join(' ')
+      process.stderr.write(`[headless] Next: ${workflowSnapshot.next.action}${nextDetail ? ` ${nextDetail}` : ''}${workflowSnapshot.next.reason ? ` — ${workflowSnapshot.next.reason}` : ''}\n`)
+    }
+  }
   process.stderr.write(`[headless] Duration: ${duration}s\n`)
   process.stderr.write(`[headless] Events: ${totalEvents} total, ${toolCallCount} tool calls\n`)
   if (options.eventFilter) {
@@ -921,7 +994,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   }
 
   // On failure, print last 5 events for diagnostics
-  if (exitCode !== 0) {
+  if (exitCode !== 0 && exitCode !== EXIT_INCOMPLETE) {
     const lastFive = recentEvents.slice(-5)
     if (lastFive.length > 0) {
       process.stderr.write('[headless] Last events:\n')
