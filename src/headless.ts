@@ -32,6 +32,8 @@ import {
   resolveHeadlessTextStatus,
   mapStatusToExitCode,
   shouldArmHeadlessIdleTimeout,
+  shouldUseHeadlessIdleFallback,
+  buildUnexpectedChildExitDiagnostic,
   isInteractiveHeadlessTool,
   IDLE_TIMEOUT_MS,
   NEW_MILESTONE_IDLE_TIMEOUT_MS,
@@ -313,7 +315,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   let ranAutoMode = isAutoMode
   // discuss and plan are multi-turn: they involve multiple question rounds,
   // codebase scanning, and artifact writing before the workflow completes (#3547).
-  const isMultiTurnCommand = options.command === 'auto' || options.command === 'next' || options.command === 'discuss' || options.command === 'plan'
+  const isMultiTurnCommand = !shouldUseHeadlessIdleFallback(options.command)
   if (isAutoMode && options.timeout === 300_000) {
     options.timeout = 0
   }
@@ -431,6 +433,8 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   let lastSessionId: string | undefined
   let commandStatus: HeadlessCommandStatus | undefined
   let workflowSnapshot: HeadlessWorkflowSnapshot | undefined
+  let pendingTurn = false
+  let lastRunId: string | undefined
 
   // Verbose text-mode state
   const toolStartTimes = new Map<string, number>()
@@ -524,7 +528,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     // where no RPC events fire for 15+ seconds. The idle fallback incorrectly treats
     // this silence as completion. Rely on the terminal notification from stopAuto()
     // as the sole completion signal for auto mode.
-    if (isAutoMode) return
+    if (!shouldUseHeadlessIdleFallback(options.command)) return
     if (shouldArmHeadlessIdleTimeout(toolCallCount, interactiveToolCallIds.size)) {
       idleTimer = setTimeout(() => {
         completed = true
@@ -564,6 +568,13 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     trackEvent(eventObj)
 
     const eventType = String(eventObj.type ?? '')
+    const eventRunId = typeof eventObj.runId === 'string' ? eventObj.runId : undefined
+    if (eventRunId) lastRunId = eventRunId
+    if (eventType === 'turn_start') {
+      pendingTurn = true
+    } else if (eventType === 'turn_end') {
+      pendingTurn = false
+    }
     if (eventType === 'tool_execution_start') {
       const toolCallId = String(eventObj.toolCallId ?? eventObj.id ?? '')
       if (toolCallId && isInteractiveHeadlessTool(String(eventObj.toolName ?? ''))) {
@@ -896,10 +907,19 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   // Detect child process crash (read-only exit event subscription — not stdin access)
   const internalProcess = Reflect.get(client as object, 'process') as ChildProcess | undefined
   if (internalProcess) {
-    internalProcess.on('exit', (code: number | null) => {
+    internalProcess.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
       if (!completed) {
-        const msg = `[headless] Child process exited unexpectedly with code ${code ?? 'null'}\n`
-        process.stderr.write(msg)
+        process.stderr.write(buildUnexpectedChildExitDiagnostic({
+          code,
+          signal,
+          command: options.command,
+          totalEvents,
+          toolCallCount,
+          pendingTurn,
+          lastRunId,
+          lastSessionId,
+          recentEvents,
+        }))
         exitCode = EXIT_ERROR
         resolveCompletion()
       }

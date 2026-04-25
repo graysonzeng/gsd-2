@@ -133,6 +133,38 @@ export function shouldArmHeadlessIdleTimeout(toolCallCount: number, interactiveT
   return toolCallCount > 0 && interactiveToolCount === 0
 }
 
+export function shouldUseHeadlessIdleFallback(command: string): boolean {
+  return !['auto', 'new-milestone', 'next', 'discuss', 'plan'].includes(command)
+}
+
+export interface UnexpectedChildExitDiagnosticInput {
+  code: number | null
+  signal?: NodeJS.Signals | string | null
+  command: string
+  totalEvents: number
+  toolCallCount: number
+  pendingTurn: boolean
+  lastRunId?: string
+  lastSessionId?: string
+  recentEvents: readonly { type: string; detail?: string }[]
+}
+
+export function buildUnexpectedChildExitDiagnostic(input: UnexpectedChildExitDiagnosticInput): string {
+  const lines = [
+    `[headless] Child process exited unexpectedly with code ${input.code ?? 'null'}${input.signal ? ` (signal ${input.signal})` : ''}`,
+    `[headless] Diagnostic: command: ${input.command}; pending turn: ${input.pendingTurn ? 'yes' : 'no'}; events: ${input.totalEvents} total, ${input.toolCallCount} tool calls`,
+  ]
+  if (input.lastRunId) lines.push(`[headless] Diagnostic: last run: ${input.lastRunId}`)
+  if (input.lastSessionId) lines.push(`[headless] Diagnostic: last session: ${input.lastSessionId}`)
+  if (input.recentEvents.length > 0) {
+    lines.push('[headless] Recent events:')
+    for (const event of input.recentEvents.slice(-5)) {
+      lines.push(`  ${event.type}${event.detail ? `: ${event.detail}` : ''}`)
+    }
+  }
+  return `${lines.join('\n')}\n`
+}
+
 // ---------------------------------------------------------------------------
 // Quick Command Detection
 // ---------------------------------------------------------------------------

@@ -159,8 +159,10 @@ import {
   EXIT_INCOMPLETE,
   resolveHeadlessJsonStatus,
   resolveHeadlessTextStatus,
+  buildUnexpectedChildExitDiagnostic,
   isInteractiveHeadlessTool,
   shouldArmHeadlessIdleTimeout,
+  shouldUseHeadlessIdleFallback,
 } from '../headless-events.js'
 
 // ─── mapStatusToExitCode ─────────────────────────────────────────────────
@@ -251,4 +253,45 @@ test('shouldArmHeadlessIdleTimeout: stays disarmed while interactive tools are i
 test('shouldArmHeadlessIdleTimeout: stays disarmed before any tool call has started', () => {
   assert.equal(shouldArmHeadlessIdleTimeout(0, 0), false)
   assert.equal(shouldArmHeadlessIdleTimeout(0, 1), false)
+})
+
+test('shouldUseHeadlessIdleFallback: disables fallback for long-running multi-turn commands', () => {
+  assert.equal(shouldUseHeadlessIdleFallback('auto'), false)
+  assert.equal(shouldUseHeadlessIdleFallback('new-milestone'), false)
+  assert.equal(shouldUseHeadlessIdleFallback('next'), false)
+  assert.equal(shouldUseHeadlessIdleFallback('discuss'), false)
+  assert.equal(shouldUseHeadlessIdleFallback('plan'), false)
+})
+
+test('shouldUseHeadlessIdleFallback: keeps fallback for ordinary commands', () => {
+  assert.equal(shouldUseHeadlessIdleFallback('status'), true)
+  assert.equal(shouldUseHeadlessIdleFallback('query'), true)
+})
+
+test('buildUnexpectedChildExitDiagnostic: includes turn and recent event context', () => {
+  const diagnostic = buildUnexpectedChildExitDiagnostic({
+    code: null,
+    signal: 'SIGTERM',
+    command: 'auto',
+    totalEvents: 42,
+    toolCallCount: 3,
+    pendingTurn: true,
+    lastRunId: 'run-123',
+    lastSessionId: 'session-abc',
+    recentEvents: [
+      { type: 'tool_execution_start', detail: 'subagent' },
+      { type: 'turn_start' },
+    ],
+  })
+
+  assert.match(diagnostic, /Child process exited unexpectedly/)
+  assert.match(diagnostic, /code null/)
+  assert.match(diagnostic, /signal SIGTERM/)
+  assert.match(diagnostic, /command: auto/)
+  assert.match(diagnostic, /pending turn: yes/)
+  assert.match(diagnostic, /last run: run-123/)
+  assert.match(diagnostic, /last session: session-abc/)
+  assert.match(diagnostic, /events: 42 total, 3 tool calls/)
+  assert.match(diagnostic, /tool_execution_start: subagent/)
+  assert.match(diagnostic, /turn_start/)
 })
