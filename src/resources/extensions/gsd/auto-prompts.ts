@@ -2062,6 +2062,12 @@ export async function buildValidateMilestonePrompt(
     validationPath: validationOutputPath,
     remediationRound: String(remediationRound),
     gatesToEvaluate,
+    reviewProtocol: buildValidateMilestoneReviewProtocol({
+      milestoneId: mid,
+      workingDirectory: base,
+      roadmapPath: roadmapOutputPath,
+      useSubagents: !shouldUseSequentialMilestoneValidationReview(),
+    }),
     skillActivation: buildSkillActivationBlock({
       base,
       milestoneId: mid,
@@ -2069,6 +2075,48 @@ export async function buildValidateMilestonePrompt(
       extraContext: [inlinedContext],
     }),
   });
+}
+
+export function shouldUseSequentialMilestoneValidationReview(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.GSD_HEADLESS === "1" || env.GSD_DISABLE_SUBAGENT_FANOUT === "1" || env.GSD_VALIDATE_MILESTONE_REVIEW_MODE === "sequential";
+}
+
+export function buildValidateMilestoneReviewProtocol(input: {
+  milestoneId: string;
+  workingDirectory: string;
+  roadmapPath: string;
+  useSubagents: boolean;
+}): string {
+  const reviewerA = `**Reviewer A — Requirements Coverage**
+Prompt: "Review milestone ${input.milestoneId} requirements coverage. Working directory: ${input.workingDirectory}. Read \`${input.roadmapPath}\`, \`.gsd/milestones/${input.milestoneId}/${input.milestoneId}-CONTEXT.md\`, and \`.gsd/REQUIREMENTS.md\` when present (or the equivalent requirements source in the inlined context). For each requirement, check the slice SUMMARY files under \`.gsd/milestones/${input.milestoneId}/slices/\` to determine if it is: COVERED (clearly demonstrated), PARTIAL (mentioned but not fully demonstrated), or MISSING (no evidence). Output a markdown table with columns: Requirement | Status | Evidence. End with a one-line verdict: PASS if all covered, NEEDS-ATTENTION if partials exist, FAIL if any missing."`;
+
+  const reviewerB = `**Reviewer B — Cross-Slice Integration**
+Prompt: "Review milestone ${input.milestoneId} cross-slice integration. Working directory: ${input.workingDirectory}. Read \`${input.roadmapPath}\` and find the boundary map (produces/consumes contracts). For each boundary, check that the producing slice's SUMMARY confirms it produced the artifact, and the consuming slice's SUMMARY confirms it consumed it. Output a markdown table: Boundary | Producer Summary | Consumer Summary | Status. End with a one-line verdict: PASS if all boundaries honored, NEEDS-ATTENTION if any gaps."`;
+
+  const reviewerC = `**Reviewer C — Assessment & Acceptance Criteria**
+Prompt: "Review milestone ${input.milestoneId} assessment evidence and acceptance criteria. Working directory: ${input.workingDirectory}. Read \`.gsd/milestones/${input.milestoneId}/${input.milestoneId}-CONTEXT.md\` for acceptance criteria. Check for ASSESSMENT files in each slice directory under \`.gsd/milestones/${input.milestoneId}/slices/\`. Verify each acceptance criterion maps to either a passing assessment result or clear SUMMARY evidence. Then review the inlined milestone verification classes from planning. For each non-empty planned class, output a markdown table: Class | Planned Check | Evidence | Verdict. Use the exact class names \`Contract\`, \`Integration\`, \`Operational\`, and \`UAT\` whenever those classes are present. If no verification classes were planned, say that explicitly. Output two sections: \`Acceptance Criteria\` with a checklist \`[ ] Criterion | Evidence\`, and \`Verification Classes\` with the table. End with a one-line verdict: PASS if all criteria and verification classes are covered, NEEDS-ATTENTION if gaps exist."`;
+
+  if (!input.useSubagents) {
+    return `### Step 1 — Run Reviewers Sequentially
+
+Do not call the \`subagent\` tool in this environment. Run all three reviewer roles yourself in this same turn using the inlined context, preserving the Reviewer A, Reviewer B, and Reviewer C headings.
+
+${reviewerA}
+
+${reviewerB}
+
+${reviewerC}`;
+  }
+
+  return `### Step 1 — Dispatch Parallel Reviewers
+
+Call \`subagent\` with \`tasks: [...]\` containing ALL THREE reviewers simultaneously:
+
+${reviewerA}
+
+${reviewerB}
+
+${reviewerC}`;
 }
 
 export async function buildReplanSlicePrompt(

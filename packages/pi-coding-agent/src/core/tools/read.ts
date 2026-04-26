@@ -8,6 +8,19 @@ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.js";
 import { resolveReadPath } from "./path-utils.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.js";
 
+function isRuntimeEventLogPath(absolutePath: string): boolean {
+	const normalized = absolutePath.replace(/\\/g, "/");
+	return /\/\.gsd\/runtime\/[^/]+\.(?:ndjson|jsonl)$/.test(normalized);
+}
+
+function buildRuntimeEventLogGuardMessage(path: string): string {
+	return [
+		`Runtime log read blocked for ${path}.`,
+		"These event logs are often large and can flood the model context.",
+		"Use offset/limit for a targeted slice, or summarize the log with a script that counts event types and prints the last few non-streaming events.",
+	].join("\n");
+}
+
 const readSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
 	offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
@@ -61,6 +74,12 @@ export function createReadTool(cwd: string, options?: ReadToolOptions): AgentToo
 			signal?: AbortSignal,
 		) => {
 			const absolutePath = resolveReadPath(path, cwd);
+			if (isRuntimeEventLogPath(absolutePath) && offset === undefined && limit === undefined) {
+				return {
+					content: [{ type: "text", text: buildRuntimeEventLogGuardMessage(path) }],
+					details: undefined,
+				};
+			}
 
 			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
 				(resolve, reject) => {

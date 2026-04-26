@@ -14,6 +14,11 @@ export interface BashInterceptorRule {
 
 export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	{
+		pattern: "(^|[\\s'\"=])(?:\\.?/?[^\\s'\";|&<>]*\\/)?\\.gsd\\/runtime\\/[^\\s'\";|&<>]+\\.(?:ndjson|jsonl)\\b",
+		tool: "read",
+		message: "Do not inline runtime event logs through shell commands. Use targeted read offset/limit or summarize runtime event logs with counts and the last few non-streaming events.",
+	},
+	{
 		// cat/head/tail for file viewing — excludes heredoc syntax (cat <<)
 		pattern: "^\\s*(cat(?!\\s*<<)|head|tail|less|more)\\s+",
 		tool: "read",

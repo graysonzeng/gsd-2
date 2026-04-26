@@ -252,21 +252,16 @@ test("reassess-roadmap prompt references gsd_reassess_roadmap tool", () => {
   assert.match(prompt, /gsd_reassess_roadmap/);
 });
 
-test("validate-milestone prompt dispatches parallel reviewers", () => {
+test("validate-milestone prompt injects review protocol", () => {
   const prompt = readPrompt("validate-milestone");
-  assert.match(prompt, /Reviewer A/);
-  assert.match(prompt, /Reviewer B/);
-  assert.match(prompt, /Reviewer C/);
-  assert.match(prompt, /Requirements Coverage/);
-  assert.match(prompt, /Cross-Slice Integration/);
-  assert.match(prompt, /Assessment & Acceptance Criteria/);
-  assert.match(prompt, /assessment evidence/i);
+  assert.match(prompt, /\{\{reviewProtocol\}\}/);
+  assert.doesNotMatch(prompt, /Dispatch 3 independent parallel reviewers/);
+  assert.match(prompt, /gsd_validate_milestone/);
 });
 
-test("validate-milestone prompt references canonical milestone artifact paths", () => {
+test("validate-milestone prompt keeps canonical milestone artifact placeholders out of raw protocol", () => {
   const prompt = readPrompt("validate-milestone");
-  assert.match(prompt, /\.gsd\/milestones\/\{\{milestoneId\}\}\/\{\{milestoneId\}\}-CONTEXT\.md/);
-  assert.match(prompt, /\.gsd\/milestones\/\{\{milestoneId\}\}\/slices\//);
+  assert.match(prompt, /\{\{reviewProtocol\}\}/);
   assert.doesNotMatch(prompt, /\.gsd\/\{\{milestoneId\}\}\/CONTEXT\.md/);
   assert.doesNotMatch(prompt, /\.gsd\/\{\{milestoneId\}\}\//);
 });
@@ -319,6 +314,13 @@ test("complete-slice prompt uses camelCase parameter names matching TypeBox sche
   // Positive: must mention the camelCase names
   assert.match(toolCallLine!, /milestoneId/);
   assert.match(toolCallLine!, /sliceId/);
+});
+
+test("complete-slice prompt marks verification as required with concrete evidence", () => {
+  const prompt = readPrompt("complete-slice");
+  assert.match(prompt, /verification.*REQUIRED/i);
+  assert.match(prompt, /verification.*command/i);
+  assert.match(prompt, /verification.*result/i);
 });
 
 // ─── File system safety: complete-slice parity with complete-milestone (#2935) ──

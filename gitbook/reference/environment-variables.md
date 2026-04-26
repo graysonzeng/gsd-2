@@ -11,6 +11,9 @@
 | `GSD_FETCH_ALLOWED_URLS` | (none) | Comma-separated hostnames exempt from internal URL blocking. |
 | `GSD_ALLOWED_COMMAND_PREFIXES` | (built-in) | Comma-separated command prefixes allowed for value resolution. |
 | `GSD_WEB_PROJECT_CWD` | — | Default project path for `gsd --web` when `?project=` is not specified. |
+| `GSD_HEADLESS` | set by `gsd headless` | Signals headless execution to the extension. Used to skip human pauses and prefer headless-safe milestone validation. |
+| `GSD_DISABLE_SUBAGENT_FANOUT` | — | Set to `1` to force milestone validation to run reviewer roles sequentially instead of dispatching parallel subagents. |
+| `GSD_VALIDATE_MILESTONE_REVIEW_MODE` | — | Set to `sequential` to force sequential milestone validation reviews. |
 
 ## LLM Provider Keys
 

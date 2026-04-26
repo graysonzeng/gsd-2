@@ -21,6 +21,22 @@ gsd headless dispatch plan
 gsd headless --json auto
 ```
 
+## OpenAI-Compatible Providers
+
+When using an OpenAI-compatible proxy or hosted provider, configure the provider with its `/v1` API base URL. For example, SandboxAI should use:
+
+```text
+https://api.sandboxai.top/v1
+```
+
+Use a provider-qualified model ID when the provider requires routing information:
+
+```bash
+gsd headless --model sandboxai/claude-sonnet-4-6 auto
+```
+
+If the provider returns tool-call or streaming errors for one model, retry with a model known to support tool calling reliably before debugging the workflow state.
+
 ## Creating Milestones Headlessly
 
 ```bash
@@ -84,3 +100,11 @@ Compatible with Claude Desktop, VS Code Copilot, and any MCP host.
 ## Auto-Restart
 
 In headless mode, crashes trigger automatic restart with exponential backoff (5s → 10s → 30s cap, default 3 attempts). SIGINT/SIGTERM bypasses restart. Combined with crash recovery, this enables true overnight unattended execution.
+
+## Operational Diagnostics
+
+Headless mode writes runtime event logs under `.gsd/runtime/`. These files can grow quickly during auto-mode. Avoid reading an entire `.gsd/runtime/*.ndjson` or `.jsonl` file into the agent context. Use a targeted `offset`/`limit` read, or summarize the file with counts by event type and the last few non-streaming events.
+
+Unexpected child-process exits now emit a headless diagnostic that includes the command, pending turn status, event counts, tool-call counts, last run/session IDs, and recent events. Treat this diagnostic as the first place to look before reading large logs.
+
+Milestone validation uses three reviewer roles. In headless mode, GSD runs those reviews sequentially in the same turn instead of dispatching parallel `subagent` fan-out, which is safer for custom providers and unattended runs.

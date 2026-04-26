@@ -34,6 +34,21 @@ describe("checkBashInterception", () => {
 		});
 	});
 
+	describe("runtime event log rule", () => {
+		it("blocks direct shell reads of .gsd/runtime ndjson logs", () => {
+			const r = checkBashInterception("python3 -c \"open('.gsd/runtime/headless-auto.ndjson').read()\"", ALL_TOOLS);
+			assert.equal(r.block, true);
+			assert.equal(r.suggestedTool, "read");
+			assert.match(r.message ?? "", /summarize runtime event logs/i);
+		});
+
+		it("blocks absolute runtime jsonl log paths", () => {
+			const r = checkBashInterception("cat /repo/.gsd/runtime/events.jsonl", ALL_TOOLS);
+			assert.equal(r.block, true);
+			assert.equal(r.suggestedTool, "read");
+		});
+	});
+
 	describe("grep rule", () => {
 		it("blocks grep and rg", () => {
 			assert.equal(checkBashInterception("grep foo bar.ts", ALL_TOOLS).block, true);
