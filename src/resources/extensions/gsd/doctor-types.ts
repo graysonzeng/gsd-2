@@ -52,6 +52,9 @@ export type DoctorIssueCode =
   | "models_json_invalid"
   | "default_model_unresolvable"
   | "default_model_fallback"
+  | "key_model_available"
+  | "key_model_fallback"
+  | "key_model_unavailable"
   | "config_surface_ok"
   // Lock infrastructure checks
   | "stranded_lock_directory"

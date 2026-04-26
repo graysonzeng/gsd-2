@@ -7,7 +7,7 @@ import { inspectPreferenceHealth, type PreferenceDoctorFinding } from "./doctor-
 import { PROVIDER_REGISTRY } from "./key-manager.js";
 import { resolveModelsJsonPath } from "../../../models-resolver.js";
 
-export type ConfigDoctorScope = "preferences" | "models" | "auth" | "settings";
+export type ConfigDoctorScope = "preferences" | "models" | "auth" | "settings" | "key_model";
 
 export interface ConfigDoctorFinding {
   scope: ConfigDoctorScope;
@@ -28,6 +28,14 @@ interface ResolvedDefaultModel {
   status: "ok" | "warning" | "error";
   message: string;
   remediation: string;
+}
+
+interface KeyModelAvailability {
+  status: "ok" | "warning" | "error";
+  code: DoctorIssueCode;
+  message: string;
+  remediation: string;
+  detail?: string;
 }
 
 interface EffectiveSettingsSnapshot {
@@ -251,6 +259,60 @@ function inspectEffectiveSettings(basePath: string): ConfigDoctorFinding {
   };
 }
 
+function inspectKeyModelAvailability(basePath: string): ConfigDoctorFinding {
+  const settingsPath = getProjectSettingsPath(basePath);
+  const resolved = resolveDefaultModel(basePath);
+
+  let availability: KeyModelAvailability;
+  if (resolved.source === "configured" && resolved.effectiveProvider && resolved.effectiveModel) {
+    availability = {
+      status: "ok",
+      code: "key_model_available",
+      message: `Key model ${resolved.effectiveProvider}/${resolved.effectiveModel} is runtime-ready now.`,
+      remediation: "No action needed.",
+      detail: `effective runtime default: ${providerLabel(resolved.effectiveProvider)} (${resolved.effectiveProvider}/${resolved.effectiveModel})`,
+    };
+  } else if (resolved.source === "fallback" && resolved.effectiveProvider && resolved.effectiveModel) {
+    const configuredDetail = resolved.configuredProvider && resolved.configuredModel
+      ? `configured default: ${resolved.configuredProvider}/${resolved.configuredModel}`
+      : "configured default: none";
+    availability = {
+      status: resolved.configuredProvider && resolved.configuredModel ? "warning" : "ok",
+      code: resolved.configuredProvider && resolved.configuredModel ? "key_model_fallback" : "key_model_available",
+      message: resolved.configuredProvider && resolved.configuredModel
+        ? `Configured key model ${resolved.configuredProvider}/${resolved.configuredModel} is not runtime-ready; runtime would use ${resolved.effectiveProvider}/${resolved.effectiveModel} instead.`
+        : `Key model ${resolved.effectiveProvider}/${resolved.effectiveModel} is runtime-ready now.`,
+      remediation: resolved.configuredProvider && resolved.configuredModel
+        ? settingsRemediation(settingsPath)
+        : "No action needed.",
+      detail: resolved.configuredProvider && resolved.configuredModel
+        ? `${configuredDetail}; effective runtime default: ${providerLabel(resolved.effectiveProvider)} (${resolved.effectiveProvider}/${resolved.effectiveModel})`
+        : `effective runtime default: ${providerLabel(resolved.effectiveProvider)} (${resolved.effectiveProvider}/${resolved.effectiveModel})`,
+    };
+  } else {
+    const configuredDetail = resolved.configuredProvider && resolved.configuredModel
+      ? `configured default: ${resolved.configuredProvider}/${resolved.configuredModel}`
+      : "configured default: none";
+    availability = {
+      status: "error",
+      code: "key_model_unavailable",
+      message: "Key model is unavailable because no runtime-ready model can be resolved right now.",
+      remediation: `Configure at least one ready provider/model path, then update ${settingsPath} if you want to pin a default.`,
+      detail: configuredDetail,
+    };
+  }
+
+  return {
+    scope: "key_model",
+    severity: availability.status === "ok" ? "info" : availability.status,
+    code: availability.code,
+    effectivePath: settingsPath,
+    message: availability.message,
+    remediation: availability.remediation,
+    detail: availability.detail,
+  };
+}
+
 function convertPreferenceFinding(finding: PreferenceDoctorFinding): ConfigDoctorFinding {
   return {
     scope: "preferences",
@@ -273,6 +335,7 @@ export function inspectDoctorConfig(basePath: string = process.cwd()): ConfigDoc
   findings.push(inspectModelsJson());
   findings.push(inspectAuthJson());
   findings.push(inspectEffectiveSettings(basePath));
+  findings.push(inspectKeyModelAvailability(basePath));
 
   return findings;
 }

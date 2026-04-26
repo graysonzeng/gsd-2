@@ -61,6 +61,10 @@ function withProject<T>(fn: (ctx: { projectDir: string; gsdHome: string; setting
   }
 }
 
+function getFinding(findings: ReturnType<typeof inspectDoctorConfig>, scope: string) {
+  return findings.find((finding) => finding.scope === scope);
+}
+
 test("inspectDoctorConfig reports malformed models.json without suppressing other findings", () => {
   withProject(({ settingsPath, modelsPath }) => {
     writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-sonnet-4-6" }, null, 2));
@@ -69,9 +73,10 @@ test("inspectDoctorConfig reports malformed models.json without suppressing othe
     withEnv({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_OAUTH_TOKEN: undefined, PATH: process.env.PATH }, () => {
       const findings = inspectDoctorConfig();
 
-      const models = findings.find((finding) => finding.scope === "models");
-      const settings = findings.find((finding) => finding.scope === "settings");
-      const auth = findings.find((finding) => finding.scope === "auth");
+      const models = getFinding(findings, "models");
+      const settings = getFinding(findings, "settings");
+      const availability = getFinding(findings, "key_model");
+      const auth = getFinding(findings, "auth");
       const preferences = findings.filter((finding) => finding.scope === "preferences");
 
       assert.ok(models, "models finding should exist");
@@ -83,6 +88,10 @@ test("inspectDoctorConfig reports malformed models.json without suppressing othe
       assert.equal(settings!.code, "default_model_fallback");
       assert.equal(settings!.severity, "warning");
       assert.match(settings!.message, /would fall back/i);
+
+      assert.ok(availability, "key model finding should still exist despite broken models.json");
+      assert.equal(availability!.code, "key_model_fallback");
+      assert.equal(availability!.severity, "warning");
 
       assert.ok(auth, "auth finding should still exist despite broken models.json");
       assert.equal(auth!.code, "config_surface_ok");
@@ -100,7 +109,7 @@ test("inspectDoctorConfig reports malformed auth.json without leaking secrets", 
     const findings = inspectDoctorConfig();
     const after = readFileSync(authPath, "utf-8");
 
-    const auth = findings.find((finding) => finding.scope === "auth");
+    const auth = getFinding(findings, "auth");
     assert.ok(auth, "auth finding should exist");
     assert.equal(auth!.code, "auth_json_invalid");
     assert.equal(auth!.severity, "error");
@@ -110,7 +119,7 @@ test("inspectDoctorConfig reports malformed auth.json without leaking secrets", 
   });
 });
 
-test("inspectDoctorConfig reports fallback when configured default model is unavailable but a provider fallback exists", () => {
+test("inspectDoctorConfig reports key model availability fallback when configured default model is unavailable but a provider fallback exists", () => {
   withProject(({ settingsPath, authPath }) => {
     writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "anthropic", defaultModel: "does-not-exist" }, null, 2));
     writeFileSync(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "sk-ant-test" } }, null, 2));
@@ -119,17 +128,24 @@ test("inspectDoctorConfig reports fallback when configured default model is unav
     const findings = inspectDoctorConfig();
     const after = readFileSync(settingsPath, "utf-8");
 
-    const settings = findings.find((finding) => finding.scope === "settings");
+    const settings = getFinding(findings, "settings");
+    const availability = getFinding(findings, "key_model");
     assert.ok(settings, "settings finding should exist");
     assert.equal(settings!.code, "default_model_fallback");
     assert.equal(settings!.severity, "warning");
     assert.match(settings!.message, /would fall back/i);
     assert.match(settings!.detail ?? "", /effective runtime default:/i);
+
+    assert.ok(availability, "key model finding should exist");
+    assert.equal(availability!.code, "key_model_fallback");
+    assert.equal(availability!.severity, "warning");
+    assert.match(availability!.message, /would use/i);
+    assert.match(availability!.detail ?? "", /configured default: anthropic\/does-not-exist/i);
     assert.equal(after, before, "doctor config inspection must not rewrite settings.json");
   });
 });
 
-test("inspectDoctorConfig reports healthy auth/models/default settings when runtime path resolves", () => {
+test("inspectDoctorConfig reports healthy key model availability when configured runtime path resolves", () => {
   withProject(({ settingsPath, authPath, modelsPath }) => {
     writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-sonnet-4-5" }, null, 2));
     writeFileSync(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "sk-ant-test" } }, null, 2));
@@ -137,9 +153,10 @@ test("inspectDoctorConfig reports healthy auth/models/default settings when runt
 
     const findings = inspectDoctorConfig();
 
-    const models = findings.find((finding) => finding.scope === "models");
-    const auth = findings.find((finding) => finding.scope === "auth");
-    const settings = findings.find((finding) => finding.scope === "settings");
+    const models = getFinding(findings, "models");
+    const auth = getFinding(findings, "auth");
+    const settings = getFinding(findings, "settings");
+    const availability = getFinding(findings, "key_model");
 
     assert.equal(models?.code, "config_surface_ok");
     assert.equal(models?.severity, "info");
@@ -148,6 +165,12 @@ test("inspectDoctorConfig reports healthy auth/models/default settings when runt
     assert.equal(settings?.code, "config_surface_ok");
     assert.equal(settings?.severity, "info");
     assert.match(settings?.message ?? "", /resolves to an available runtime model/i);
+
+    assert.ok(availability, "key model finding should exist");
+    assert.equal(availability!.code, "key_model_available");
+    assert.equal(availability!.severity, "info");
+    assert.match(availability!.message, /is runtime-ready/i);
+    assert.match(availability!.detail ?? "", /effective runtime default:/i);
   });
 });
 
@@ -157,12 +180,37 @@ test("inspectDoctorConfig reports informational fallback when no explicit defaul
     writeFileSync(modelsPath, JSON.stringify({ providers: {} }, null, 2));
 
     const findings = inspectDoctorConfig();
-    const settings = findings.find((finding) => finding.scope === "settings");
+    const settings = getFinding(findings, "settings");
+    const availability = getFinding(findings, "key_model");
 
     assert.ok(settings, "settings finding should exist");
     assert.equal(settings!.code, "config_surface_ok");
     assert.equal(settings!.severity, "info");
     assert.match(settings!.message, /resolves to an available runtime model|No explicit default model is configured/i);
     assert.match(settings!.detail ?? "", /effective runtime default:/i);
+
+    assert.ok(availability, "key model finding should exist");
+    assert.equal(availability!.code, "key_model_available");
+    assert.equal(availability!.severity, "info");
+    assert.match(availability!.message, /runtime-ready/i);
+  });
+});
+
+test("inspectDoctorConfig reports key model unavailable when no runtime-ready model exists", () => {
+  withProject(({ settingsPath, modelsPath }) => {
+    writeFileSync(settingsPath, JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-sonnet-4-5" }, null, 2));
+    writeFileSync(modelsPath, JSON.stringify({ providers: {} }, null, 2));
+
+    withEnv({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, PATH: process.env.PATH }, () => {
+      const findings = inspectDoctorConfig();
+      const availability = getFinding(findings, "key_model");
+
+      assert.ok(availability, "key model finding should exist");
+      assert.equal(availability!.code, "key_model_unavailable");
+      assert.equal(availability!.severity, "error");
+      assert.match(availability!.message, /no runtime-ready model/i);
+      assert.match(availability!.remediation, /Configure at least one ready provider\/model path/i);
+      assert.match(availability!.detail ?? "", /configured default: anthropic\/claude-sonnet-4-5/i);
+    });
   });
 });
