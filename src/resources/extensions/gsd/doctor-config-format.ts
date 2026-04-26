@@ -21,10 +21,14 @@ function sectionTitle(scope: ConfigDoctorFinding["scope"]): string {
       return "Auth config";
     case "settings":
       return "Effective default model";
+    case "key_model":
+      return "Key model availability";
   }
+
+  return "Configuration";
 }
 
-const scopeOrder: ConfigDoctorFinding["scope"][] = ["preferences", "models", "auth", "settings"];
+const scopeOrder: ConfigDoctorFinding["scope"][] = ["preferences", "models", "auth", "settings", "key_model"];
 
 export function formatConfigDoctorReport(findings: ConfigDoctorFinding[]): string {
   const lines: string[] = [];
