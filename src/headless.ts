@@ -96,6 +96,8 @@ interface TrackedEvent {
   detail?: string
 }
 
+const MULTI_TURN_COMMANDS = new Set(['auto', 'next', 'discuss', 'plan'])
+
 // ---------------------------------------------------------------------------
 // Resume Session Resolution
 // ---------------------------------------------------------------------------
@@ -313,9 +315,11 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   // user explicitly set --timeout.
   const isAutoMode = options.command === 'auto'
   let ranAutoMode = isAutoMode
-  // discuss and plan are multi-turn: they involve multiple question rounds,
-  // codebase scanning, and artifact writing before the workflow completes (#3547).
-  const isMultiTurnCommand = !shouldUseHeadlessIdleFallback(options.command)
+  // Multi-turn commands are completed by terminal notifications instead of
+  // execution_complete. Keep this list explicit and decoupled from idle fallback
+  // classification so single-turn commands like new-milestone can consume
+  // execution_complete and terminate correctly.
+  const isMultiTurnCommand = MULTI_TURN_COMMANDS.has(options.command)
   if (isAutoMode && options.timeout === 300_000) {
     options.timeout = 0
   }
@@ -545,6 +549,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     ? setTimeout(() => {
         process.stderr.write(`[headless] Timeout after ${options.timeout / 1000}s\n`)
         timedOut = true
+        completed = true
         exitCode = EXIT_ERROR
         resolveCompletion()
       }, options.timeout)
@@ -557,6 +562,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     ? setTimeout(() => {
         process.stderr.write(`[headless] Auto-mode exceeded max duration (${MAX_AUTO_DURATION_MS / 1000 / 60}min) — forcing exit\n`)
         timedOut = true
+        completed = true
         exitCode = EXIT_ERROR
         resolveCompletion()
       }, MAX_AUTO_DURATION_MS)
@@ -739,7 +745,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     }
 
     // Handle execution_complete (v2 structured completion)
-    // Skip for multi-turn commands (auto, next) — their completion is detected via
+    // Skip for multi-turn commands (auto, next, discuss, plan) — their completion is detected via
     // isTerminalNotification("Auto-mode stopped..."/"Step-mode stopped..."), not per-turn events
     if (eventObj.type === 'execution_complete' && !completed && !isMultiTurnCommand) {
       completed = true
