@@ -82,6 +82,7 @@ test("inspectDoctorConfig reports malformed models.json without suppressing othe
       assert.ok(settings, "settings finding should still exist despite broken models.json");
       assert.equal(settings!.code, "default_model_fallback");
       assert.equal(settings!.severity, "warning");
+      assert.match(settings!.message, /would fall back/i);
 
       assert.ok(auth, "auth finding should still exist despite broken models.json");
       assert.equal(auth!.code, "config_surface_ok");

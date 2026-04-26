@@ -1,28 +1,14 @@
 import type { PreferenceDoctorFinding } from "./doctor-preferences.js";
-
-function iconForSeverity(severity: PreferenceDoctorFinding["severity"]): string {
-  switch (severity) {
-    case "error":
-      return "✗";
-    case "warning":
-      return "⚠";
-    default:
-      return "✓";
-  }
-}
+import { formatConfigDoctorReport } from "./doctor-config-format.js";
 
 export function formatPreferenceDoctorReport(findings: PreferenceDoctorFinding[]): string {
-  const lines: string[] = [];
-  lines.push("GSD doctor report");
-  lines.push("");
-  lines.push("Preference health:");
-
-  for (const finding of findings) {
-    lines.push(`- ${iconForSeverity(finding.severity)} ${finding.scope}: ${finding.message}`);
-    lines.push(`  code: ${finding.code}`);
-    lines.push(`  path: ${finding.effectivePath}`);
-    lines.push(`  remediation: ${finding.remediation}`);
-  }
-
-  return lines.join("\n");
+  return formatConfigDoctorReport(findings.map((finding) => ({
+    scope: "preferences" as const,
+    severity: finding.severity,
+    code: finding.code,
+    effectivePath: finding.effectivePath,
+    message: `[${finding.scope}] ${finding.message}`,
+    remediation: finding.remediation,
+    detail: finding.legacyFallback ? "Loaded from a legacy fallback path." : undefined,
+  })));
 }

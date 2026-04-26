@@ -144,3 +144,28 @@ test("phase-discipline preflight treats unavailable fallback-only models as warn
   assert.equal(result.failures.length, 0);
   assert.ok(result.warnings.some((warning) => warning.role === "main:execution:fallback"));
 });
+
+test("phase-discipline preflight lets unqualified main-model fallbacks inherit the configured provider", () => {
+  const result = validatePhaseDisciplinePreflight({
+    preferences: phasePrefs({
+      models: {
+        execution: {
+          model: "missing-primary",
+          provider: "sandboxai",
+          fallbacks: ["fallback-model"],
+        },
+      },
+    }),
+    modelRegistry: registry({
+      available: [
+        { provider: "openai", id: "gpt-5.4" },
+        { provider: "sandboxai", id: "fallback-model" },
+      ],
+      ready: ["openai", "anthropic", "sandboxai"],
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.failures.length, 0);
+  assert.ok(result.warnings.some((warning) => warning.role === "main:execution" && warning.reason === "fallback_used"));
+});

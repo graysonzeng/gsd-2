@@ -130,7 +130,7 @@ function addMainRequirement(
   }
 
   for (const fallback of cfg.fallbacks ?? []) {
-    const resolvedFallback = splitModelRef(fallback, undefined, sessionProvider);
+    const resolvedFallback = splitModelRef(fallback, cfg.provider, sessionProvider);
     requirements.push({
       role: `main:${phase}:fallback`,
       source: `preferences.models.${phase}.fallbacks`,
