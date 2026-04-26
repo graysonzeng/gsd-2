@@ -136,7 +136,7 @@ test("phase-discipline preflight treats unavailable fallback-only models as warn
     }),
     modelRegistry: registry({
       available: [{ provider: "openai", id: "gpt-5.4" }],
-      ready: ["openai"],
+      ready: ["openai", "anthropic"],
     }),
   });
 

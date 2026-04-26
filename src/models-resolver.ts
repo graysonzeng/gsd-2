@@ -9,13 +9,21 @@
  * 3. Merges both files if both exist (GSD takes precedence)
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { agentDir } from './app-paths.js'
+import { agentDir as initialAgentDir } from './app-paths.js'
 
-const GSD_MODELS_PATH = join(agentDir, 'models.json')
-const PI_MODELS_PATH = join(homedir(), '.pi', 'agent', 'models.json')
+function getGsdModelsPath(): string {
+  const currentAgentDir = process.env.GSD_HOME
+    ? join(process.env.GSD_HOME, 'agent')
+    : initialAgentDir
+  return join(currentAgentDir, 'models.json')
+}
+
+function getPiModelsPath(): string {
+  return join(homedir(), '.pi', 'agent', 'models.json')
+}
 
 /**
  * Resolve the path to models.json with fallback logic.
@@ -28,13 +36,15 @@ const PI_MODELS_PATH = join(homedir(), '.pi', 'agent', 'models.json')
  * @returns The path to use for models.json
  */
 export function resolveModelsJsonPath(): string {
-  if (existsSync(GSD_MODELS_PATH)) {
-    return GSD_MODELS_PATH
+  const gsdModelsPath = getGsdModelsPath()
+  const piModelsPath = getPiModelsPath()
+  if (existsSync(gsdModelsPath)) {
+    return gsdModelsPath
   }
-  if (existsSync(PI_MODELS_PATH)) {
-    return PI_MODELS_PATH
+  if (existsSync(piModelsPath)) {
+    return piModelsPath
   }
-  return GSD_MODELS_PATH
+  return gsdModelsPath
 }
 
 

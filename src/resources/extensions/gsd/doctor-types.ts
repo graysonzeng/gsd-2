@@ -48,6 +48,11 @@ export type DoctorIssueCode =
   // Provider / auth checks
   | "provider_key_missing"
   | "provider_key_backedoff"
+  | "auth_json_invalid"
+  | "models_json_invalid"
+  | "default_model_unresolvable"
+  | "default_model_fallback"
+  | "config_surface_ok"
   // Lock infrastructure checks
   | "stranded_lock_directory"
   // Git / worktree integrity checks
