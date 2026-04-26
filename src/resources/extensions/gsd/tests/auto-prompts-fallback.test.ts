@@ -63,6 +63,8 @@ test("validate-milestone review protocol can avoid subagent fan-out", () => {
 
   assert.match(protocol, /Run Reviewers Sequentially/);
   assert.match(protocol, /Do not call the `subagent` tool/);
+  assert.match(protocol, /compatibility fallback/);
+  assert.match(protocol, /Keep each reviewer output compact/);
   assert.match(protocol, /Reviewer A/);
   assert.match(protocol, /Reviewer B/);
   assert.match(protocol, /Reviewer C/);

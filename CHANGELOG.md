@@ -11,10 +11,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **gsd**: `/gsd forensics` surfaces worktree telemetry — new Worktree Telemetry section in reports; new anomalies `worktree-orphan` and `worktree-unmerged-exit` (#4764).
 - **gsd**: opt-in slice-cadence worktree collapse (#4765). New `git.collapse_cadence: "milestone" | "slice"` preference (default `milestone`). When set to `slice`, each validated slice is squash-merged to main immediately, shrinking the orphan window from milestone-size to slice-size. Optional `git.milestone_resquash: true` (default when cadence=slice) collapses per-slice commits into one milestone commit at milestone completion.
 - **gsd**: worktree-aware `resolveCanonicalMilestoneRoot` helper (#4761) — validators and cross-session readers now route through it so a live worktree for a milestone is preferred over stale project-root state.
+- **gsd**: headless milestone validation now falls back to a sequential in-turn reviewer protocol when `GSD_HEADLESS=1`, `GSD_DISABLE_SUBAGENT_FANOUT=1`, or `GSD_VALIDATE_MILESTONE_REVIEW_MODE=sequential`.
 
 ### Fixed
 - **gsd**: milestone validation silently read stale project-root state when a live worktree held the real work (#4761). `handleValidateMilestone` now routes through `resolveCanonicalMilestoneRoot` so validation sees the canonical scope regardless of caller cwd.
 - **gsd**: bootstrap orphan audit no longer skips in-progress milestones (#4762). When `milestone/<MID>` has commits ahead of main and the DB still reads `in_progress` (auto-mode interrupted before completion), the audit now emits a warning with the commit count and worktree location so the user knows where to resume.
+- **headless**: `new-milestone` consumes structured `execution_complete` events again while retaining its longer idle budget, and timeout paths mark the command complete before stopping the RPC child to avoid false unexpected-exit diagnostics.
+- **pi-coding-agent**: direct full reads of `.gsd/runtime/*.ndjson` and `.gsd/runtime/*.jsonl` event logs are guarded in `read` and shell interception paths to prevent large runtime logs from flooding model context.
 
 ## [2.77.0] - 2026-04-21
 

@@ -390,6 +390,9 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     return { exitCode: result.exitCode, interrupted: false }
   }
 
+  const previousGsdHeadless = process.env.GSD_HEADLESS
+  process.env.GSD_HEADLESS = '1'
+
   // Resolve CLI path for the child process
   const cliPath = process.env.GSD_BIN_PATH || process.argv[1]
   if (!cliPath) {
@@ -980,6 +983,11 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   }
 
   // Cleanup
+  if (previousGsdHeadless === undefined) {
+    delete process.env.GSD_HEADLESS
+  } else {
+    process.env.GSD_HEADLESS = previousGsdHeadless
+  }
   if (timeoutTimer) clearTimeout(timeoutTimer)
   if (autoMaxDurationTimer) clearTimeout(autoMaxDurationTimer)
   if (idleTimer) clearTimeout(idleTimer)

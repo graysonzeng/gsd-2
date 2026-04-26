@@ -47,6 +47,11 @@ describe("checkBashInterception", () => {
 			assert.equal(r.block, true);
 			assert.equal(r.suggestedTool, "read");
 		});
+
+		it("does not treat compressed runtime log archives as direct event logs", () => {
+			const r = checkBashInterception("python3 -c \"open('.gsd/runtime/events.ndjson.gz').read()\"", ALL_TOOLS);
+			assert.equal(r.block, false);
+		});
 	});
 
 	describe("grep rule", () => {

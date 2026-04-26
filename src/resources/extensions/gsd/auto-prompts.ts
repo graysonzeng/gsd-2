@@ -2099,7 +2099,7 @@ Prompt: "Review milestone ${input.milestoneId} assessment evidence and acceptanc
   if (!input.useSubagents) {
     return `### Step 1 — Run Reviewers Sequentially
 
-Do not call the \`subagent\` tool in this environment. Run all three reviewer roles yourself in this same turn using the inlined context, preserving the Reviewer A, Reviewer B, and Reviewer C headings.
+Do not call the \`subagent\` tool in this environment. This is a compatibility fallback for headless/provider-constrained runs. Run all three reviewer roles yourself in this validation turn using the inlined context, preserving the Reviewer A, Reviewer B, and Reviewer C headings. Keep each reviewer output compact: cite evidence paths and concise findings, do not repeat large inlined excerpts.
 
 ${reviewerA}
 

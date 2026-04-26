@@ -41,3 +41,10 @@ test("headless.ts marks completion on auto max-duration timeout", () => {
     /Auto-mode exceeded max duration .*forcing exit\\n`\)\s*\n\s*timedOut = true\s*\n\s*completed = true/s,
   );
 });
+
+test("headless.ts marks both parent and RPC child as headless", () => {
+  const src = readFileSync(join(__dirname, "..", "headless.ts"), "utf-8");
+  assert.match(src, /process\.env\.GSD_HEADLESS\s*=\s*'1'/);
+  assert.match(src, /clientOptions\.env\s*=/);
+  assert.match(src, /GSD_HEADLESS:\s*'1'/);
+});
