@@ -177,6 +177,10 @@ import { initRegistry, convertDispatchRules } from "./rule-registry.js";
 import { emitJournalEvent as _emitJournalEvent, type JournalEntry } from "./journal.js";
 import { runPhaseDisciplineScoutFanOut } from "./phase-discipline/scout-fanout.js";
 import {
+  formatPhaseDisciplinePreflightFailure,
+  validatePhaseDisciplinePreflight,
+} from "./phase-discipline/preflight.js";
+import {
   type AutoDashboardData,
   updateProgressWidget as _updateProgressWidget,
   updateSliceProgressCache,
@@ -268,6 +272,23 @@ export type {
 // Tests in auto-session-encapsulation.test.ts enforce this invariant.
 // ─────────────────────────────────────────────────────────────────────────────
 const s = new AutoSession();
+
+async function ensurePhaseDisciplinePreflight(ctx: ExtensionContext, pi: ExtensionAPI, basePath: string): Promise<boolean> {
+  const preflight = validatePhaseDisciplinePreflight({
+    preferences: loadEffectiveGSDPreferences(basePath)?.preferences,
+    modelRegistry: ctx.modelRegistry,
+    sessionProvider: s.autoModeStartModel?.provider ?? ctx.model?.provider,
+  });
+  if (preflight.ok) {
+    for (const warning of preflight.warnings) {
+      ctx.ui.notify(`Phase-discipline preflight warning: ${warning.detail}`, "warning");
+    }
+    return true;
+  }
+  ctx.ui.notify(formatPhaseDisciplinePreflightFailure(preflight), "error");
+  await stopAuto(ctx, pi, "phase-discipline-preflight-failed");
+  return false;
+}
 
 /** Throttle STATE.md rebuilds — at most once per 30 seconds */
 const STATE_REBUILD_MIN_INTERVAL_MS = 30_000;
@@ -1683,6 +1704,11 @@ export async function startAuto(
       });
     }
     invalidateAllCaches();
+
+    if (!(await ensurePhaseDisciplinePreflight(ctx, pi, s.basePath))) {
+      cleanupAfterLoopExit(ctx);
+      return;
+    }
 
     if (s.pausedSessionFile) {
       const activityDir = join(gsdRoot(s.basePath), "activity");

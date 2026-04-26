@@ -96,6 +96,10 @@ import {
 } from "./preferences-models.js";
 import type { WorktreeResolver } from "./worktree-resolver.js";
 import { getSessionModelOverride } from "./session-model-override.js";
+import {
+  formatPhaseDisciplinePreflightFailure,
+  validatePhaseDisciplinePreflight,
+} from "./phase-discipline/preflight.js";
 
 export interface BootstrapDeps {
   shouldUseWorktreeIsolation: (basePath?: string) => boolean;
@@ -710,6 +714,22 @@ export async function bootstrapAutoSession(
       const { showSmartEntry } = await import("./guided-flow.js");
       await showSmartEntry(ctx, pi, base, { step: requestedStepMode });
       return releaseLockAndReturn();
+    }
+
+    {
+      const preferences = loadEffectiveGSDPreferences(base)?.preferences;
+      const preflight = validatePhaseDisciplinePreflight({
+        preferences,
+        modelRegistry: ctx.modelRegistry,
+        sessionProvider: startModelSnapshot?.provider ?? ctx.model?.provider,
+      });
+      if (!preflight.ok) {
+        ctx.ui.notify(formatPhaseDisciplinePreflightFailure(preflight), "error");
+        return releaseLockAndReturn();
+      }
+      for (const warning of preflight.warnings) {
+        ctx.ui.notify(`Phase-discipline preflight warning: ${warning.detail}`, "warning");
+      }
     }
 
     // Successfully resolved an active milestone — reset the re-entry guard
