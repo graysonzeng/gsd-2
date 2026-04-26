@@ -767,6 +767,7 @@ preset 默认 reviewer 是 `claude-code/claude-opus-4-6`，但 `claude-code` 这
 2. 可选：在 isolated repo 重 seed M001，或修改 M001-CONTEXT 让 validate-milestone verdict=pass；然后再跑一轮 full-loop，观察 verify-fuse / complete-milestone / findings-to-memories。
 3. 本轮已经从事实上证明 phase-discipline runtime 主干全部工作，**不需要**再改 runtime 主实现。
 
+<<<<<<< Updated upstream
 ---
 
 ## 10. M002 remediation slice 推进 & verify-fuse / complete-milestone 观察（2026-04-24 21:00–21:30 UTC+8）
@@ -1436,3 +1437,237 @@ Auto-mode stopped — All milestones complete.
 - **prompt + PTY cleanup 修复后，真实 auto-mode 已可完成 `M003` 并进入最终 `complete` 状态。**
 
 ---
+=======
+## 10. 2026-04-24 晚间补充：isolated `gpt-5.5` 尝试的真实结论
+
+### 10.1 本轮目标与本地准备
+
+用户要求在**不修改 `phase-discipline/*` runtime 主实现、且不把 secret 持久化落盘**的前提下，把 isolated repo 的主模型尝试切到 `openai/gpt-5.5`，若验证可用则继续 seeded-auto。
+
+已完成的本地准备：
+
+- 按 continue handoff §4 将 isolated repo `/Users/sheng/tencent/gsd-phase-discipline-auto-56G8jS` 的 `.gsd` 重建到稳定路径：
+  - `.gsd -> /Users/sheng/.cache/gsd-pd-stable/.gsd/projects/0dfdd86ee7af`
+- 重 seed `M002`：
+  - `M002-CONTEXT.md`
+  - `M002-ROADMAP.md`
+  - `slices/S01/S01-PLAN.md`
+- 修复 `M002-ROADMAP.md` 的 parser 兼容问题：补上 `## Slices`，否则 runtime 会报 “roadmap but no slices defined”
+- 在 isolated repo 的 `.gsd/PREFERENCES.md` 做最小覆写：
+  - `models.*` 全部改成 `provider: openai / model: gpt-5.5`
+  - 另外 shadow `phase-discipline-scout-fanout` pre-dispatch hook，使 `research-slice` scout 也走 `openai/gpt-5.5`
+
+### 10.2 provider 侧直连验证：`gpt-5.5` 在 zhumuai 上真实可用
+
+使用**会话内提供的 key**，仅在一次性命令进程中做验证；没有修改 `~/.gsd/agent/auth.json`，也没有把 key 写入仓库。
+
+直连结果：
+
+- `GET https://zhumuai.com/v1/models`（`Authorization: Bearer ...` + `User-Agent: curl/8.7.1`）返回列表中**包含 `gpt-5.5`**
+- `POST https://zhumuai.com/v1/chat/completions`，`model = gpt-5.5`，提示词 `Reply with exactly OK and nothing else.` 返回：
+
+```text
+OK
+```
+
+结论：
+
+- **provider / 额度 / UA 注入都没问题**
+- `gpt-5.5` 在 zhumuai 业务层面是真实可推理的
+
+### 10.3 仓库内真实 `headless auto` 结果：未进入 prompt send，直接被 model policy 拦下
+
+在与前述直连验证相同的隔离思路下（临时 `HOME` + 临时 `models.json` + 仅进程级 env key），执行：
+
+```bash
+node /Users/sheng/tencent/gsd-2/dist/loader.js \
+  headless --verbose --timeout 1800000 --max-restarts 0 auto
+```
+
+关键 stderr：
+
+```text
+[gsd] Auto-mode started. Will loop until milestone complete.
+[gsd] Pre-dispatch hook: phase-discipline-profile-dispatch
+[gsd] Iteration error: Model policy denied dispatch for plan-slice/M002/S01 before prompt send. Retrying.
+[gsd] Iteration error (attempt 2): Model policy denied dispatch for plan-slice/M002/S01 before prompt send. Invalidating caches and retrying.
+[gsd] Stuck on plan-slice M002/S01 ...
+[gsd] Auto-mode stopped: 3 consecutive iteration failures:
+  1. Model policy denied dispatch for plan-slice/M002/S01 before prompt send
+  2. Model policy denied dispatch for plan-slice/M002/S01 before prompt send
+  3. Model policy denied dispatch for plan-slice/M002/S01 before prompt send
+```
+
+运行后 `headless query` 与 `STATE.md` 都表明 runtime 仍停留在：
+
+- `Active Milestone = M002`
+- `Active Slice = S01`
+- `Phase = executing`
+- `Next Action = Execute T01: Append second validation note in slice S01.`
+
+也就是说：
+
+- **这次没有推进到 `verify-fuse` / `complete-milestone` / `findings-to-memories`**
+- **失败发生在 dispatch 前，而不是 provider 推理阶段**
+
+### 10.4 根因证据：不是 provider，也不是 phase-discipline runtime 主逻辑，而是本地 model inventory / policy 交集缺少 `gpt-5.5`
+
+代码级抛错位置：
+
+- `src/resources/extensions/gsd/auto-model-selection.ts`
+- 当 `uok.modelPolicy` 开启时，如果 `policyAllowedModelKeys` 存在，但 `modelsToTry` 里没有任何一个模型真正进入该允许集合，最终会抛：
+
+```text
+Model policy denied dispatch for <unitType>/<unitId> before prompt send
+```
+
+本次 audit 证据：
+
+- `.../audit/events.jsonl` 对 `turnId = plan-slice:M002/S01` 记录了**大量** `model-policy-allow`
+- 允许列表里能看到诸如：
+  - `openai/gpt-5.4`
+  - `openai/gpt-5.4-mini`
+  - `openai/gpt-5.3-chat-latest`
+  - 若干 `o*` OpenAI 模型
+  - 若干 `claude-code/*` 模型
+- 但对同一 audit 文件执行 `grep 'gpt-5.5'`，结果**为空**
+
+进一步的仓库侧证据：
+
+- 对工作区执行 `grep_search`，**没有任何 `gpt-5.5` 命中**
+- 同时 `gpt-5.4` 在 generated model lists / tests / preset 等位置有大量命中
+
+因此当前最准确的结论是：
+
+- **zhumuai 支持 `gpt-5.5`，这已经通过 provider 直连验证坐实**
+- **但当前 gsd 仓库的本地模型清单 / registry / availableModels 体系尚未认识 `gpt-5.5`**
+- 所以把 isolated runtime 显式 pin 到 `gpt-5.5` 后，dispatch 会在 prompt send 之前就被本地 model policy 拦下
+- 这**不是** `phase-discipline/*` runtime 主实现 bug，也**不是** zhumuai API 故障
+
+### 10.5 结论与下一步
+
+如果目标是“继续 phase-discipline seeded-auto 的 full-loop 验证”，那么本轮**不应**继续在 `gpt-5.5` 上盲重试；因为当前 blocker 已经不是外部 provider，而是本地 model inventory 不认识这个模型。
+
+下一步只有两条清晰路径：
+
+1. **继续以验证为主，不扩 scope**：把 isolated repo 的主模型覆写恢复到仓库已认识的 `openai/gpt-5.4`，然后继续跑 `M002` 的 full-loop，观察 `verify-fuse / complete-milestone / findings-to-memories`
+2. **改为做模型接入工作**：在仓库里把 `gpt-5.5` 补进本地 model inventory / generated model lists / registry，再重新 build 后复验
+
+在当前任务边界下，路径 1 更符合“继续 seeded-auto 真实验证、不改 runtime 主实现”的原始目标；路径 2 已经属于**新的模型接入/注册任务**。
+
+### 10.6 2026-04-24 晚间继续：按最小配置规避 Haiku 后的真实结果
+
+按上一节的路径 1 执行了两项最小配置，不改 runtime 主实现：
+
+1. isolated repo `.gsd/PREFERENCES.md` 从 `gpt-5.5` 恢复到仓库已认识的 `openai/gpt-5.4`
+2. 新增：
+   - `dynamic_routing.tier_models.light = openai/gpt-5.4-mini`
+   - 项目级 `runtime/blocked-models.json`，屏蔽 `anthropic/claude-3-5-haiku-20241022`
+
+#### 10.6.1 Haiku 已被真实规避
+
+新的 `headless auto` 运行中明确出现：
+
+```text
+[gsd] Skipping blocked model anthropic/claude-3-5-haiku-20241022 (provider rejected it for this account).
+```
+
+说明：
+
+- 项目级 blocklist 生效
+- 本轮已不再被 `claude-3-5-haiku-20241022` 的 `model_not_found` 卡住
+
+#### 10.6.2 full-loop 继续推进到 milestone validation
+
+这轮真实运行继续完成了：
+
+- `plan-slice M002/S01` 成功
+- `execute-task T01` 真实修改 `docs/notes.md`
+- task-level verification 在 agent 内先通过
+- `gsd_complete_task M002/S01/T01` 成功
+- `gsd_complete_slice M002/S01` 成功
+- milestone subagent 运行约 `97.4s`
+- `gsd_validate_milestone M002` 成功
+
+关键结果：
+
+```text
+Milestone M002 validation complete — verdict: needs-remediation.
+[gsd] Milestone M002 validation returned verdict=needs-remediation but no remediation slices were added. Pausing for human review.
+[gsd] Auto-mode paused (Escape).
+```
+
+#### 10.6.3 中途新观察：verification gate 有抖动，但未阻断最终推进
+
+在 `gsd_complete_task` 之后，外层 verification gate 一度报：
+
+```text
+Verification gate: FAILED
+```
+
+随后 auto-fix 尝试中出现过一次：
+
+```text
+edit docs/notes.md error
+```
+
+但第二次 edit + bash 验证成功，最终并**没有**阻断：
+
+- `Task T01 complete`
+- `Slice S01 complete`
+- 后续仍继续推进到 `validate-milestone`
+
+因此当前更准确的判断是：
+
+- 这是一次**可恢复的执行抖动/校验时序问题**
+- 不是本轮首个 blocker
+- 本轮首个决定性停点仍然是 milestone verdict=`needs-remediation`
+
+#### 10.6.4 最终状态证据
+
+运行后 `headless query`：
+
+- `phase = blocked`
+- `progress.slices.done = 1 / 1`
+- blocker：
+
+```text
+Milestone M002 validation verdict is needs-remediation but all slices are complete.
+Add remediation slices via gsd_reassess_roadmap or override the verdict manually.
+```
+
+`docs/notes.md` 当前内容已变为：
+
+```text
+# Notes
+
+Initial note for docs-only validation.
+
+Validation note recorded.
+
+Final validation note confirms the docs-only update is complete today.
+```
+
+最新 commit：
+
+```text
+2fe1152 chore: auto-commit after hook/phase-discipline-impl-plan-validator
+```
+
+且最近一个提交相对上一个提交的 diff 只显示：
+
+```text
+docs/notes.md
+```
+
+#### 10.6.5 本轮结论
+
+按最小配置规避 Haiku 后，真实结果表明：
+
+- **Haiku `model_not_found` 已不再是 blocker**
+- `M002` full-loop 已重新推进到 `validate-milestone`
+- 但 milestone validator 仍给出 `needs-remediation`
+- 因此 `verify-fuse / complete-milestone / findings-to-memories` 本轮依然**没有实际跑到**
+
+换句话说，当前阻塞已重新回到和之前一致的**业务/验收层**问题，而不是模型路由问题。
+>>>>>>> Stashed changes

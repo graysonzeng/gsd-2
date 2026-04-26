@@ -37,6 +37,22 @@ test("pickReviewerModel honors explicit reviewer override", () => {
   assert.equal(result.fallbackSelfReview, false);
 });
 
+test("pickReviewerModel explicit override honors injected provider readiness over env", () => {
+  assert.throws(
+    () => pickReviewerModel({
+      mainModel: "gpt-5.4",
+      mainProvider: "openai",
+      env: {
+        ANTHROPIC_API_KEY: "sk-test",
+        GSD_COMPOSED_LITE_REVIEWER_MODEL: "claude-opus-4-6",
+        GSD_COMPOSED_LITE_REVIEWER_PROVIDER: "anthropic",
+      },
+      isProviderReady: (provider) => provider !== "anthropic",
+    }),
+    ReviewerUnavailableError,
+  );
+});
+
 test("pickReviewerModel throws when no cross-provider reviewer is ready", () => {
   assert.throws(
     () => pickReviewerModel({

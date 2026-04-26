@@ -215,3 +215,147 @@ Acceptance (explicit for milestone validator):
 ## 11. 给下一会话 agent 的一句话总结
 
 **phase-discipline seeded-auto 的主干已经真实跑通到 `validate-milestone verdict=needs-remediation`，没有 runtime bug；本会话只负责修好 `.gsd` symlink 被清理的副作用、seed 一个 verdict 能直接 `pass` 的新 milestone、在隔离模板下跑完 `verify-fuse / complete-milestone / findings-to-memories`，然后把结果追加到 findings §10 与本文件 §12。不要改 runtime 主实现，不要落盘 secret。**
+
+## 12. 续接结果（2026-04-24 晚间，`gpt-5.5` 尝试）
+
+### 12.1 本轮完成了什么
+
+- 已按 §4 修复 isolated repo 的 `.gsd` symlink：
+  - `.gsd -> /Users/sheng/.cache/gsd-pd-stable/.gsd/projects/0dfdd86ee7af`
+- 已重 seed `M002`，包括：
+  - `M002-CONTEXT.md`
+  - `M002-ROADMAP.md`
+  - `slices/S01/S01-PLAN.md`
+- 已修复 `M002-ROADMAP.md` 的解析问题：补 `## Slices`
+- 已在 isolated repo 的 `.gsd/PREFERENCES.md` 临时覆写主模型到 `openai/gpt-5.5`
+- 已同时 shadow `phase-discipline-scout-fanout` hook，使首个 `research-slice` scout 也尝试走 `openai/gpt-5.5`
+
+### 12.2 已验证的事实
+
+- 直连 zhumuai provider：
+  - `/v1/models` 返回列表中包含 `gpt-5.5`
+  - `/v1/chat/completions` + `model=gpt-5.5` + `Reply with exactly OK...` 返回 `OK`
+- 因此 `gpt-5.5` 在 zhumuai **业务层面是可用的**
+
+### 12.3 新 blocker（与之前不同）
+
+真实 `headless auto` 没有进入 provider 推理阶段，而是在 dispatch `plan-slice/M002/S01` 前被本地 model policy 拦下：
+
+```text
+Model policy denied dispatch for plan-slice/M002/S01 before prompt send
+```
+
+代码来源：
+
+- `src/resources/extensions/gsd/auto-model-selection.ts`
+
+关键证据：
+
+- `audit/events.jsonl` 对 `plan-slice:M002/S01` 记录了大量 `model-policy-allow`
+- allow 列表里能看到很多 openai / claude-code 模型，包括 `gpt-5.4`
+- 但**没有任何 `gpt-5.5` 命中**
+- 工作区全文搜索也**没有任何 `gpt-5.5` 命中**，而 `gpt-5.4` 在 generated model lists / tests / preset 中大量存在
+
+因此本轮结论是：
+
+- **不是** zhumuai 不支持 `gpt-5.5`
+- **不是** phase-discipline runtime 主逻辑 bug
+- **而是**当前仓库本地 model inventory / registry 体系还不认识 `gpt-5.5`
+
+### 12.4 当前状态
+
+- `headless query` 仍显示：
+  - `Active Milestone = M002`
+  - `Active Slice = S01`
+  - `Phase = executing`
+  - `Next Action = Execute T01: Append second validation note in slice S01.`
+- 本轮**没有**推进到：
+  - `verify-fuse`
+  - `complete-milestone`
+  - `findings-to-memories`
+
+### 12.5 下一会话不要重试什么
+
+- **不要**在当前仓库状态下继续盲重试 `gpt-5.5` 的 `headless auto`
+- **不要**把本轮 blocker 误判成 zhumuai API 故障或 phase-discipline runtime bug
+- **不要**为了解这个 blocker 去改 `phase-discipline/*` runtime 主实现
+
+### 12.6 下一步建议
+
+如果原始目标仍是“继续 seeded-auto full-loop 验证”，最小继续动作应是：
+
+1. 把 isolated repo 的 `.gsd/PREFERENCES.md` 从 `gpt-5.5` 临时覆写恢复到仓库已认识的 `openai/gpt-5.4`
+2. 保留本轮稳定 `.gsd` symlink 与 `M002` seed
+3. 用同样的临时 `HOME` + 临时 `models.json` + 仅进程 env key 模板，继续跑 `headless auto`
+4. 观察是否终于推进到：
+   - `verify-fuse`
+   - `complete-milestone`
+   - `findings-to-memories`
+
+如果用户想继续坚持 `gpt-5.5`，那已经不再是“继续验证”问题，而是**新的模型接入/注册任务**。
+
+### 12.7 按建议配置后的真实结果
+
+在本轮继续里，已经按最小范围完成两项配置：
+
+1. 将 isolated repo `.gsd/PREFERENCES.md` 从 `gpt-5.5` 恢复到 `openai/gpt-5.4`
+2. 加入：
+   - `dynamic_routing.tier_models.light = openai/gpt-5.4-mini`
+   - 项目级 `runtime/blocked-models.json`，屏蔽 `anthropic/claude-3-5-haiku-20241022`
+
+结果：
+
+- 真实 `headless auto` 中明确出现：
+
+  ```text
+  Skipping blocked model anthropic/claude-3-5-haiku-20241022
+  ```
+
+- 说明 Haiku `model_not_found` 已被成功规避
+- 运行继续推进完成：
+  - `plan-slice M002/S01`
+  - `execute-task T01`
+  - `gsd_complete_task`
+  - `gsd_complete_slice`
+  - `gsd_validate_milestone M002`
+
+### 12.8 最终停点
+
+本轮最终并没有卡在模型路由，而是重新回到了 milestone 验收层：
+
+```text
+Milestone M002 validation complete — verdict: needs-remediation.
+Milestone M002 validation returned verdict=needs-remediation but no remediation slices were added.
+```
+
+最终 `headless query`：
+
+- `phase = blocked`
+- `slices.done = 1 / 1`
+- blocker =
+
+  ```text
+  Milestone M002 validation verdict is needs-remediation but all slices are complete.
+  Add remediation slices via gsd_reassess_roadmap or override the verdict manually.
+  ```
+
+### 12.9 本轮不要再误判的点
+
+- **不要**再把当前 blocker 归因到 `claude-3-5-haiku-20241022`
+- **不要**再把当前 blocker 归因到 `gpt-5.5` / model registry
+- **不要**据此改 `phase-discipline/*` runtime 主实现
+
+截至本轮，模型路由层面的结论已经足够：
+
+- `gpt-5.5` 不适合作为当前仓库验证主线（本地 registry 未接入）
+- Haiku 已可通过项目级最小配置规避
+- 剩余 blocker 已重新收敛为 `needs-remediation`
+
+### 12.10 下一步最小继续动作
+
+如果还要继续朝 `verify-fuse / complete-milestone / findings-to-memories` 推进，下一步不该再调模型，而应只做以下二选一：
+
+1. **继续 tighten M002 acceptance**，让 validator 直接给 `pass`
+2. **手工追加 remediation slice**，再 resume auto
+
+在当前证据下，第一优先级已经不再是 provider 或路由，而是**如何让 milestone validator 对 M002 给出 `pass`**。
