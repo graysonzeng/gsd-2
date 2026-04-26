@@ -59,6 +59,9 @@ export async function runUnit(
     hookState,
     hookConfig,
     currentModel: s.currentUnitModel,
+    // Forward the model registry so the reviewer's runtime readiness check
+    // matches the auto-start preflight contract (#preflight-runtime-alignment).
+    modelRegistry: (ctx as any).modelRegistry ?? null,
   });
   if (handledByBuiltinHook) {
     _clearCurrentResolve();

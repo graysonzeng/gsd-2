@@ -22,6 +22,12 @@ export interface RunPhaseDisciplineReviewerHookInput {
   basePath: string;
   hookConfig: PostUnitHookConfig;
   currentModel?: { id?: string; provider?: string } | null;
+  /**
+   * Optional readiness probe used by the reviewer fallback picker. When provided,
+   * it overrides the legacy env-only check in `pickReviewerModel` and aligns the
+   * runtime reviewer with what the auto-start preflight already validated.
+   */
+  isProviderReady?: (provider: string) => boolean;
   pickReviewers?: (input: {
     mainModel: string;
     mainProvider?: string;
@@ -30,11 +36,24 @@ export interface RunPhaseDisciplineReviewerHookInput {
   runReviewImpl?: typeof runReview;
 }
 
+/**
+ * `reviewer_unavailable` means the reviewer subsystem itself failed to produce
+ * a parseable verdict (provider down, network/timeout, target artifact missing,
+ * fallbacks exhausted). Re-running the trigger unit cannot fix it, so the auto
+ * loop must block until an operator intervenes or `max_cycles` is reached.
+ */
+export type PhaseDisciplineReviewerBlockReason = "reviewer_unavailable";
+
 export interface PhaseDisciplineReviewerHookResult {
   artifactPath: string;
+  /** True only when reviewers gave a parseable non-pass verdict and `retry_on` was written. */
   retryRequested: boolean;
   overallAssessment: "pass" | "issues" | "fail";
   reviewers: PhaseDisciplineReviewerSpec[];
+  /** Set when subsystem failure prevented producing a verdict; auto loop must block. */
+  blockedReason?: PhaseDisciplineReviewerBlockReason;
+  /** Path of the BLOCKED sentinel written when `blockedReason` is set. */
+  blockedArtifactPath?: string;
 }
 
 function normalizeModelArg(model: string, provider?: string): string {
@@ -176,21 +195,26 @@ function writeReviewerRawLog(input: {
   }
 }
 
-function defaultPickReviewers(input: {
-  mainModel: string;
-  mainProvider?: string;
-  count: number;
-}): PhaseDisciplineReviewerSpec[] {
-  const reviewers: PhaseDisciplineReviewerSpec[] = [];
-  for (let i = 0; i < input.count; i += 1) {
-    const picked = pickReviewerModel({
-      mainModel: input.mainModel,
-      mainProvider: input.mainProvider,
-      env: process.env,
-    });
-    reviewers.push({ model: picked.model, provider: picked.provider });
-  }
-  return reviewers;
+function makeDefaultPickReviewers(
+  isProviderReady?: (provider: string) => boolean,
+) {
+  return function defaultPickReviewers(input: {
+    mainModel: string;
+    mainProvider?: string;
+    count: number;
+  }): PhaseDisciplineReviewerSpec[] {
+    const reviewers: PhaseDisciplineReviewerSpec[] = [];
+    for (let i = 0; i < input.count; i += 1) {
+      const picked = pickReviewerModel({
+        mainModel: input.mainModel,
+        mainProvider: input.mainProvider,
+        env: process.env,
+        isProviderReady,
+      });
+      reviewers.push({ model: picked.model, provider: picked.provider });
+    }
+    return reviewers;
+  };
 }
 
 function mergeFindings(results: Awaited<ReturnType<typeof runReview>>[]): {
@@ -287,6 +311,63 @@ function clearRetryArtifact(retryPath: string | null): void {
   }
 }
 
+/**
+ * Sentinel filename used to signal subsystem failure of a reviewer hook.
+ * Derived deterministically from the hook's artifact (e.g. `CODE-REVIEW.md`
+ * → `CODE-REVIEW-BLOCKED.md`) so the rule registry can locate it without an
+ * extra config field. Returns null when the hook does not declare an artifact.
+ */
+export function reviewerBlockedArtifactName(artifact: string | undefined): string | null {
+  if (!artifact) return null;
+  const trimmed = artifact.trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  if (lower.endsWith(".md")) {
+    return `${trimmed.slice(0, -3)}-BLOCKED.md`;
+  }
+  return `${trimmed}-BLOCKED.md`;
+}
+
+function renderBlockedArtifact(input: {
+  hookName: string;
+  triggerUnitType: string;
+  triggerUnitId: string;
+  reviewers: PhaseDisciplineReviewerSpec[];
+  failed: Array<{ reviewer: string; error: string }>;
+  reason: "target_missing" | "reviewers_exhausted";
+  targetPath: string | null;
+}): string {
+  const lines: string[] = [
+    `# ${input.hookName} — BLOCKED`,
+    "",
+    `- Trigger: ${input.triggerUnitType} ${input.triggerUnitId}`,
+    `- Block Reason: reviewer_unavailable`,
+    `- Detail: ${input.reason === "target_missing"
+      ? "expected trigger artifact was not found for review"
+      : "all primary reviewers and configured fallbacks failed before producing a parseable result"}`,
+    `- Target Artifact: ${input.targetPath ?? "(missing)"}`,
+    "",
+    "## Reviewers",
+  ];
+  for (const reviewer of input.reviewers) {
+    lines.push(`- ${reviewer.provider}/${reviewer.model}`);
+  }
+  if (input.failed.length > 0) {
+    lines.push("", "## Reviewer Failures");
+    for (const failure of input.failed) {
+      lines.push(`- ${failure.reviewer}: ${failure.error}`);
+    }
+  }
+  lines.push(
+    "",
+    "## Operator Action",
+    "- Re-running the trigger unit will not fix this; verify provider credentials, network, base URLs, or model availability.",
+    "- Resume auto-mode after the underlying issue is fixed; auto will re-fire this hook.",
+    "- Repeated failures will eventually exhaust `max_cycles` and let auto continue with the recorded reviewer_unavailable verdict.",
+  );
+  return lines.join("\n");
+}
+
 export async function runPhaseDisciplineReviewerHook(
   input: RunPhaseDisciplineReviewerHookInput,
 ): Promise<PhaseDisciplineReviewerHookResult> {
@@ -306,7 +387,7 @@ export async function runPhaseDisciplineReviewerHook(
           .map((model) => resolveReviewerSpec(model, input.hookConfig.provider?.trim())),
       );
     } else {
-      const picker = input.pickReviewers ?? defaultPickReviewers;
+      const picker = input.pickReviewers ?? makeDefaultPickReviewers(input.isProviderReady);
       reviewers.push(
         ...picker({
           mainModel: primary.model,
@@ -343,12 +424,17 @@ export async function runPhaseDisciplineReviewerHook(
     "Each finding item must include id, target, rationale.",
   ].join("\n");
 
+  const blockedArtifactName = reviewerBlockedArtifactName(input.hookConfig.artifact);
+  const blockedPath = blockedArtifactName
+    ? resolveHookArtifactPath(input.basePath, input.triggerUnitId, blockedArtifactName)
+    : null;
+
   if (!targetContent) {
     const fallbackArtifact = [
       `# ${input.hookName}`,
       "",
       `- Trigger: ${input.triggerUnitType} ${input.triggerUnitId}`,
-      `- Overall Assessment: fail`,
+      `- Overall Assessment: reviewer_unavailable`,
       `- Target Artifact: ${(targetPath ?? "(missing)")}`,
       "",
       "## Critical",
@@ -356,9 +442,21 @@ export async function runPhaseDisciplineReviewerHook(
     ].join("\n");
     ensureParentDir(artifactPath);
     writeFileSync(artifactPath, fallbackArtifact, "utf8");
-    if (retryPath) {
-      ensureParentDir(retryPath);
-      writeFileSync(retryPath, `retry requested by ${input.hookName}\n`, "utf8");
+    // Subsystem failure: do NOT write retry_on (re-running trigger cannot fix
+    // a missing-artifact crash). Write BLOCKED sentinel instead so the rule
+    // registry pauses auto until an operator intervenes.
+    clearRetryArtifact(retryPath);
+    if (blockedPath) {
+      ensureParentDir(blockedPath);
+      writeFileSync(blockedPath, renderBlockedArtifact({
+        hookName: input.hookName,
+        triggerUnitType: input.triggerUnitType,
+        triggerUnitId: input.triggerUnitId,
+        reviewers,
+        failed,
+        reason: "target_missing",
+        targetPath,
+      }), "utf8");
     }
     writeObservabilityLog({
       basePath: input.basePath,
@@ -375,9 +473,11 @@ export async function runPhaseDisciplineReviewerHook(
     });
     return {
       artifactPath,
-      retryRequested: Boolean(retryPath),
+      retryRequested: false,
       overallAssessment: "fail",
       reviewers,
+      blockedReason: "reviewer_unavailable",
+      blockedArtifactPath: blockedPath ?? undefined,
     };
   }
 
@@ -515,9 +615,21 @@ export async function runPhaseDisciplineReviewerHook(
     ].join("\n");
     ensureParentDir(artifactPath);
     writeFileSync(artifactPath, fallbackArtifact, "utf8");
-    if (retryPath) {
-      ensureParentDir(retryPath);
-      writeFileSync(retryPath, `retry requested by ${input.hookName}\n`, "utf8");
+    // Subsystem failure: do NOT write retry_on. Re-running the trigger unit
+    // cannot fix provider/network/credentials issues, so signal blocked via
+    // a dedicated BLOCKED sentinel that the rule registry will detect.
+    clearRetryArtifact(retryPath);
+    if (blockedPath) {
+      ensureParentDir(blockedPath);
+      writeFileSync(blockedPath, renderBlockedArtifact({
+        hookName: input.hookName,
+        triggerUnitType: input.triggerUnitType,
+        triggerUnitId: input.triggerUnitId,
+        reviewers,
+        failed,
+        reason: "reviewers_exhausted",
+        targetPath,
+      }), "utf8");
     }
     writeObservabilityLog({
       basePath: input.basePath,
@@ -535,9 +647,11 @@ export async function runPhaseDisciplineReviewerHook(
     });
     return {
       artifactPath,
-      retryRequested: Boolean(retryPath),
+      retryRequested: false,
       overallAssessment: "fail",
       reviewers,
+      blockedReason: "reviewer_unavailable",
+      blockedArtifactPath: blockedPath ?? undefined,
     };
   }
 
@@ -559,6 +673,11 @@ export async function runPhaseDisciplineReviewerHook(
     writeFileSync(retryPath, `retry requested by ${input.hookName}\n`, "utf8");
   } else {
     clearRetryArtifact(retryPath);
+  }
+  // Reviewers produced a parseable verdict — clear any stale BLOCKED sentinel
+  // from a previous unavailable run so the registry does not falsely re-block.
+  if (blockedPath && existsSync(blockedPath)) {
+    try { unlinkSync(blockedPath); } catch { /* best-effort cleanup */ }
   }
 
   writeObservabilityLog({
@@ -584,12 +703,17 @@ export async function runPhaseDisciplineReviewerHook(
   };
 }
 
+export interface PhaseDisciplineHookProviderRegistry {
+  isProviderRequestReady?: (provider: string) => boolean;
+}
+
 export async function maybeRunPhaseDisciplineBuiltInHook(input: {
   unitType: string;
   basePath: string;
   hookState: HookExecutionState | null;
   hookConfig: PostUnitHookConfig | undefined;
   currentModel?: { id?: string; provider?: string } | null;
+  modelRegistry?: PhaseDisciplineHookProviderRegistry | null;
 }): Promise<boolean> {
   if (!input.hookState || !input.hookConfig) {
     return false;
@@ -620,6 +744,16 @@ export async function maybeRunPhaseDisciplineBuiltInHook(input: {
   ) {
     return false;
   }
+  // Align runtime reviewer readiness with what the auto-start preflight
+  // already validated against the same registry. Without this, the legacy
+  // env-only `defaultEnvReady` returns false negatives for providers whose
+  // credentials live in `auth.json` rather than `process.env`.
+  const readyProbe = input.modelRegistry && typeof input.modelRegistry.isProviderRequestReady === "function"
+    ? (provider: string) => {
+        try { return input.modelRegistry!.isProviderRequestReady!(provider); } catch { return false; }
+      }
+    : undefined;
+
   await runPhaseDisciplineReviewerHook({
     hookName: input.hookState.hookName,
     triggerUnitType: input.hookState.triggerUnitType,
@@ -627,6 +761,7 @@ export async function maybeRunPhaseDisciplineBuiltInHook(input: {
     basePath: input.basePath,
     hookConfig: input.hookConfig,
     currentModel: input.currentModel,
+    isProviderReady: readyProbe,
   });
   return true;
 }
