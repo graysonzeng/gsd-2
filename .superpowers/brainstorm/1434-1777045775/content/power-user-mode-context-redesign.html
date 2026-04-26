@@ -1,0 +1,129 @@
+<h2>Power User Mode 可视化修复提案</h2>
+<p class="subtitle">方案 C：顶部全局摘要 + 每栏轻量头部。重点不是重做终端，而是让你一眼看懂“当前是谁、在跑什么、卡在哪、哪边是活的”。</p>
+
+<div class="section">
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">现状：语义过少，终端内容承担了太多解释责任</div>
+      <div class="mockup-body">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid #2a2a2a;font-size:13px;color:#c9c9c9;">
+          <strong>Power User Mode</strong>
+          <span>Left: Main Session TUI | Right: Interactive GSD</span>
+        </div>
+        <div style="display:flex;height:360px;">
+          <div style="flex:1;border-right:1px solid #2a2a2a;background:#141419;position:relative;">
+            <div style="position:absolute;left:18px;right:18px;bottom:50px;color:#ff5c7a;font-family:monospace;font-size:12px;line-height:1.5;">
+              Error: api_error: Service temporarily unavailable.
+            </div>
+          </div>
+          <div style="width:6px;background:#2a2a2a"></div>
+          <div style="flex:1;background:#141419;position:relative;">
+            <div style="position:absolute;left:18px;right:18px;bottom:50px;color:#e7c75f;font-family:monospace;font-size:12px;line-height:1.5;">
+              Warning: CONTEXT7_API_KEY not set...<br/>
+              Warning: google_search is being extracted...
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:10px;color:#9b9b9b;font-size:12px;">问题：看不出全局状态；看不出左右栏身份；空白像坏了；错误和警告都掉在终端正文里。</div>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-header">提案：上下文先行，终端只负责终端内容</div>
+      <div class="mockup-body">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid #2a2a2a;font-size:13px;color:#e7e7e7;">
+          <strong>Power User Mode</strong>
+          <span style="color:#8f8f8f">Resizable split workspace</span>
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid #2a2a2a;background:#17171d;">
+          <span style="padding:4px 8px;border-radius:999px;background:#1d2430;color:#b9d4ff;font-size:12px;">Project: gsd-phase-discipline-auto-56G8jS</span>
+          <span style="padding:4px 8px;border-radius:999px;background:#1d2a22;color:#8ee6b0;font-size:12px;">Auto: Active</span>
+          <span style="padding:4px 8px;border-radius:999px;background:#2a2417;color:#f6d37d;font-size:12px;">Phase: planning</span>
+          <span style="padding:4px 8px;border-radius:999px;background:#241d30;color:#d7b6ff;font-size:12px;">Unit: M003/S01/T02</span>
+          <span style="padding:4px 8px;border-radius:999px;background:#1f2028;color:#d0d0d0;font-size:12px;">Command: /gsd auto</span>
+          <span style="padding:4px 8px;border-radius:999px;background:#2d171d;color:#ff9ab0;font-size:12px;">Last error: provider temporary unavailable</span>
+        </div>
+
+        <div style="display:flex;height:302px;">
+          <div style="flex:1;border-right:1px solid #2a2a2a;background:#141419;display:flex;flex-direction:column;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #23232b;background:#181820;">
+              <div>
+                <div style="font-size:12px;color:#f1f1f1;font-weight:600;">Main Session TUI</div>
+                <div style="font-size:11px;color:#8f8f8f;">Primary auto session output</div>
+              </div>
+              <span style="padding:3px 7px;border-radius:999px;background:#1d2a22;color:#8ee6b0;font-size:11px;">Connected</span>
+            </div>
+            <div style="flex:1;position:relative;">
+              <div style="position:absolute;top:14px;left:14px;padding:6px 8px;border:1px solid #3a2330;border-radius:8px;background:#24141a;color:#ff9ab0;font-size:11px;">Recent error: provider temporarily unavailable</div>
+              <div style="position:absolute;left:18px;right:18px;bottom:18px;color:#7bdff6;font-family:monospace;font-size:12px;">...live terminal output continues here...</div>
+            </div>
+          </div>
+          <div style="width:6px;background:#2a2a2a"></div>
+          <div style="flex:1;background:#141419;display:flex;flex-direction:column;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #23232b;background:#181820;">
+              <div>
+                <div style="font-size:12px;color:#f1f1f1;font-weight:600;">Interactive GSD</div>
+                <div style="font-size:11px;color:#8f8f8f;">Manual recovery and command input</div>
+              </div>
+              <span style="padding:3px 7px;border-radius:999px;background:#2a2417;color:#f6d37d;font-size:11px;">Ready</span>
+            </div>
+            <div style="flex:1;position:relative;">
+              <div style="position:absolute;top:14px;left:14px;padding:6px 8px;border:1px solid #3b3620;border-radius:8px;background:#231f14;color:#f6d37d;font-size:11px;">Environment warning: optional search integration unavailable</div>
+              <div style="position:absolute;left:18px;right:18px;bottom:18px;color:#cbb4ff;font-family:monospace;font-size:12px;">...interactive terminal output continues here...</div>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:10px;color:#9b9b9b;font-size:12px;">结果：先看上下文，再看终端；错误摘要和 pane 身份上浮；空白区域也有语义。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>这次实现会刻意保持小范围</h3>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>会做</h4>
+      <ul>
+        <li>Power User Mode 顶部 Context Strip</li>
+        <li>左右 pane header 与连接状态 badge</li>
+        <li>最近错误 / 运行摘要上浮，不再全靠终端正文解释</li>
+        <li>无输出时的语义化 empty / connecting 状态</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>这轮先不做</h4>
+      <ul>
+        <li>彻底重做双终端布局</li>
+        <li>更换 Power User Mode 的核心交互模型</li>
+        <li>改动 phase-discipline runtime 逻辑</li>
+        <li>重做 Milestones 侧栏</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="approve" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>按这个方向实现</h3>
+      <p>继续进入实现，做小范围但完整的可读性修复。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="denser" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>要更强的信息密度</h3>
+      <p>希望顶部再多放一点 run/session/branch/elapsed 等信息。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="lighter" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>要更克制</h3>
+      <p>只保留顶部全局摘要，不给 pane 增加太多头部信息。</p>
+    </div>
+  </div>
+</div>

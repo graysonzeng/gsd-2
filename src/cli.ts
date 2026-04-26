@@ -36,6 +36,8 @@ import { getProjectSessionsDir } from './project-sessions.js'
 import { markStartup, printStartupTimings } from './startup-timings.js'
 import { bootstrapRtk, GSD_RTK_DISABLED_ENV } from './rtk.js'
 import { loadEffectiveGSDPreferences } from './resources/extensions/gsd/preferences.js'
+import { inspectPreferenceHealth } from './resources/extensions/gsd/doctor-preferences.js'
+import { formatPreferenceDoctorReport } from './resources/extensions/gsd/doctor-preferences-format.js'
 
 // ---------------------------------------------------------------------------
 // V8 compile cache — Node 22+ can cache compiled bytecode across runs,
@@ -285,6 +287,14 @@ const packageCommand = await runPackageCommand({
 })
 if (packageCommand.handled) {
   process.exit(packageCommand.exitCode)
+}
+
+// `gsd doctor` — top-level environment diagnostics for preferences before interactive startup
+if (cliFlags.messages[0] === 'doctor') {
+  const findings = inspectPreferenceHealth(process.cwd())
+  process.stdout.write(`${formatPreferenceDoctorReport(findings)}\n`)
+  const hasErrors = findings.some((finding) => finding.severity === 'error')
+  process.exit(hasErrors ? 1 : 0)
 }
 
 // `gsd config` — replay the setup wizard and exit

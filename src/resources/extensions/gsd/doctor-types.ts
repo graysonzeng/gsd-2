@@ -1,6 +1,10 @@
 export type DoctorSeverity = "info" | "warning" | "error";
 export type DoctorIssueCode =
   | "invalid_preferences"
+  | "preferences_missing"
+  | "preferences_legacy_fallback"
+  | "preferences_unrecognized_format"
+  | "preferences_ok"
   | "missing_tasks_dir"
   | "missing_slice_plan"
   | "all_slices_done_missing_milestone_validation"
