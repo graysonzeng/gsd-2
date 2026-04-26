@@ -448,6 +448,21 @@ export interface PreDispatchHookConfig {
   builtin?: string;
 }
 
+export type PhaseDisciplineCheckLevel = "fatal" | "warning" | "advisory";
+
+export type PhaseDisciplineCheckStage = "bootstrap" | "phase-guard";
+
+export interface PhaseDisciplineCheckIssue {
+  code: string;
+  level: PhaseDisciplineCheckLevel;
+  stage: PhaseDisciplineCheckStage;
+  source: string;
+  detail: string;
+  remedy?: string;
+  unitType?: string;
+  unitId?: string;
+}
+
 export type PreDispatchFanOutScoutFocus =
   | "codebase_scan"
   | "constraints_risks"
@@ -470,7 +485,7 @@ export interface PreDispatchFanOutSpec {
 
 export interface PreDispatchResult {
   /** What happened: the unit proceeds with modifications, was skipped, was replaced, or advised a different runnable target. */
-  action: "proceed" | "skip" | "replace" | "advise";
+  action: "proceed" | "skip" | "replace" | "advise" | "block";
   /** Modified/replacement prompt (for "proceed" and "replace"). */
   prompt?: string;
   /** Override unit type (for "replace"). */
@@ -485,14 +500,14 @@ export interface PreDispatchResult {
   model?: string;
   /** Only valid when action === "proceed". Non-proceed actions must not carry fanOutSpec. */
   fanOutSpec?: PreDispatchFanOutSpec;
+  reason?: string;
+  level?: "warning" | "error";
+  issues?: PhaseDisciplineCheckIssue[];
   /** Names of hooks that fired, for logging. */
   firedHooks: string[];
 }
 
-// ─── Hook State Persistence Types ─────────────────────────────────────────
-
 export interface PersistedHookState {
-  /** Cycle counts keyed as "hookName/triggerUnitType/triggerUnitId". */
   cycleCounts: Record<string, number>;
   /** Timestamp of last state save. */
   savedAt: string;

@@ -8,7 +8,7 @@ import type { ExtensionAPI, ExtensionContext } from "@gsd/pi-coding-agent";
 
 import type { AutoSession } from "./session.js";
 import type { GSDPreferences } from "../preferences.js";
-import type { GSDState, PreDispatchFanOutSpec } from "../types.js";
+import type { GSDState, PreDispatchResult, PreDispatchFanOutSpec } from "../types.js";
 import type { SessionLockStatus } from "../session-lock.js";
 import type { CloseoutOptions } from "../auto-unit-closeout.js";
 import type { PostUnitContext, PreVerificationOpts } from "../auto-post-unit.js";
@@ -164,17 +164,7 @@ export interface LoopDeps {
     unitId: string,
     prompt: string,
     basePath: string,
-  ) => {
-    firedHooks: string[];
-    action: string;
-    prompt?: string;
-    unitType?: string;
-    unitId?: string;
-    advisedUnitType?: string;
-    advisedUnitId?: string;
-    model?: string;
-    fanOutSpec?: PreDispatchFanOutSpec;
-  };
+  ) => PreDispatchResult;
   runPhaseDisciplineScoutFanOut?: (input: {
     basePath: string;
     unitType: string;

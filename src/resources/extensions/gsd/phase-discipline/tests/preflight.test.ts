@@ -34,6 +34,7 @@ test("phase-discipline preflight is a no-op when profile is not enabled", () => 
 
   assert.equal(result.ok, true);
   assert.equal(result.checked.length, 0);
+  assert.equal(result.issues.length, 0);
 });
 
 test("phase-discipline preflight fails before auto when a required preset provider is not ready", () => {
@@ -48,6 +49,7 @@ test("phase-discipline preflight fails before auto when a required preset provid
   assert.equal(result.ok, false);
   assert.ok(result.failures.some((failure) => failure.role === "reviewer:code-review"));
   assert.ok(result.failures.some((failure) => failure.role === "reviewer:design-review"));
+  assert.ok(result.issues.some((issue) => issue.stage === "bootstrap" && issue.level === "fatal" && issue.code === "provider_not_ready"));
   assert.match(formatPhaseDisciplinePreflightFailure(result), /anthropic\/claude-opus-4-6/);
 });
 
@@ -62,6 +64,7 @@ test("phase-discipline preflight validates reviewer and scout providers without 
 
   assert.equal(result.ok, true);
   assert.equal(result.failures.length, 0);
+  assert.equal(result.issues.length, 0);
   assert.ok(result.checked.some((entry) => entry.role === "pre-dispatch:scout-fanout"));
   assert.ok(result.checked.some((entry) => entry.role === "reviewer:code-review"));
   assert.ok(result.checked.some((entry) => entry.role === "reviewer:design-review"));
@@ -100,6 +103,7 @@ test("phase-discipline preflight skips disabled hooks", () => {
   assert.equal(result.ok, true);
   assert.equal(result.failures.length, 0);
   assert.equal(result.checked.some((entry) => entry.provider === "anthropic"), false);
+  assert.equal(result.issues.length, 0);
 });
 
 test("phase-discipline preflight allows a main model phase when an available fallback can run", () => {
@@ -121,6 +125,7 @@ test("phase-discipline preflight allows a main model phase when an available fal
 
   assert.equal(result.ok, true);
   assert.ok(result.warnings.some((warning) => warning.role === "main:execution"));
+  assert.ok(result.issues.some((issue) => issue.level === "warning" && issue.code === "fallback_used"));
 });
 
 test("phase-discipline preflight treats unavailable fallback-only models as warnings when primary can run", () => {
@@ -143,6 +148,7 @@ test("phase-discipline preflight treats unavailable fallback-only models as warn
   assert.equal(result.ok, true);
   assert.equal(result.failures.length, 0);
   assert.ok(result.warnings.some((warning) => warning.role === "main:execution:fallback"));
+  assert.ok(result.issues.some((issue) => issue.level === "warning" && issue.code === "model_not_available"));
 });
 
 test("phase-discipline preflight lets unqualified main-model fallbacks inherit the configured provider", () => {
@@ -168,4 +174,5 @@ test("phase-discipline preflight lets unqualified main-model fallbacks inherit t
   assert.equal(result.ok, true);
   assert.equal(result.failures.length, 0);
   assert.ok(result.warnings.some((warning) => warning.role === "main:execution" && warning.reason === "fallback_used"));
+  assert.ok(result.issues.some((issue) => issue.level === "warning" && issue.code === "fallback_used"));
 });

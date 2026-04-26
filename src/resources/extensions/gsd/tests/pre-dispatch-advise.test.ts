@@ -393,3 +393,39 @@ test("advise re-dispatch does not re-run pre-dispatch hooks", async () => {
   assert.equal(deps.runPreDispatchHookCalls.length, 1);
   assert.equal(deps.resolveDispatchCalls.length, 2);
 });
+
+test("warning-level pre-dispatch block pauses auto", async () => {
+  const deps = makeMockDeps({
+    runPreDispatchHooks: () => ({
+      firedHooks: ["phase-discipline-phase-guard"],
+      action: "block",
+      level: "warning",
+      reason: "guard blocked",
+      issues: [{
+        code: "verify_fuse_blocked",
+        level: "warning",
+        stage: "phase-guard",
+        source: "phase-discipline.phase-guard",
+        detail: "guard blocked",
+        unitType: "complete-milestone",
+        unitId: "M001",
+      }],
+    } as any),
+  });
+  const ic = makeIterationContext({ deps });
+  const result = await runDispatch(ic, makePreDispatchData(), makeLoopState());
+
+  assert.equal(result.action, "break");
+  if (result.action === "break") {
+    assert.equal(result.reason, "pre-dispatch-block");
+  }
+  assert.equal(deps.pauseAutoCalls.length, 1);
+  assert.equal(deps.stopAutoCalls.length, 0);
+  const hookEvent = deps.journalEvents.find((entry) => entry.eventType === "pre-dispatch-hook");
+  assert.deepEqual(hookEvent?.data, {
+    firedHooks: ["phase-discipline-phase-guard"],
+    action: "block",
+    level: "warning",
+    reason: "guard blocked",
+  });
+});

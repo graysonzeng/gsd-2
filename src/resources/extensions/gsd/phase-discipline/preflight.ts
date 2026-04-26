@@ -1,5 +1,5 @@
 import type { GSDModelConfigV2, GSDPhaseModelConfig, GSDPreferences } from "../preferences-types.js";
-import type { PostUnitHookConfig, PreDispatchHookConfig } from "../types.js";
+import type { PhaseDisciplineCheckIssue, PostUnitHookConfig, PreDispatchHookConfig } from "../types.js";
 import { resolveModelId } from "../auto-model-selection.js";
 import { PHASE_DISCIPLINE_PRESET_HOOK_NAMES } from "./preset.js";
 import { inferProvider } from "../shared-harness/index.js";
@@ -26,7 +26,7 @@ export interface PhaseDisciplinePreflightRequirement {
   optional?: boolean;
 }
 
-export interface PhaseDisciplinePreflightIssue {
+export interface PhaseDisciplinePreflightIssue extends PhaseDisciplineCheckIssue {
   role: string;
   source: string;
   provider: string;
@@ -39,6 +39,7 @@ export interface PhaseDisciplinePreflightIssue {
 export interface PhaseDisciplinePreflightResult {
   ok: boolean;
   checked: PhaseDisciplinePreflightRequirement[];
+  issues: PhaseDisciplinePreflightIssue[];
   failures: PhaseDisciplinePreflightIssue[];
   warnings: PhaseDisciplinePreflightIssue[];
 }
@@ -289,10 +290,14 @@ function authMode(registry: PhaseDisciplinePreflightModelRegistry, provider: str
 function issueForRequirement(
   requirement: PhaseDisciplinePreflightRequirement,
   reason: PhaseDisciplinePreflightIssue["reason"],
+  level: PhaseDisciplinePreflightIssue["level"],
   detail: string,
   registry: PhaseDisciplinePreflightModelRegistry,
 ): PhaseDisciplinePreflightIssue {
   return {
+    code: reason,
+    level,
+    stage: "bootstrap",
     role: requirement.role,
     source: requirement.source,
     provider: requirement.provider,
@@ -315,6 +320,7 @@ export function validatePhaseDisciplinePreflight(input: PhaseDisciplinePreflight
       target.push(issueForRequirement(
         requirement,
         "provider_resolution_failed",
+        requirement.optional ? "warning" : "fatal",
         `Could not resolve provider for ${requirement.model}. Use provider/model or set provider explicitly.`,
         input.modelRegistry,
       ));
@@ -326,6 +332,7 @@ export function validatePhaseDisciplinePreflight(input: PhaseDisciplinePreflight
       target.push(issueForRequirement(
         requirement,
         "provider_not_ready",
+        requirement.optional ? "warning" : "fatal",
         `Provider ${requirement.provider} is not request-ready.`,
         input.modelRegistry,
       ));
@@ -349,6 +356,7 @@ export function validatePhaseDisciplinePreflight(input: PhaseDisciplinePreflight
         warnings.push(issueForRequirement(
           requirement,
           "fallback_used",
+          "warning",
           `Primary model ${modelRefString(requirement.provider, requirement.model)} is not available; fallback ${modelRefString(fallback.provider, fallback.model)} is available.`,
           input.modelRegistry,
         ));
@@ -360,14 +368,17 @@ export function validatePhaseDisciplinePreflight(input: PhaseDisciplinePreflight
     target.push(issueForRequirement(
       requirement,
       "model_not_available",
+      requirement.optional ? "warning" : "fatal",
       `Model ${modelRefString(requirement.provider, requirement.model)} is not in available models.`,
       input.modelRegistry,
     ));
   }
 
+  const issues = [...failures, ...warnings];
   return {
     ok: failures.length === 0,
     checked,
+    issues,
     failures,
     warnings,
   };

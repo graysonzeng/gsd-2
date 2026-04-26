@@ -23,6 +23,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node
 import { join } from "node:path";
 import { parseUnitId } from "./unit-id.js";
 import { PHASE_DISCIPLINE_PRESET_HOOK_NAMES } from "./phase-discipline/preset.js";
+import { evaluatePhaseDisciplinePhaseGuard } from "./phase-discipline/phase-guard.js";
 import { evaluatePhaseDisciplineProfileDispatch } from "./phase-discipline/profile-dispatch.js";
 import { evaluatePhaseDisciplineScoutFanOut } from "./phase-discipline/scout-fanout.js";
 import { reviewerBlockedArtifactName } from "./phase-discipline/reviewer-hook.js";
@@ -391,6 +392,25 @@ export class RuleRegistry {
           model: hook.model,
           firedHooks,
         };
+      }
+
+      if (hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.phaseGuard) {
+        firedHooks.push(hook.name);
+        const result = evaluatePhaseDisciplinePhaseGuard({
+          unitType,
+          unitId,
+          prompt: currentPrompt,
+          basePath,
+        });
+        if (result.action !== "proceed") {
+          return {
+            ...result,
+            firedHooks,
+          };
+        }
+        currentPrompt = result.prompt ?? currentPrompt;
+        currentModel = result.model ?? currentModel;
+        continue;
       }
 
       if (hook.builtin === PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch) {

@@ -15,6 +15,7 @@ function buildPhaseDisciplineAdmissionPrompt(): string {
 
 export const PHASE_DISCIPLINE_PRESET_HOOK_NAMES = {
   admission: "phase-discipline-admission",
+  phaseGuard: "phase-discipline-phase-guard",
   profileDispatch: "phase-discipline-profile-dispatch",
   scoutFanOut: "phase-discipline-scout-fanout",
   implPlanValidator: "phase-discipline-impl-plan-validator",
@@ -93,6 +94,15 @@ export const phaseDiscipline8StepPostUnitHooks: PostUnitHookConfig[] = [
 ];
 
 export const phaseDiscipline8StepPreDispatchHooks: PreDispatchHookConfig[] = [
+  {
+    name: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.phaseGuard,
+    builtin: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.phaseGuard,
+    before: [
+      "validate-milestone",
+      "complete-milestone",
+    ],
+    action: "modify",
+  },
   {
     name: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch,
     builtin: PHASE_DISCIPLINE_PRESET_HOOK_NAMES.profileDispatch,

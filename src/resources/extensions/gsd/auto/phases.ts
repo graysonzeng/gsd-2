@@ -983,6 +983,11 @@ export async function runDispatch(
               advisedUnitType: preDispatchResult.advisedUnitType,
               advisedUnitId: preDispatchResult.advisedUnitId,
             }
+          : preDispatchResult.action === "block"
+            ? {
+                level: preDispatchResult.level,
+                reason: preDispatchResult.reason,
+              }
           : {}),
       },
     });
@@ -994,6 +999,19 @@ export async function runDispatch(
     );
     await new Promise((r) => setImmediate(r));
     return { action: "continue" };
+  }
+
+  if (preDispatchResult.action === "block") {
+    const reason = preDispatchResult.reason ?? `Pre-dispatch hook blocked ${unitType} ${unitId}.`;
+    if (preDispatchResult.level === "warning") {
+      ctx.ui.notify(reason, "warning");
+      await deps.pauseAuto(ctx, pi);
+    } else {
+      ctx.ui.notify(reason, "error");
+      await closeoutAndStop(ctx, pi, s, deps, reason);
+    }
+    debugLog("autoLoop", { phase: "exit", reason: "pre-dispatch-block" });
+    return { action: "break", reason: "pre-dispatch-block" };
   }
 
   if (preDispatchResult.action === "advise" && preDispatchResult.advisedUnitType) {
