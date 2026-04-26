@@ -25,6 +25,7 @@ import { parseUnitId } from "./unit-id.js";
 import { PHASE_DISCIPLINE_PRESET_HOOK_NAMES } from "./phase-discipline/preset.js";
 import { evaluatePhaseDisciplineProfileDispatch } from "./phase-discipline/profile-dispatch.js";
 import { evaluatePhaseDisciplineScoutFanOut } from "./phase-discipline/scout-fanout.js";
+import { reviewerBlockedArtifactName } from "./phase-discipline/reviewer-hook.js";
 
 // ─── Artifact Path Resolution ──────────────────────────────────────────────
 
@@ -75,6 +76,21 @@ export class RuleRegistry {
   cycleCounts: Map<string, number> = new Map();
   retryPending: boolean = false;
   retryTrigger: { unitType: string; unitId: string; retryArtifact: string } | null = null;
+  /**
+   * Set when a post-unit hook completion produces a state the auto loop must
+   * not silently pass through: a reviewer subsystem failure (`reviewer_unavailable`)
+   * or a retry budget that has been exhausted without resolving the trigger.
+   * Auto loop drains this via {@link consumeBlockedHook} and pauses.
+   */
+  blockedHook: {
+    hookName: string;
+    triggerUnitType: string;
+    triggerUnitId: string;
+    reason: "reviewer_unavailable" | "max_cycles_reached";
+    artifactPath?: string;
+    cycle: number;
+    maxCycles: number;
+  } | null = null;
 
   constructor(dispatchRules: UnifiedRule[]) {
     this.dispatchRules = dispatchRules;
@@ -242,15 +258,40 @@ export class RuleRegistry {
     const hook = this.activeHook!;
     const hooks = resolvePostUnitHooks(basePath);
     const config = hooks.find(h => h.name === hook.hookName);
+    const cycleKey = `${hook.hookName}/${hook.triggerUnitType}/${hook.triggerUnitId}`;
+    const currentCycle = this.cycleCounts.get(cycleKey) ?? 1;
+    const maxCycles = config?.max_cycles ?? 1;
 
-    // Check if retry was requested via retry_on artifact
+    // ── Reviewer subsystem failure (BLOCKED sentinel) ─────────────────
+    // Phase-discipline reviewer hooks write `<artifact>-BLOCKED.md` whenever
+    // the reviewer subsystem itself failed (provider not ready, network/timeout,
+    // target artifact missing, fallbacks exhausted). Re-running the trigger
+    // unit cannot fix that — the auto loop must pause for operator action.
+    const blockedName = reviewerBlockedArtifactName(config?.artifact);
+    if (config && blockedName) {
+      const blockedPath = resolveHookArtifactPath(basePath, hook.triggerUnitId, blockedName);
+      if (existsSync(blockedPath)) {
+        this.blockedHook = {
+          hookName: hook.hookName,
+          triggerUnitType: hook.triggerUnitType,
+          triggerUnitId: hook.triggerUnitId,
+          reason: "reviewer_unavailable",
+          artifactPath: blockedPath,
+          cycle: currentCycle,
+          maxCycles,
+        };
+        this.activeHook = null;
+        this.hookQueue = [];
+        this.retryPending = false;
+        this.retryTrigger = null;
+        return null;
+      }
+    }
+
+    // ── retry_on artifact present ────────────────────────────────────
     if (config?.retry_on) {
       const retryArtifactPath = resolveHookArtifactPath(basePath, hook.triggerUnitId, config.retry_on);
       if (existsSync(retryArtifactPath)) {
-        const cycleKey = `${config.name}/${hook.triggerUnitType}/${hook.triggerUnitId}`;
-        const currentCycle = this.cycleCounts.get(cycleKey) ?? 1;
-        const maxCycles = config.max_cycles ?? 1;
-
         if (currentCycle < maxCycles) {
           if (config.artifact) {
             const artifactPath = resolveHookArtifactPath(basePath, hook.triggerUnitId, config.artifact);
@@ -268,6 +309,25 @@ export class RuleRegistry {
           };
           return null;
         }
+        // Retry budget exhausted but the trigger still has not satisfied the
+        // hook. Surface as blocked instead of silently dequeuing — operator
+        // must decide to clear the retry artifact, raise max_cycles, or
+        // abandon the work. Without this the loop would otherwise treat the
+        // failed verdict as a pass on the next iteration.
+        this.blockedHook = {
+          hookName: hook.hookName,
+          triggerUnitType: hook.triggerUnitType,
+          triggerUnitId: hook.triggerUnitId,
+          reason: "max_cycles_reached",
+          artifactPath: retryArtifactPath,
+          cycle: currentCycle,
+          maxCycles,
+        };
+        this.activeHook = null;
+        this.hookQueue = [];
+        this.retryPending = false;
+        this.retryTrigger = null;
+        return null;
       }
     }
 
@@ -415,6 +475,27 @@ export class RuleRegistry {
     return this.retryPending;
   }
 
+  /** True when a hook completion left the auto loop in a state that must not silently proceed. */
+  isBlocked(): boolean {
+    return this.blockedHook !== null;
+  }
+
+  /**
+   * Returns and clears the pending blocked-hook record. Auto-mode reads this
+   * after `evaluatePostUnit` returns null and pauses with a clear notification.
+   */
+  consumeBlockedHook(): NonNullable<RuleRegistry["blockedHook"]> | null {
+    if (!this.blockedHook) return null;
+    const blocked = this.blockedHook;
+    this.blockedHook = null;
+    return blocked;
+  }
+
+  /** Inspect the blocked-hook record without consuming it (for diagnostics). */
+  peekBlockedHook(): NonNullable<RuleRegistry["blockedHook"]> | null {
+    return this.blockedHook;
+  }
+
   /**
    * Returns the trigger unit info for a pending retry, or null.
    * Clears the retry state after reading.
@@ -427,13 +508,14 @@ export class RuleRegistry {
     return trigger;
   }
 
-  /** Clear all mutable state (activeHook, hookQueue, cycleCounts, retryPending, retryTrigger). */
+  /** Clear all mutable state (activeHook, hookQueue, cycleCounts, retryPending, retryTrigger, blockedHook). */
   resetState(): void {
     this.activeHook = null;
     this.hookQueue = [];
     this.cycleCounts.clear();
     this.retryPending = false;
     this.retryTrigger = null;
+    this.blockedHook = null;
   }
 
   // ── Persistence ─────────────────────────────────────────────────────

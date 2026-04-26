@@ -50,6 +50,8 @@ import {
   consumeRetryTrigger,
   persistHookState,
   resolveHookArtifactPath,
+  isHookBlocked,
+  consumeBlockedHook,
 } from "./post-unit-hooks.js";
 import { hasPendingCaptures, loadPendingCaptures, revertExecutorResolvedCaptures } from "./captures.js";
 import { debugLog } from "./debug-logger.js";
@@ -1109,6 +1111,38 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
         { kind: "hook", unitType: hookUnit.unitType, unitId: hookUnit.unitId, prompt: hookUnit.prompt, model: hookUnit.model },
         { hookName: hookUnit.hookName },
       );
+    }
+
+    // Check if a post-unit hook left the loop in a blocked state. Reviewer
+    // subsystem failures (reviewer_unavailable) and exhausted retry budgets
+    // (max_cycles_reached) must pause auto so an operator can intervene —
+    // silently passing through here would mask provider/network outages and
+    // bypass review gates the project explicitly asked for.
+    if (isHookBlocked()) {
+      const blocker = consumeBlockedHook();
+      if (blocker) {
+        const reasonLabel = blocker.reason === "reviewer_unavailable"
+          ? "reviewer subsystem unavailable"
+          : `retry budget exhausted (cycle ${blocker.cycle}/${blocker.maxCycles})`;
+        const artifactHint = blocker.artifactPath ? ` See ${blocker.artifactPath}.` : "";
+        const message = `Phase-discipline hook ${blocker.hookName} blocked auto on ${blocker.triggerUnitType} ${blocker.triggerUnitId}: ${reasonLabel}.${artifactHint}`;
+        ctx.ui.notify(message, "error");
+        logWarning("dispatch", message);
+        debugLog("postUnitPostVerification", {
+          phase: "hook-blocked",
+          hookName: blocker.hookName,
+          reason: blocker.reason,
+          cycle: blocker.cycle,
+          maxCycles: blocker.maxCycles,
+          triggerUnitId: blocker.triggerUnitId,
+        });
+        if (s.currentUnit) {
+          await closeoutUnit(ctx, s.basePath, s.currentUnit.type, s.currentUnit.id, s.currentUnit.startedAt, buildSnapshotOpts(s.currentUnit.type, s.currentUnit.id));
+        }
+        persistHookState(s.basePath);
+        await pauseAuto(ctx, pi);
+        return "stopped";
+      }
     }
 
     // Check if a hook requested a retry of the trigger unit

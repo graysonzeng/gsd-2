@@ -37,6 +37,28 @@ export function consumeRetryTrigger(): { unitType: string; unitId: string; retry
   return getOrCreateRegistry().consumeRetryTrigger();
 }
 
+export interface BlockedHookRecord {
+  hookName: string;
+  triggerUnitType: string;
+  triggerUnitId: string;
+  reason: "reviewer_unavailable" | "max_cycles_reached";
+  artifactPath?: string;
+  cycle: number;
+  maxCycles: number;
+}
+
+export function isHookBlocked(): boolean {
+  return getOrCreateRegistry().isBlocked();
+}
+
+export function consumeBlockedHook(): BlockedHookRecord | null {
+  return getOrCreateRegistry().consumeBlockedHook() as BlockedHookRecord | null;
+}
+
+export function peekBlockedHook(): BlockedHookRecord | null {
+  return getOrCreateRegistry().peekBlockedHook() as BlockedHookRecord | null;
+}
+
 export function resetHookState(): void {
   getOrCreateRegistry().resetState();
 }

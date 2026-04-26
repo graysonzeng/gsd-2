@@ -135,7 +135,7 @@ test("reviewer-hook respects provider-qualified configured models over provider 
   }
 });
 
-test("reviewer-hook records reviewer_unavailable when all reviewers fail", async () => {
+test("reviewer-hook records reviewer_unavailable when all reviewers fail and writes BLOCKED sentinel instead of retry_on", async () => {
   const base = createBase();
   try {
     const summaryPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md");
@@ -163,12 +163,62 @@ test("reviewer-hook records reviewer_unavailable when all reviewers fail", async
     });
 
     assert.equal(result.overallAssessment, "fail");
-    assert.equal(result.retryRequested, true);
+    // Subsystem failure must NOT request a trigger-unit retry — re-running
+    // the task cannot fix provider/credentials issues. Block instead.
+    assert.equal(result.retryRequested, false);
+    assert.equal(result.blockedReason, "reviewer_unavailable");
+    assert.ok(result.blockedArtifactPath, "blockedArtifactPath should be populated");
+    const tasksDir = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
+    assert.ok(existsSync(join(tasksDir, "T01-CODE-REVIEW-BLOCKED.md")), "BLOCKED sentinel must be written");
+    assert.equal(existsSync(join(tasksDir, "T01-CODE-REVIEW-RETRY.md")), false, "retry_on must NOT be written for subsystem failures");
     const artifact = readFileSync(result.artifactPath, "utf8");
     assert.match(artifact, /Overall Assessment: reviewer_unavailable/);
-    const observability = JSON.parse(readFileSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", ".phase-discipline", "phase-discipline-code-review-M001-S01-T01.json"), "utf8"));
+    const blocked = readFileSync(join(tasksDir, "T01-CODE-REVIEW-BLOCKED.md"), "utf8");
+    assert.match(blocked, /Block Reason: reviewer_unavailable/);
+    assert.match(blocked, /Operator Action/);
+    const observability = JSON.parse(readFileSync(join(tasksDir, ".phase-discipline", "phase-discipline-code-review-M001-S01-T01.json"), "utf8"));
     assert.equal(observability.overall, "reviewer_unavailable");
     assert.equal(observability.failed.length, 2);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("reviewer-hook clears stale BLOCKED sentinel when reviewers later succeed", async () => {
+  const base = createBase();
+  try {
+    const summaryPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md");
+    writeFileSync(summaryPath, "implemented task", "utf8");
+    const tasksDir = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
+    const blockedPath = join(tasksDir, "T01-CODE-REVIEW-BLOCKED.md");
+    // Pre-seed a stale BLOCKED sentinel from an earlier unavailable run.
+    writeFileSync(blockedPath, "# stale", "utf8");
+
+    const result = await runPhaseDisciplineReviewerHook({
+      hookName: "phase-discipline-code-review",
+      triggerUnitType: "execute-task",
+      triggerUnitId: "M001/S01/T01",
+      basePath: base,
+      hookConfig: {
+        name: "phase-discipline-code-review",
+        after: ["execute-task"],
+        prompt: "review task",
+        artifact: "CODE-REVIEW.md",
+        cross_review: 1,
+        model: "gpt-5.4",
+        provider: "openai",
+      },
+      runReviewImpl: async () => ({
+        inputHash: "h",
+        task: "review",
+        attempts: [],
+        review: { overall_assessment: "pass" as const, critical: [], important: [], minor: [], rationale: "clean" },
+      }),
+    });
+
+    assert.equal(result.overallAssessment, "pass");
+    assert.equal(result.blockedReason, undefined);
+    assert.equal(existsSync(blockedPath), false, "stale BLOCKED sentinel must be cleared on a passing run");
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -302,7 +352,7 @@ test("OQ-4: model_fallbacks are tried when all primary reviewers fail", async ()
   }
 });
 
-test("OQ-4: all fallbacks exhausted still produces reviewer_unavailable", async () => {
+test("OQ-4: all fallbacks exhausted still produces reviewer_unavailable and writes BLOCKED sentinel", async () => {
   const base = createBase();
   try {
     const summaryPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md");
@@ -330,10 +380,14 @@ test("OQ-4: all fallbacks exhausted still produces reviewer_unavailable", async 
     });
 
     assert.equal(result.overallAssessment, "fail");
-    assert.equal(result.retryRequested, true);
+    assert.equal(result.retryRequested, false);
+    assert.equal(result.blockedReason, "reviewer_unavailable");
+    const tasksDir = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
+    assert.ok(existsSync(join(tasksDir, "T01-CODE-REVIEW-BLOCKED.md")));
+    assert.equal(existsSync(join(tasksDir, "T01-CODE-REVIEW-RETRY.md")), false);
     const artifact = readFileSync(result.artifactPath, "utf8");
     assert.match(artifact, /reviewer_unavailable/);
-    const logPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", ".phase-discipline", "phase-discipline-code-review-M001-S01-T01.json");
+    const logPath = join(tasksDir, ".phase-discipline", "phase-discipline-code-review-M001-S01-T01.json");
     const log = JSON.parse(readFileSync(logPath, "utf8"));
     assert.equal(log.overall, "reviewer_unavailable");
     // 1 primary + 2 fallbacks = 3 total failed
