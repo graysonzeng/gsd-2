@@ -201,3 +201,83 @@ test("design-review BLOCKED sentinel surfaces blocked after plan-slice", () => {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("reviewer hook BLOCKED sentinel with reviewer_format_invalid surfaces distinct blocked reason", () => {
+  resetHookState();
+  const originalGsdHome = process.env.GSD_HOME;
+  const { project, home } = createProjectFixture();
+
+  try {
+    process.env.GSD_HOME = home;
+
+    const dispatch = checkPostUnitHooks("execute-task", "M001/S01/T01", project);
+    assert.notEqual(dispatch, null);
+
+    // Simulate runPhaseDisciplineReviewerHook writing a BLOCKED sentinel where
+    // the underlying failure is "reviewers all returned unparseable output"
+    // rather than "provider is down". This must surface as a separate reason
+    // so operators aren't misdirected to check provider credentials when the
+    // actual fix is a stronger reviewer model.
+    const blockedPath = resolveHookArtifactPath(project, "M001/S01/T01", "CODE-REVIEW-BLOCKED.md");
+    writeFileSync(
+      blockedPath,
+      [
+        "# phase-discipline-code-review — BLOCKED",
+        "",
+        "- Trigger: execute-task M001/S01/T01",
+        "- Block Reason: reviewer_format_invalid",
+        "- Detail: all reviewers returned unparseable output even after the format repair loop",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const completion = checkPostUnitHooks(dispatch!.unitType, dispatch!.unitId, project);
+    assert.equal(completion, null);
+    assert.equal(isRetryPending(), false, "format failure must not request retry_on");
+    assert.equal(isHookBlocked(), true);
+    const blocker = consumeBlockedHook();
+    assert.ok(blocker);
+    assert.equal(blocker!.reason, "reviewer_format_invalid");
+    assert.equal(blocker!.artifactPath, blockedPath);
+  } finally {
+    resetHookState();
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(project, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("BLOCKED sentinel without a recognizable Block Reason defaults to reviewer_unavailable (conservative)", () => {
+  resetHookState();
+  const originalGsdHome = process.env.GSD_HOME;
+  const { project, home } = createProjectFixture();
+
+  try {
+    process.env.GSD_HOME = home;
+
+    const dispatch = checkPostUnitHooks("execute-task", "M001/S01/T01", project);
+    assert.notEqual(dispatch, null);
+
+    // A truncated / unrecognized BLOCKED file must not silently downgrade to
+    // a less-visible reason. Defaulting to reviewer_unavailable is the safer
+    // failure mode: it tells the operator "something is off with the reviewer
+    // subsystem" rather than picking the wrong specific diagnosis.
+    writeFileSync(
+      resolveHookArtifactPath(project, "M001/S01/T01", "CODE-REVIEW-BLOCKED.md"),
+      "# header only, no block reason line\n",
+      "utf8",
+    );
+
+    checkPostUnitHooks(dispatch!.unitType, dispatch!.unitId, project);
+    const blocker = consumeBlockedHook();
+    assert.equal(blocker?.reason, "reviewer_unavailable");
+  } finally {
+    resetHookState();
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(project, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});

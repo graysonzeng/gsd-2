@@ -87,7 +87,16 @@ export class RuleRegistry {
     hookName: string;
     triggerUnitType: string;
     triggerUnitId: string;
-    reason: "reviewer_unavailable" | "max_cycles_reached";
+    /**
+     * `reviewer_unavailable` — provider/network/timeout/missing-artifact class
+     * failure. Operator action: fix infrastructure.
+     * `reviewer_format_invalid` — reviewers reached the model(s) but all output
+     * was unparseable even after the format repair loop. Operator action: swap
+     * in a more capable reviewer model or tighten the schema prompt.
+     * `max_cycles_reached` — retry budget exhausted while the trigger still
+     * produces a retry_on artifact.
+     */
+    reason: "reviewer_unavailable" | "reviewer_format_invalid" | "max_cycles_reached";
     artifactPath?: string;
     cycle: number;
     maxCycles: number;
@@ -263,20 +272,39 @@ export class RuleRegistry {
     const currentCycle = this.cycleCounts.get(cycleKey) ?? 1;
     const maxCycles = config?.max_cycles ?? 1;
 
-    // ── Reviewer subsystem failure (BLOCKED sentinel) ─────────────────
+    // ── Reviewer subsystem / format failure (BLOCKED sentinel) ────────
     // Phase-discipline reviewer hooks write `<artifact>-BLOCKED.md` whenever
     // the reviewer subsystem itself failed (provider not ready, network/timeout,
-    // target artifact missing, fallbacks exhausted). Re-running the trigger
-    // unit cannot fix that — the auto loop must pause for operator action.
+    // target artifact missing, fallbacks exhausted) OR when every reviewer
+    // returned output that could not be parsed even after the in-session
+    // format repair loop. Either way, re-running the trigger unit cannot fix
+    // it — the auto loop must pause for operator action. The block reason is
+    // read from the sentinel body so the two cases can be surfaced distinctly
+    // in pause messaging and operator runbooks.
     const blockedName = reviewerBlockedArtifactName(config?.artifact);
     if (config && blockedName) {
       const blockedPath = resolveHookArtifactPath(basePath, hook.triggerUnitId, blockedName);
       if (existsSync(blockedPath)) {
+        let reason: "reviewer_unavailable" | "reviewer_format_invalid" = "reviewer_unavailable";
+        try {
+          const body = readFileSync(blockedPath, "utf-8");
+          // Match the literal "Block Reason:" line renderBlockedArtifact writes.
+          // Default stays reviewer_unavailable if the line is missing or value
+          // is unknown — conservative: operators are more likely to notice an
+          // over-reporting of provider failure than an over-reporting of
+          // "reviewer output bad".
+          const match = body.match(/^\s*-?\s*Block Reason:\s*([A-Za-z_]+)\s*$/m);
+          if (match && match[1] === "reviewer_format_invalid") {
+            reason = "reviewer_format_invalid";
+          }
+        } catch {
+          // best-effort parse; fall through with default reviewer_unavailable
+        }
         this.blockedHook = {
           hookName: hook.hookName,
           triggerUnitType: hook.triggerUnitType,
           triggerUnitId: hook.triggerUnitId,
-          reason: "reviewer_unavailable",
+          reason,
           artifactPath: blockedPath,
           cycle: currentCycle,
           maxCycles,

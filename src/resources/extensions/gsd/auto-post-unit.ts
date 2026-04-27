@@ -1121,9 +1121,12 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
     if (isHookBlocked()) {
       const blocker = consumeBlockedHook();
       if (blocker) {
-        const reasonLabel = blocker.reason === "reviewer_unavailable"
-          ? "reviewer subsystem unavailable"
-          : `retry budget exhausted (cycle ${blocker.cycle}/${blocker.maxCycles})`;
+        const reasonLabel =
+          blocker.reason === "reviewer_unavailable"
+            ? "reviewer subsystem unavailable (provider/network/timeout)"
+            : blocker.reason === "reviewer_format_invalid"
+              ? "reviewer produced unparseable output even after format repair"
+              : `retry budget exhausted (cycle ${blocker.cycle}/${blocker.maxCycles})`;
         const artifactHint = blocker.artifactPath ? ` See ${blocker.artifactPath}.` : "";
         const message = `Phase-discipline hook ${blocker.hookName} blocked auto on ${blocker.triggerUnitType} ${blocker.triggerUnitId}: ${reasonLabel}.${artifactHint}`;
         ctx.ui.notify(message, "error");

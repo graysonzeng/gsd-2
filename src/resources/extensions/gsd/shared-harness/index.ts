@@ -1,5 +1,13 @@
 export { runReview, parseReviewerOutput, ReviewerCoreError } from "./reviewer-core.js";
-export type { RunReviewInput, RunReviewResult, ReviewAttempt, ReviewResult } from "./reviewer-core.js";
+export type {
+  RunReviewInput,
+  RunReviewResult,
+  ReviewAttempt,
+  ReviewResult,
+  ParseResult,
+  ParseError,
+  ParseErrorKind,
+} from "./reviewer-core.js";
 export { pickReviewerModel, ReviewerUnavailableError, inferProvider, defaultReviewerModel } from "./review-model-picker.js";
 export type { PickReviewerInput } from "./review-model-picker.js";
 export {

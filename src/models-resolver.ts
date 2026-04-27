@@ -33,6 +33,11 @@ function getPiModelsPath(): string {
  * 2. ~/.pi/agent/models.json (exists) → return this path (fallback)
  * 3. Neither exists → return GSD path (will be created)
  *
+ * IMPORTANT: Twin implementation exists in
+ * src/resources/extensions/gsd/doctor-config.ts:resolveModelsJsonPath
+ * (kept separate due to tsconfig rootDir constraints).
+ * If you change path resolution logic here, update the twin as well.
+ *
  * @returns The path to use for models.json
  */
 export function resolveModelsJsonPath(): string {

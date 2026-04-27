@@ -5,7 +5,6 @@ import { AuthStorage, ModelRegistry } from "@gsd/pi-coding-agent";
 import type { DoctorIssueCode, DoctorSeverity } from "./doctor-types.js";
 import { inspectPreferenceHealth, type PreferenceDoctorFinding } from "./doctor-preferences.js";
 import { PROVIDER_REGISTRY } from "./key-manager.js";
-import { resolveModelsJsonPath } from "../../../models-resolver.js";
 
 export type ConfigDoctorScope = "preferences" | "models" | "auth" | "settings" | "key_model";
 
@@ -51,6 +50,32 @@ function getAgentDirPath(): string {
     return envDir;
   }
   return join(homedir(), ".pi", "agent");
+}
+
+/**
+ * Resolve models.json path with GSD → PI fallback.
+ *
+ * IMPORTANT: PI fallback path is intentionally hardcoded to ~/.pi/agent/models.json
+ * to match the behavior in src/models-resolver.ts. Both implementations must use
+ * the same PI path so that doctor diagnostics align with actual CLI runtime behavior.
+ * If you change PI path resolution here, update src/models-resolver.ts as well.
+ *
+ * See also: src/models-resolver.ts:resolveModelsJsonPath (twin implementation,
+ * kept separate due to tsconfig rootDir constraints).
+ */
+function resolveModelsJsonPath(): string {
+  const gsdHome = process.env.GSD_HOME || join(homedir(), ".gsd");
+  const gsdModelsPath = join(gsdHome, "agent", "models.json");
+  // Hardcoded PI path — intentionally does NOT use getAgentDirPath() here
+  // to stay aligned with src/models-resolver.ts which also hardcodes this path.
+  const piModelsPath = join(homedir(), ".pi", "agent", "models.json");
+  if (existsSync(gsdModelsPath)) {
+    return gsdModelsPath;
+  }
+  if (existsSync(piModelsPath)) {
+    return piModelsPath;
+  }
+  return gsdModelsPath;
 }
 
 function getProjectSettingsPath(basePath: string): string {

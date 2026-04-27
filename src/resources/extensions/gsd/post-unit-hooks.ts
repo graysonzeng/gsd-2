@@ -41,7 +41,7 @@ export interface BlockedHookRecord {
   hookName: string;
   triggerUnitType: string;
   triggerUnitId: string;
-  reason: "reviewer_unavailable" | "max_cycles_reached";
+  reason: "reviewer_unavailable" | "reviewer_format_invalid" | "max_cycles_reached";
   artifactPath?: string;
   cycle: number;
   maxCycles: number;

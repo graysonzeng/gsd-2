@@ -38,11 +38,21 @@ export interface RunPhaseDisciplineReviewerHookInput {
 
 /**
  * `reviewer_unavailable` means the reviewer subsystem itself failed to produce
- * a parseable verdict (provider down, network/timeout, target artifact missing,
- * fallbacks exhausted). Re-running the trigger unit cannot fix it, so the auto
- * loop must block until an operator intervenes or `max_cycles` is reached.
+ * a parseable verdict due to infrastructure problems (provider down, network/
+ * timeout, target artifact missing, fallbacks exhausted). Re-running the
+ * trigger unit cannot fix it.
+ *
+ * `reviewer_format_invalid` means the reviewer subsystem *reached* the model(s)
+ * and got output back, but every reviewer produced output that did not conform
+ * to the YAML schema even after the in-session format repair loop. This is a
+ * distinct operator concern — the provider/network is healthy; the reviewer
+ * model is not holding the format. Surfacing it separately from
+ * `reviewer_unavailable` avoids misdirecting operators to check credentials
+ * when the real fix is a more capable reviewer model or schema tightening.
  */
-export type PhaseDisciplineReviewerBlockReason = "reviewer_unavailable";
+export type PhaseDisciplineReviewerBlockReason =
+  | "reviewer_unavailable"
+  | "reviewer_format_invalid";
 
 export interface PhaseDisciplineReviewerHookResult {
   artifactPath: string;
@@ -110,6 +120,7 @@ async function runReviewWithTimeout(
   targetContent: string,
 ): Promise<Awaited<ReturnType<typeof runReview>>> {
   const timeoutMs = resolveReviewerTimeoutMs(input.basePath);
+  const controller = new AbortController();
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -119,9 +130,15 @@ async function runReviewWithTimeout(
         systemPrompt,
         reviewPrompt,
         targetContent,
+        signal: controller.signal,
       }),
       new Promise<Awaited<ReturnType<typeof runReview>>>((_, reject) => {
         timeoutHandle = setTimeout(() => {
+          // Abort signals the in-flight runReview() loop to stop spawning
+          // additional children; the last in-flight spawn will still settle
+          // naturally (its own DEFAULT_SUBAGENT_TIMEOUT_MS kills it), but
+          // runReview() will not start a repair or next retry after abort.
+          controller.abort();
           reject(new ReviewerCoreError("subprocess_failure", `reviewer hard timeout after ${timeoutMs}ms`, []));
         }, timeoutMs);
       }),
@@ -135,8 +152,17 @@ export interface ReviewerAttemptMetrics {
   reviewer: string;
   status: "succeeded" | "failed" | "fallback_succeeded";
   error?: string;
+  /** Categorized root cause when status === "failed". */
+  failureKind?: "subprocess_failure" | "parse_exhausted" | "aborted" | "other";
   outputChars: number;
   attempts: number;
+  /** Total repair rounds executed by runReview() for this reviewer. */
+  correctionRounds?: number;
+  /** True iff the accepted verdict came from a format-repair attempt. */
+  formatRepairSucceeded?: boolean;
+  /** Final parse error kind when all attempts ended with parse failure. */
+  parseErrorKind?: string;
+  parseErrorMessage?: string;
   wallClockMs?: number;
 }
 
@@ -334,17 +360,26 @@ function renderBlockedArtifact(input: {
   triggerUnitId: string;
   reviewers: PhaseDisciplineReviewerSpec[];
   failed: Array<{ reviewer: string; error: string }>;
-  reason: "target_missing" | "reviewers_exhausted";
+  reason:
+    | "target_missing"
+    | "reviewers_exhausted"
+    | "reviewers_format_invalid";
   targetPath: string | null;
 }): string {
+  const blockReason: PhaseDisciplineReviewerBlockReason =
+    input.reason === "reviewers_format_invalid" ? "reviewer_format_invalid" : "reviewer_unavailable";
+  const detail =
+    input.reason === "target_missing"
+      ? "expected trigger artifact was not found for review"
+      : input.reason === "reviewers_format_invalid"
+        ? "all reviewers returned unparseable output even after the format repair loop"
+        : "all primary reviewers and configured fallbacks failed before producing a parseable result";
   const lines: string[] = [
     `# ${input.hookName} — BLOCKED`,
     "",
     `- Trigger: ${input.triggerUnitType} ${input.triggerUnitId}`,
-    `- Block Reason: reviewer_unavailable`,
-    `- Detail: ${input.reason === "target_missing"
-      ? "expected trigger artifact was not found for review"
-      : "all primary reviewers and configured fallbacks failed before producing a parseable result"}`,
+    `- Block Reason: ${blockReason}`,
+    `- Detail: ${detail}`,
     `- Target Artifact: ${input.targetPath ?? "(missing)"}`,
     "",
     "## Reviewers",
@@ -358,13 +393,22 @@ function renderBlockedArtifact(input: {
       lines.push(`- ${failure.reviewer}: ${failure.error}`);
     }
   }
-  lines.push(
-    "",
-    "## Operator Action",
-    "- Re-running the trigger unit will not fix this; verify provider credentials, network, base URLs, or model availability.",
-    "- Resume auto-mode after the underlying issue is fixed; auto will re-fire this hook.",
-    "- Repeated failures will eventually exhaust `max_cycles` and let auto continue with the recorded reviewer_unavailable verdict.",
-  );
+  lines.push("", "## Operator Action");
+  if (blockReason === "reviewer_format_invalid") {
+    lines.push(
+      "- Provider/network are healthy; the reviewer model(s) failed to produce valid YAML.",
+      "- Try a more capable reviewer model (see PREFERENCES.md cross_review_models / model_fallbacks),",
+      "  or inspect the raw logs under `.phase-discipline/` for recurring format issues.",
+      "- Re-running the trigger unit will NOT fix this — the failure is on the reviewer side.",
+      "- Resume auto-mode after the reviewer configuration is adjusted; auto will re-fire this hook.",
+    );
+  } else {
+    lines.push(
+      "- Re-running the trigger unit will not fix this; verify provider credentials, network, base URLs, or model availability.",
+      "- Resume auto-mode after the underlying issue is fixed; auto will re-fire this hook.",
+      "- Repeated failures will eventually exhaust `max_cycles` and let auto continue with the recorded reviewer_unavailable verdict.",
+    );
+  }
   return lines.join("\n");
 }
 
@@ -483,6 +527,7 @@ export async function runPhaseDisciplineReviewerHook(
 
   const runReviewImpl = input.runReviewImpl ?? runReview;
   const reviewerMetrics: ReviewerAttemptMetrics[] = [];
+  const failureKinds: Array<ReviewerAttemptMetrics["failureKind"]> = [];
   const settled = await Promise.allSettled(
     reviewers.map((reviewer) => runReviewWithTimeout(
       runReviewImpl,
@@ -506,6 +551,8 @@ export async function runPhaseDisciplineReviewerHook(
         status: "succeeded",
         outputChars: lastAttempt?.rawOutput?.length ?? 0,
         attempts: entry.value.attempts.length,
+        correctionRounds: entry.value.correctionRounds,
+        formatRepairSucceeded: entry.value.formatRepairSucceeded,
       });
       writeReviewerRawLog({
         artifactPath,
@@ -522,6 +569,11 @@ export async function runPhaseDisciplineReviewerHook(
       : entry.reason instanceof Error
         ? entry.reason.message
         : String(entry.reason);
+    const failureKind: ReviewerAttemptMetrics["failureKind"] =
+      entry.reason instanceof ReviewerCoreError
+        ? entry.reason.kind
+        : "other";
+    failureKinds.push(failureKind);
     logWarning(
       "dispatch",
       `phase-discipline reviewer ${reviewerKey} failed for ${input.triggerUnitType} ${input.triggerUnitId}: ${errorMessage}`,
@@ -529,12 +581,17 @@ export async function runPhaseDisciplineReviewerHook(
     failed.push({ reviewer: reviewerKey, error: errorMessage });
     const failedAttempts = entry.reason instanceof ReviewerCoreError ? entry.reason.attempts : [];
     const lastFailedAttempt = failedAttempts[failedAttempts.length - 1];
+    const totalCorrectionRounds = failedAttempts.filter(a => a.phase === "repair").length;
     reviewerMetrics.push({
       reviewer: reviewerKey,
       status: "failed",
       error: errorMessage,
+      failureKind,
       outputChars: lastFailedAttempt?.rawOutput?.length ?? 0,
       attempts: failedAttempts.length || 1,
+      correctionRounds: totalCorrectionRounds,
+      parseErrorKind: lastFailedAttempt?.parseError?.kind,
+      parseErrorMessage: lastFailedAttempt?.parseError?.message,
     });
     if (lastFailedAttempt) {
       writeReviewerRawLog({
@@ -586,6 +643,11 @@ export async function runPhaseDisciplineReviewerHook(
         break;
       } catch (fbErr) {
         const fbMsg = fbErr instanceof Error ? fbErr.message : String(fbErr);
+        const fbKind: ReviewerAttemptMetrics["failureKind"] =
+          fbErr instanceof ReviewerCoreError ? fbErr.kind : "other";
+        failureKinds.push(fbKind);
+        const fbAttempts = fbErr instanceof ReviewerCoreError ? fbErr.attempts : [];
+        const fbLast = fbAttempts[fbAttempts.length - 1];
         logWarning(
           "dispatch",
           `phase-discipline reviewer fallback ${fallbackKey} also failed for ${input.triggerUnitType} ${input.triggerUnitId}: ${fbMsg}`,
@@ -595,29 +657,54 @@ export async function runPhaseDisciplineReviewerHook(
           reviewer: `fallback:${fallbackKey}`,
           status: "failed",
           error: fbMsg,
-          outputChars: 0,
-          attempts: 1,
+          failureKind: fbKind,
+          outputChars: fbLast?.rawOutput?.length ?? 0,
+          attempts: fbAttempts.length || 1,
+          correctionRounds: fbAttempts.filter(a => a.phase === "repair").length,
+          parseErrorKind: fbLast?.parseError?.kind,
+          parseErrorMessage: fbLast?.parseError?.message,
         });
       }
     }
   }
 
   if (results.length === 0) {
+    // Decide blocked reason from observed failure kinds:
+    //   - Any subprocess_failure/other/aborted → reviewer_unavailable (infrastructure concern; severe, bubbles first)
+    //   - All parse_exhausted                → reviewer_format_invalid (provider healthy, reviewer output unparseable)
+    // This lets operators distinguish "my provider is down" from "my reviewer
+    // model can't hold the schema" without having to open the artifact.
+    const hasInfraFailure = failureKinds.some(
+      (k) => k === "subprocess_failure" || k === "other" || k === "aborted",
+    );
+    const blockReason: PhaseDisciplineReviewerBlockReason = hasInfraFailure
+      ? "reviewer_unavailable"
+      : "reviewer_format_invalid";
+    const fallbackDetail =
+      blockReason === "reviewer_format_invalid"
+        ? "all reviewers returned unparseable output even after the format repair loop"
+        : "all reviewers failed before producing a parseable review result";
+    const fallbackFindingId =
+      blockReason === "reviewer_format_invalid"
+        ? "reviewer-format-invalid"
+        : "reviewer-subprocess-failure";
     const fallbackArtifact = [
       `# ${input.hookName}`,
       "",
       `- Trigger: ${input.triggerUnitType} ${input.triggerUnitId}`,
-      `- Overall Assessment: reviewer_unavailable`,
+      `- Overall Assessment: ${blockReason}`,
       `- Target Artifact: ${(targetPath ?? "(missing)")}`,
       "",
       "## Critical",
-      "- [reviewer-subprocess-failure] reviewer-subprocess — all reviewers failed before producing a parseable review result",
+      `- [${fallbackFindingId}] reviewer-subprocess — ${fallbackDetail}`,
     ].join("\n");
     ensureParentDir(artifactPath);
     writeFileSync(artifactPath, fallbackArtifact, "utf8");
-    // Subsystem failure: do NOT write retry_on. Re-running the trigger unit
-    // cannot fix provider/network/credentials issues, so signal blocked via
-    // a dedicated BLOCKED sentinel that the rule registry will detect.
+    // Subsystem/format failure: do NOT write retry_on. Re-running the trigger
+    // unit cannot fix provider/network/credentials issues, nor can it change
+    // whether the reviewer model holds the YAML schema. Signal blocked via a
+    // dedicated BLOCKED sentinel; the rule registry reads the Block Reason
+    // line to distinguish reviewer_unavailable from reviewer_format_invalid.
     clearRetryArtifact(retryPath);
     if (blockedPath) {
       ensureParentDir(blockedPath);
@@ -627,7 +714,7 @@ export async function runPhaseDisciplineReviewerHook(
         triggerUnitId: input.triggerUnitId,
         reviewers,
         failed,
-        reason: "reviewers_exhausted",
+        reason: blockReason === "reviewer_format_invalid" ? "reviewers_format_invalid" : "reviewers_exhausted",
         targetPath,
       }), "utf8");
     }
@@ -640,7 +727,7 @@ export async function runPhaseDisciplineReviewerHook(
       reviewers,
       succeeded,
       failed,
-      overall: "reviewer_unavailable",
+      overall: blockReason,
       startedAt,
       completedAt: new Date().toISOString(),
       reviewerMetrics,
@@ -650,7 +737,7 @@ export async function runPhaseDisciplineReviewerHook(
       retryRequested: false,
       overallAssessment: "fail",
       reviewers,
-      blockedReason: "reviewer_unavailable",
+      blockedReason: blockReason,
       blockedArtifactPath: blockedPath ?? undefined,
     };
   }
