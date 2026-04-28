@@ -70,10 +70,185 @@ export interface UnitResult {
 
 // ─── Phase pipeline types ────────────────────────────────────────────────────
 
+export type ContinuitySignal =
+  | "complete"
+  | "continue-loop"
+  | "retry-loop"
+  | "pause-human"
+  | "pause-provider"
+  | "pause-budget"
+  | "stop-error"
+  | "stop-terminal"
+  | "stop-no-progress";
+
+export type BreakpointClass =
+  | "human-required"
+  | "provider"
+  | "safety-required"
+  | "auto-resumable"
+  | "no-progress"
+  | "budget"
+  | "terminal"
+  | "unknown";
+
+export type ContinuitySourcePhase =
+  | "pre-dispatch"
+  | "guard"
+  | "dispatch"
+  | "unit"
+  | "finalize"
+  | "custom-engine"
+  | "loop";
+
+export interface ContinuityDecision {
+  sourcePhase: ContinuitySourcePhase;
+  signal: ContinuitySignal;
+  breakpointClass: BreakpointClass;
+  reason?: string;
+  unitType?: string;
+  unitId?: string;
+  autoContinued: boolean;
+  workflowStatusBefore?: string;
+  workflowStatusAfter?: string;
+  nextAction?: string;
+  nextUnitType?: string;
+  nextUnitId?: string;
+  continuationBudgetRemaining?: number;
+  sameUnitRepeatCount?: number;
+  noProgressEvidence?: string[];
+}
+
+export interface ContinuityDecisionInput {
+  sourcePhase: ContinuitySourcePhase;
+  action: "continue" | "break" | "next";
+  reason?: string;
+  unitType?: string;
+  unitId?: string;
+  signal?: ContinuitySignal;
+  breakpointClass?: BreakpointClass;
+  workflowStatusBefore?: string;
+  workflowStatusAfter?: string;
+  nextAction?: string;
+  nextUnitType?: string;
+  nextUnitId?: string;
+  continuationBudgetRemaining?: number;
+  sameUnitRepeatCount?: number;
+  noProgressEvidence?: string[];
+}
+
+// The following reason sets are used only as a *legacy fallback* by
+// `deriveContinuityDecision` when a phase return-site does not yet provide an
+// explicit `signal` + `breakpointClass`. New phase out-sites SHOULD declare
+// both fields directly on `PhaseResult` rather than relying on reason-string
+// classification here. Keep these sets minimal and non-overlapping — any reason
+// with a dedicated early-return branch (e.g. `budget-pause`) MUST NOT appear in
+// the per-class sets below, otherwise the classification becomes ambiguous and
+// prone to silent drift if branch ordering changes.
+const RETRY_REASONS = new Set([
+  "artifact-verification-retry",
+  "verification-retry",
+  "custom-engine-verify-retry",
+  "stuck-recovery",
+]);
+
+const HUMAN_REQUIRED_REASONS = new Set([
+  "uat-pause",
+  "verification-pause",
+  "step-wizard",
+  "user-stop",
+  "user-backtrack",
+  "context-window",
+]);
+
+const PROVIDER_REASONS = new Set([
+  "provider-pause",
+]);
+
+const NO_PROGRESS_REASONS = new Set([
+  "stuck-detected",
+  "complete-milestone-artifact-db-mismatch",
+  "state-unchanged",
+]);
+
+const TERMINAL_REASONS = new Set([
+  "milestone-complete",
+  "no-active-milestone",
+  "custom-engine-complete",
+]);
+
+export function deriveContinuityDecision(input: ContinuityDecisionInput): ContinuityDecision {
+  if (input.signal && input.breakpointClass) {
+    return {
+      sourcePhase: input.sourcePhase,
+      signal: input.signal,
+      breakpointClass: input.breakpointClass,
+      reason: input.reason,
+      unitType: input.unitType,
+      unitId: input.unitId,
+      autoContinued: input.action !== "break",
+      workflowStatusBefore: input.workflowStatusBefore,
+      workflowStatusAfter: input.workflowStatusAfter,
+      nextAction: input.nextAction,
+      nextUnitType: input.nextUnitType,
+      nextUnitId: input.nextUnitId,
+      continuationBudgetRemaining: input.continuationBudgetRemaining,
+      sameUnitRepeatCount: input.sameUnitRepeatCount,
+      noProgressEvidence: input.noProgressEvidence,
+    };
+  }
+
+  let signal: ContinuitySignal;
+  let breakpointClass: BreakpointClass;
+
+  if (input.action === "next") {
+    signal = "continue-loop";
+    breakpointClass = "auto-resumable";
+  } else if (input.action === "continue") {
+    signal = RETRY_REASONS.has(input.reason ?? "") ? "retry-loop" : "continue-loop";
+    breakpointClass = "auto-resumable";
+  } else if (input.reason === "budget-pause") {
+    signal = "pause-budget";
+    breakpointClass = "budget";
+  } else if (PROVIDER_REASONS.has(input.reason ?? "")) {
+    signal = "pause-provider";
+    breakpointClass = "provider";
+  } else if (HUMAN_REQUIRED_REASONS.has(input.reason ?? "")) {
+    signal = "pause-human";
+    breakpointClass = "human-required";
+  } else if (NO_PROGRESS_REASONS.has(input.reason ?? "")) {
+    signal = "stop-no-progress";
+    breakpointClass = "no-progress";
+  } else if (TERMINAL_REASONS.has(input.reason ?? "")) {
+    signal = "stop-terminal";
+    breakpointClass = "terminal";
+  } else {
+    signal = "stop-error";
+    breakpointClass = "safety-required";
+  }
+
+  return {
+    sourcePhase: input.sourcePhase,
+    signal,
+    breakpointClass,
+    reason: input.reason,
+    unitType: input.unitType,
+    unitId: input.unitId,
+    autoContinued: input.action !== "break",
+    workflowStatusBefore: input.workflowStatusBefore,
+    workflowStatusAfter: input.workflowStatusAfter,
+    nextAction: input.nextAction,
+    nextUnitType: input.nextUnitType,
+    nextUnitId: input.nextUnitId,
+    continuationBudgetRemaining: input.continuationBudgetRemaining,
+    sameUnitRepeatCount: input.sameUnitRepeatCount,
+    noProgressEvidence: input.noProgressEvidence,
+  };
+}
+
 export type PhaseResult<T = void> =
-  | { action: "continue" }
-  | { action: "break"; reason: string }
-  | { action: "next"; data: T }
+  | { action: "continue"; reason?: string; signal?: ContinuitySignal; breakpointClass?: BreakpointClass }
+  | { action: "break"; reason: string; signal?: ContinuitySignal; breakpointClass?: BreakpointClass }
+  | { action: "next"; data: T; reason?: string; signal?: ContinuitySignal; breakpointClass?: BreakpointClass }
 
 export interface IterationContext {
   ctx: ExtensionContext;
