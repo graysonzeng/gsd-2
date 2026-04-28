@@ -110,21 +110,6 @@ export function evaluatePhaseDisciplineProfileDispatch(input: {
   if (
     input.unitType === "execute-task"
     && sliceId
-    && !hasActiveSlicePlan(input.basePath, milestoneId, sliceId)
-  ) {
-    if (!recordDisagreement(input.basePath, milestoneId, phaseLabel, input.unitType, "plan-slice")) {
-      return {
-        action: "advise",
-        prompt: input.prompt,
-        advisedUnitType: "plan-slice",
-        firedHooks: [],
-      };
-    }
-  }
-
-  if (
-    input.unitType === "execute-task"
-    && sliceId
     && hasActiveSlicePlan(input.basePath, milestoneId, sliceId)
     && !hasPhaseCompletionArtifact(input.basePath, milestoneId, sliceId, "P3")
   ) {

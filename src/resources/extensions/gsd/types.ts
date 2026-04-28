@@ -450,7 +450,7 @@ export interface PreDispatchHookConfig {
 
 export type PhaseDisciplineCheckLevel = "fatal" | "warning" | "advisory";
 
-export type PhaseDisciplineCheckStage = "bootstrap" | "phase-guard";
+export type PhaseDisciplineCheckStage = "bootstrap" | "phase-guard" | "readiness-guard";
 
 export interface PhaseDisciplineCheckIssue {
   code: string;
