@@ -15,6 +15,7 @@ import {
 } from "./session-forensics.js";
 import { deriveState } from "./state.js";
 import type { GSDState } from "./types.js";
+import type { ContinuityDecision } from "./auto/types.js";
 
 export type InterruptedSessionClassification =
   | "none"
@@ -35,6 +36,7 @@ export interface PausedSessionMetadata {
   activeRunDir?: string | null;
   autoStartTime?: number;
   milestoneLock?: string | null;
+  lastContinuityDecision?: ContinuityDecision | null;
 }
 
 export interface InterruptedSessionAssessment {

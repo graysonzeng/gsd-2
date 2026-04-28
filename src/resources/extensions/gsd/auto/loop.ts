@@ -14,12 +14,15 @@ import type { AutoSession, SidecarItem } from "./session.js";
 import type { LoopDeps } from "./loop-deps.js";
 import {
   MAX_LOOP_ITERATIONS,
+  deriveContinuityDecision,
   type PhaseResult,
   type LoopState,
   type IterationContext,
   type IterationData,
   type AutoLoopReport,
   type AutoLoopStopReason,
+  type ContinuityDecision,
+  type ContinuitySourcePhase,
 } from "./types.js";
 import { _clearCurrentResolve } from "./resolve.js";
 import {
@@ -208,6 +211,56 @@ function stateProgressSignature(state: GSDState): string {
     requirements: state.requirements ?? null,
     blockers: state.blockers,
     lastCompletedMilestone: state.lastCompletedMilestone?.id ?? null,
+  });
+}
+
+function emitContinuityDecision(
+  deps: LoopDeps,
+  s: AutoSession,
+  flowId: string,
+  nextSeq: () => number,
+  decision: ContinuityDecision,
+): void {
+  s.lastContinuityDecision = decision;
+  deps.emitJournalEvent({
+    ts: new Date().toISOString(),
+    flowId,
+    seq: nextSeq(),
+    eventType: "continuity-decision",
+    data: {
+      sourcePhase: decision.sourcePhase,
+      continuitySignal: decision.signal,
+      breakpointClass: decision.breakpointClass,
+      reason: decision.reason,
+      unitType: decision.unitType,
+      unitId: decision.unitId,
+      autoContinued: decision.autoContinued,
+      workflowStatusBefore: decision.workflowStatusBefore,
+      workflowStatusAfter: decision.workflowStatusAfter,
+      nextAction: decision.nextAction,
+      nextUnitType: decision.nextUnitType,
+      nextUnitId: decision.nextUnitId,
+      continuationBudgetRemaining: decision.continuationBudgetRemaining,
+      sameUnitRepeatCount: decision.sameUnitRepeatCount,
+      noProgressEvidence: decision.noProgressEvidence,
+    },
+  });
+}
+
+function buildPhaseContinuityDecision(args: {
+  sourcePhase: ContinuitySourcePhase;
+  result: PhaseResult<unknown>;
+  unitType?: string;
+  unitId?: string;
+}): ContinuityDecision {
+  return deriveContinuityDecision({
+    sourcePhase: args.sourcePhase,
+    action: args.result.action,
+    reason: "reason" in args.result ? args.result.reason : undefined,
+    signal: "signal" in args.result ? args.result.signal : undefined,
+    breakpointClass: "breakpointClass" in args.result ? args.result.breakpointClass : undefined,
+    unitType: args.unitType,
+    unitId: args.unitId,
   });
 }
 
@@ -722,6 +775,10 @@ export async function autoLoop(
         // ── Phase 1: Pre-dispatch ─────────────────────────────────────────
         const preDispatchResult = await runPreDispatch(ic, loopState);
         deps.uokObserver?.onPhaseResult("pre-dispatch", preDispatchResult.action);
+        emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
+          sourcePhase: "pre-dispatch",
+          result: preDispatchResult,
+        }));
         if (preDispatchResult.action === "break") {
           markLoopStop("stopped", "pre-dispatch-break");
           finishTurn("stopped", "manual-attention", "pre-dispatch-break");
@@ -737,6 +794,10 @@ export async function autoLoop(
         // ── Phase 2: Guards ───────────────────────────────────────────────
         const guardsResult = await runGuards(ic, preData.mid);
         deps.uokObserver?.onPhaseResult("guard", guardsResult.action);
+        emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
+          sourcePhase: "guard",
+          result: guardsResult,
+        }));
         if (guardsResult.action === "break") {
           markLoopStop("stopped", "guard-break");
           finishTurn("stopped", "manual-attention", "guard-break");
@@ -746,6 +807,10 @@ export async function autoLoop(
         // ── Phase 3: Dispatch ─────────────────────────────────────────────
         const dispatchResult = await runDispatch(ic, preData, loopState);
         deps.uokObserver?.onPhaseResult("dispatch", dispatchResult.action);
+        emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
+          sourcePhase: "dispatch",
+          result: dispatchResult,
+        }));
         if (dispatchResult.action === "break") {
           markLoopStop("stopped", "dispatch-break");
           finishTurn("stopped", "manual-attention", "dispatch-break");
@@ -794,6 +859,12 @@ export async function autoLoop(
         unitType: iterData.unitType,
         unitId: iterData.unitId,
       });
+      emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
+        sourcePhase: "unit",
+        result: unitPhaseResult,
+        unitType: iterData.unitType,
+        unitId: iterData.unitId,
+      }));
       if (unitPhaseResult.action === "break") {
         markLoopStop("stopped", "unit-break");
         finishTurn("stopped", "execution", "unit-break");
@@ -807,6 +878,12 @@ export async function autoLoop(
         unitType: iterData.unitType,
         unitId: iterData.unitId,
       });
+      emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
+        sourcePhase: "finalize",
+        result: finalizeResult,
+        unitType: iterData.unitType,
+        unitId: iterData.unitId,
+      }));
       if (finalizeResult.action === "break") {
         const finalizeFailureClass = finalizeResult.reason === "git-closeout-failure"
           ? "git"

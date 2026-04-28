@@ -395,8 +395,87 @@ test("runDispatch pauses when complete-milestone summary exists on disk but the 
 
   assert.equal(result.action, "break");
   assert.equal((result as any).reason, "complete-milestone-artifact-db-mismatch");
+  assert.equal((result as any).signal, "stop-no-progress");
+  assert.equal((result as any).breakpointClass, "no-progress");
   assert.equal(pauseCalls, 1, "complete-milestone disk/db mismatch should pause auto-mode");
   assert.equal(stopCalls, 0, "mismatch pause should not hard-stop the loop");
+});
+
+test("runDispatch returns explicit no-progress continuity when repeated unit is genuinely stuck", async () => {
+  const capture = createEventCapture();
+  let stopCalls = 0;
+  const deps = makeMockDeps(capture, {
+    stopAuto: async () => { stopCalls++; },
+    resolveDispatch: async () => ({
+      action: "dispatch" as const,
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      prompt: "do the thing",
+      matchedRule: "slice-task-rule",
+    }),
+  });
+  const ic = makeIC(deps);
+  const preData: PreDispatchData = {
+    state: {
+      phase: "executing",
+      activeMilestone: { id: "M001", title: "Test", status: "active" },
+      activeSlice: { id: "S01", title: "Slice 1" },
+      activeTask: { id: "T01" },
+      registry: [{ id: "M001", status: "active" }],
+      blockers: [],
+    } as any,
+    mid: "M001",
+    midTitle: "Test Milestone",
+  };
+
+  const result = await runDispatch(ic, preData, {
+    recentUnits: [
+      { key: "execute-task/M001/S01/T01" },
+      { key: "execute-task/M001/S01/T01" },
+    ],
+    stuckRecoveryAttempts: 1,
+    consecutiveFinalizeTimeouts: 0,
+  });
+
+  assert.equal(result.action, "break");
+  assert.equal((result as any).reason, "stuck-detected");
+  assert.equal((result as any).signal, "stop-no-progress");
+  assert.equal((result as any).breakpointClass, "no-progress");
+  assert.equal(stopCalls, 1, "genuinely stuck units should hard-stop the loop once");
+});
+
+test("runDispatch returns explicit human-required continuity when prior slice completion blocks execution", async () => {
+  const capture = createEventCapture();
+  let stopCalls = 0;
+  const deps = makeMockDeps(capture, {
+    stopAuto: async () => { stopCalls++; },
+    getPriorSliceCompletionBlocker: () => "Finish previous slice first",
+  });
+  const ic = makeIC(deps);
+  const preData: PreDispatchData = {
+    state: {
+      phase: "executing",
+      activeMilestone: { id: "M001", title: "Test", status: "active" },
+      activeSlice: { id: "S01", title: "Slice 1" },
+      activeTask: { id: "T01" },
+      registry: [{ id: "M001", status: "active" }],
+      blockers: [],
+    } as any,
+    mid: "M001",
+    midTitle: "Test Milestone",
+  };
+
+  const result = await runDispatch(ic, preData, {
+    recentUnits: [],
+    stuckRecoveryAttempts: 0,
+    consecutiveFinalizeTimeouts: 0,
+  });
+
+  assert.equal(result.action, "break");
+  assert.equal((result as any).reason, "prior-slice-blocker");
+  assert.equal((result as any).signal, "pause-human");
+  assert.equal((result as any).breakpointClass, "human-required");
+  assert.equal(stopCalls, 1);
 });
 
 test("runUnitPhase emits unit-start and unit-end with causedBy reference", async () => {

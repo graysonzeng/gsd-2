@@ -282,7 +282,12 @@ async function failClosedOnFinalizeTimeout(
   s.currentUnit = null;
   clearCurrentPhase();
   drainLogs();
-  return { action: "break", reason: progressKind };
+  return {
+    action: "break",
+    reason: progressKind,
+    signal: "pause-human",
+    breakpointClass: "human-required",
+  };
 }
 
 // ─── runPreDispatch ───────────────────────────────────────────────────────────
@@ -342,7 +347,12 @@ export async function runPreDispatch(
     });
     await deps.stopAuto(ctx, pi, staleMsg);
     debugLog("autoLoop", { phase: "exit", reason: "resources-stale" });
-    return { action: "break", reason: "resources-stale" };
+    return {
+      action: "break",
+      reason: "resources-stale",
+      signal: "stop-error",
+      breakpointClass: "safety-required",
+    };
   }
   await runPreDispatchGate({
     gateId: "resource-version-guard",
@@ -380,7 +390,12 @@ export async function runPreDispatch(
       );
       await deps.pauseAuto(ctx, pi);
       debugLog("autoLoop", { phase: "exit", reason: "health-gate-failed" });
-      return { action: "break", reason: "health-gate-failed" };
+      return {
+        action: "break",
+        reason: "health-gate-failed",
+        signal: "pause-human",
+        breakpointClass: "human-required",
+      };
     }
     await runPreDispatchGate({
       gateId: "pre-dispatch-health-gate",
@@ -443,7 +458,12 @@ export async function runPreDispatch(
         });
         ctx.ui.notify(`Plan gate failed-closed: ${reason}\n\nIf this keeps happening, try: /gsd doctor heal`, "error");
         await deps.pauseAuto(ctx, pi);
-        return { action: "break", reason: "plan-v2-gate-failed" };
+        return {
+          action: "break",
+          reason: "plan-v2-gate-failed",
+          signal: "pause-human",
+          breakpointClass: "human-required",
+        };
       }
     }
     if (compiled.ok) {
@@ -513,7 +533,12 @@ export async function runPreDispatch(
               "info",
             );
             await deps.stopAuto(ctx, pi, `Slice-parallel dispatched for ${mid}`);
-            return { action: "break", reason: "slice-parallel-dispatched" };
+            return {
+              action: "break",
+              reason: "slice-parallel-dispatched",
+              signal: "stop-terminal",
+              breakpointClass: "terminal",
+            };
           }
           // Fall through to sequential if no workers started
         }
@@ -586,7 +611,12 @@ export async function runPreDispatch(
           "error",
         );
         await deps.stopAuto(ctx, pi, `Merge conflict on milestone ${s.currentMilestoneId}`);
-        return { action: "break", reason: "merge-conflict" };
+        return {
+          action: "break",
+          reason: "merge-conflict",
+          signal: "pause-human",
+          breakpointClass: "human-required",
+        };
       }
       // Non-conflict merge errors — stop auto to avoid advancing with unmerged work
       logError("engine", "Milestone merge failed with non-conflict error", { milestone: s.currentMilestoneId!, error: String(mergeErr) });
@@ -595,7 +625,12 @@ export async function runPreDispatch(
         "error",
       );
       await deps.stopAuto(ctx, pi, `Merge error on milestone ${s.currentMilestoneId}: ${String(mergeErr)}`);
-      return { action: "break", reason: "merge-failed" };
+      return {
+        action: "break",
+        reason: "merge-failed",
+        signal: "stop-error",
+        breakpointClass: "safety-required",
+      };
     }
     // #2909: postflight — restore stashed changes after successful merge
     if (preflightTransition.stashPushed) {
@@ -700,7 +735,12 @@ export async function runPreDispatch(
               "error",
             );
             await deps.stopAuto(ctx, pi, `Merge conflict on milestone ${s.currentMilestoneId}`);
-            return { action: "break", reason: "merge-conflict" };
+            return {
+              action: "break",
+              reason: "merge-conflict",
+              signal: "pause-human",
+              breakpointClass: "human-required",
+            };
           }
           logError("engine", "Milestone merge failed with non-conflict error", { milestone: s.currentMilestoneId!, error: String(mergeErr) });
           ctx.ui.notify(
@@ -708,7 +748,12 @@ export async function runPreDispatch(
             "error",
           );
           await deps.stopAuto(ctx, pi, `Merge error on milestone ${s.currentMilestoneId}: ${String(mergeErr)}`);
-          return { action: "break", reason: "merge-failed" };
+          return {
+            action: "break",
+            reason: "merge-failed",
+            signal: "stop-error",
+            breakpointClass: "safety-required",
+          };
         }
         // #2909: postflight — restore stashed changes after successful merge
         if (preflightAllComplete.stashPushed) {
@@ -770,7 +815,12 @@ export async function runPreDispatch(
     }
     debugLog("autoLoop", { phase: "exit", reason: "no-active-milestone" });
     deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "terminal", data: { reason: "no-active-milestone" } });
-    return { action: "break", reason: "no-active-milestone" };
+    return {
+      action: "break",
+      reason: "no-active-milestone",
+      signal: "stop-terminal",
+      breakpointClass: "terminal",
+    };
   }
 
   if (!midTitle) {
@@ -786,7 +836,12 @@ export async function runPreDispatch(
   if (mergeReconcileResult === "blocked") {
     await deps.pauseAuto(ctx, pi);
     debugLog("autoLoop", { phase: "exit", reason: "merge-reconciliation-blocked" });
-    return { action: "break", reason: "merge-reconciliation-blocked" };
+    return {
+      action: "break",
+      reason: "merge-reconciliation-blocked",
+      signal: "pause-human",
+      breakpointClass: "human-required",
+    };
   }
   if (mergeReconcileResult === "reconciled") {
     deps.invalidateAllCaches();
@@ -804,7 +859,12 @@ export async function runPreDispatch(
       phase: "exit",
       reason: "no-milestone-after-reconciliation",
     });
-    return { action: "break", reason: "no-milestone-after-reconciliation" };
+    return {
+      action: "break",
+      reason: "no-milestone-after-reconciliation",
+      signal: "stop-error",
+      breakpointClass: "safety-required",
+    };
   }
 
   // Terminal: complete
@@ -828,7 +888,12 @@ export async function runPreDispatch(
             "error",
           );
           await deps.stopAuto(ctx, pi, `Merge conflict on milestone ${s.currentMilestoneId}`);
-          return { action: "break", reason: "merge-conflict" };
+          return {
+            action: "break",
+            reason: "merge-conflict",
+            signal: "pause-human",
+            breakpointClass: "human-required",
+          };
         }
         logError("engine", "Milestone merge failed with non-conflict error", { milestone: s.currentMilestoneId!, error: String(mergeErr) });
         ctx.ui.notify(
@@ -836,7 +901,12 @@ export async function runPreDispatch(
           "error",
         );
         await deps.stopAuto(ctx, pi, `Merge error on milestone ${s.currentMilestoneId}: ${String(mergeErr)}`);
-        return { action: "break", reason: "merge-failed" };
+        return {
+          action: "break",
+          reason: "merge-failed",
+          signal: "stop-error",
+          breakpointClass: "safety-required",
+        };
       }
       // #2909: postflight — restore stashed changes after successful merge
       if (preflightComplete.stashPushed) {
@@ -864,7 +934,12 @@ export async function runPreDispatch(
     await closeoutAndStop(ctx, pi, s, deps, `Milestone ${mid} complete`);
     debugLog("autoLoop", { phase: "exit", reason: "milestone-complete" });
     deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "terminal", data: { reason: "milestone-complete", milestoneId: mid } });
-    return { action: "break", reason: "milestone-complete" };
+    return {
+      action: "break",
+      reason: "milestone-complete",
+      signal: "stop-terminal",
+      breakpointClass: "terminal",
+    };
   }
 
   // Terminal: blocked — pause instead of hard-stop so the session is resumable.
@@ -886,7 +961,12 @@ export async function runPreDispatch(
     deps.logCmuxEvent(prefs, blockerMsg, "warning");
     debugLog("autoLoop", { phase: "exit", reason: "blocked" });
     deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "terminal", data: { reason: "blocked", blockers: state.blockers } });
-    return { action: "break", reason: "blocked" };
+    return {
+      action: "break",
+      reason: "blocked",
+      signal: "pause-human",
+      breakpointClass: "human-required",
+    };
   }
 
   return { action: "next", data: { state, mid, midTitle } };
@@ -943,7 +1023,12 @@ export async function runDispatch(
       await closeoutAndStop(ctx, pi, s, deps, dispatchResult.reason);
     }
     debugLog("autoLoop", { phase: "exit", reason: "dispatch-stop" });
-    return { action: "break", reason: "dispatch-stop" };
+    return {
+      action: "break",
+      reason: "dispatch-stop",
+      signal: dispatchResult.level === "warning" ? "pause-human" : "stop-error",
+      breakpointClass: dispatchResult.level === "warning" ? "human-required" : "safety-required",
+    };
   }
 
   if (dispatchResult.action !== "dispatch") {
@@ -1011,7 +1096,12 @@ export async function runDispatch(
       await closeoutAndStop(ctx, pi, s, deps, reason);
     }
     debugLog("autoLoop", { phase: "exit", reason: "pre-dispatch-block" });
-    return { action: "break", reason: "pre-dispatch-block" };
+    return {
+      action: "break",
+      reason: "pre-dispatch-block",
+      signal: preDispatchResult.level === "warning" ? "pause-human" : "stop-error",
+      breakpointClass: preDispatchResult.level === "warning" ? "human-required" : "safety-required",
+    };
   }
 
   if (preDispatchResult.action === "advise" && preDispatchResult.advisedUnitType) {
@@ -1040,7 +1130,12 @@ export async function runDispatch(
         await closeoutAndStop(ctx, pi, s, deps, advisedDispatch.reason);
       }
       debugLog("autoLoop", { phase: "exit", reason: "dispatch-stop" });
-      return { action: "break", reason: "dispatch-stop" };
+      return {
+        action: "break",
+        reason: "dispatch-stop",
+        signal: advisedDispatch.level === "warning" ? "pause-human" : "stop-error",
+        breakpointClass: advisedDispatch.level === "warning" ? "human-required" : "safety-required",
+      };
     }
 
     if (advisedDispatch.action === "skip") {
@@ -1116,7 +1211,12 @@ export async function runDispatch(
             if (stuckDiag) stuckParts.push(`Expected: ${stuckDiag}`);
             ctx.ui.notify(stuckParts.join(" "), "warning");
             await deps.pauseAuto(ctx, pi);
-            return { action: "break", reason: "complete-milestone-artifact-db-mismatch" };
+            return {
+              action: "break",
+              reason: "complete-milestone-artifact-db-mismatch",
+              signal: "stop-no-progress",
+              breakpointClass: "no-progress",
+            };
           }
           debugLog("autoLoop", {
             phase: "stuck-recovery",
@@ -1154,7 +1254,12 @@ export async function runDispatch(
           pi,
           `Stuck: ${stuckSignal.reason}`,
         );
-        return { action: "break", reason: "stuck-detected" };
+        return {
+          action: "break",
+          reason: "stuck-detected",
+          signal: "stop-no-progress",
+          breakpointClass: "no-progress",
+        };
       }
     } else {
       // Progress detected — reset recovery counter
@@ -1179,7 +1284,12 @@ export async function runDispatch(
   if (priorSliceBlocker) {
     await deps.stopAuto(ctx, pi, priorSliceBlocker);
     debugLog("autoLoop", { phase: "exit", reason: "prior-slice-blocker" });
-    return { action: "break", reason: "prior-slice-blocker" };
+    return {
+      action: "break",
+      reason: "prior-slice-blocker",
+      signal: "pause-human",
+      breakpointClass: "human-required",
+    };
   }
 
   if (preDispatchResult.action === "proceed" && preDispatchResult.fanOutSpec) {
@@ -1203,7 +1313,12 @@ export async function runDispatch(
       logWarning("dispatch", `pre-dispatch scout fan-out failed for ${unitType} ${unitId}: ${message}`);
       ctx.ui.notify(`Scout fan-out failed for ${unitType} ${unitId}: ${message}`, "warning");
       await deps.pauseAuto(ctx, pi);
-      return { action: "break", reason: "pre-dispatch-fanout-failed" };
+      return {
+        action: "break",
+        reason: "pre-dispatch-fanout-failed",
+        signal: "pause-human",
+        breakpointClass: "human-required",
+      };
     }
   }
 
@@ -1271,13 +1386,23 @@ export async function runGuards(
       }
 
       debugLog("autoLoop", { phase: "exit", reason: isBacktrack ? "user-backtrack" : "user-stop" });
-      return { action: "break", reason: isBacktrack ? "user-backtrack" : "user-stop" };
+      return {
+        action: "break",
+        reason: isBacktrack ? "user-backtrack" : "user-stop",
+        signal: "pause-human",
+        breakpointClass: "human-required",
+      };
     }
   } catch (e) {
     // Fail-closed: if anything in the stop guard throws, break the loop
     // rather than silently continuing and dropping user halt intent
     debugLog("guards", { phase: "stop-guard-error", error: String(e) });
-    return { action: "break", reason: "stop-guard-error" };
+    return {
+      action: "break",
+      reason: "stop-guard-error",
+      signal: "stop-error",
+      breakpointClass: "safety-required",
+    };
   }
 
   // Budget ceiling guard
@@ -1349,7 +1474,12 @@ export async function runGuards(
           deps.sendDesktopNotification("GSD", msg, "error", "budget", basename(s.originalBasePath || s.basePath));
           await deps.stopAuto(ctx, pi, "Budget ceiling reached");
           debugLog("autoLoop", { phase: "exit", reason: "budget-halt" });
-          return { action: "break", reason: "budget-halt" };
+          return {
+            action: "break",
+            reason: "budget-halt",
+            signal: "pause-budget",
+            breakpointClass: "budget",
+          };
         }
         if (effectiveAction === "pause") {
           ctx.ui.notify(
@@ -1360,7 +1490,12 @@ export async function runGuards(
           deps.logCmuxEvent(prefs, msg, "warning");
           await deps.pauseAuto(ctx, pi);
           debugLog("autoLoop", { phase: "exit", reason: "budget-pause" });
-          return { action: "break", reason: "budget-pause" };
+          return {
+            action: "break",
+            reason: "budget-pause",
+            signal: "pause-budget",
+            breakpointClass: "budget",
+          };
         }
         ctx.ui.notify(`${msg} Continuing (enforcement: warn).`, "warning");
         deps.sendDesktopNotification("GSD", msg, "warning", "budget", basename(s.originalBasePath || s.basePath));
@@ -1408,7 +1543,12 @@ export async function runGuards(
       );
       await deps.pauseAuto(ctx, pi);
       debugLog("autoLoop", { phase: "exit", reason: "context-window" });
-      return { action: "break", reason: "context-window" };
+      return {
+        action: "break",
+        reason: "context-window",
+        signal: "pause-human",
+        breakpointClass: "human-required",
+      };
     }
   }
 
@@ -1481,7 +1621,12 @@ export async function runUnitPhase(
       debugLog("runUnitPhase", { phase: "worktree-health-fail", basePath: s.basePath, hasGit });
       ctx.ui.notify(msg, "error");
       await deps.stopAuto(ctx, pi, msg);
-      return { action: "break", reason: "worktree-invalid" };
+      return {
+        action: "break",
+        reason: "worktree-invalid",
+        signal: "stop-error",
+        breakpointClass: "safety-required",
+      };
     }
     const hasProjectFile = PROJECT_FILES.some((f) => deps.existsSync(join(s.basePath, f)));
     const hasSrcDir = deps.existsSync(join(s.basePath, "src"));
@@ -1724,7 +1869,12 @@ export async function runUnitPhase(
   if (compatibilityError) {
     ctx.ui.notify(compatibilityError, "error");
     await deps.stopAuto(ctx, pi, compatibilityError);
-    return { action: "break", reason: "workflow-capability" };
+    return {
+      action: "break",
+      reason: "workflow-capability",
+      signal: "stop-error",
+      breakpointClass: "safety-required",
+    };
   }
 
   // Progress widget + preconditions — deferred to after model selection so the
@@ -1833,7 +1983,12 @@ export async function runUnitPhase(
       }
       await emitCancelledUnitEnd(ic, unitType, unitId, unitStartSeq, unitResult.errorContext);
       debugLog("autoLoop", { phase: "exit", reason: "provider-pause", isTransient: unitResult.errorContext?.isTransient });
-      return { action: "break", reason: "provider-pause" };
+      return {
+        action: "break",
+        reason: "provider-pause",
+        signal: "pause-provider",
+        breakpointClass: "provider",
+      };
     }
     // Timeout category covers two distinct scenarios:
     //   1. Session creation timeout (120s) — transient, auto-resume with backoff
@@ -1893,7 +2048,12 @@ export async function runUnitPhase(
         );
         await deps.autoCommitUnit?.(s.basePath, unitType, unitId, ctx);
         await emitCancelledUnitEnd(ic, unitType, unitId, unitStartSeq, unitResult.errorContext);
-        return { action: "break", reason: "session-timeout" };
+        return {
+          action: "break",
+          reason: "session-timeout",
+          signal: allowAutoResume ? "pause-provider" : "pause-human",
+          breakpointClass: allowAutoResume ? "provider" : "human-required",
+        };
       }
 
       // Unit hard timeout (30min+): pause without auto-resume — stuck agent
@@ -1905,7 +2065,12 @@ export async function runUnitPhase(
       await deps.pauseAuto(ctx, pi);
       await deps.autoCommitUnit?.(s.basePath, unitType, unitId, ctx);
       await emitCancelledUnitEnd(ic, unitType, unitId, unitStartSeq, unitResult.errorContext);
-      return { action: "break", reason: "unit-hard-timeout" };
+      return {
+        action: "break",
+        reason: "unit-hard-timeout",
+        signal: "pause-human",
+        breakpointClass: "human-required",
+      };
     }
     if (
       unitResult.errorContext?.isTransient &&
@@ -1919,7 +2084,12 @@ export async function runUnitPhase(
       await deps.pauseAuto(ctx, pi);
       await deps.autoCommitUnit?.(s.basePath, unitType, unitId, ctx);
       await emitCancelledUnitEnd(ic, unitType, unitId, unitStartSeq, unitResult.errorContext);
-      return { action: "break", reason: "session-timeout" };
+      return {
+        action: "break",
+        reason: "session-timeout",
+        signal: "pause-provider",
+        breakpointClass: "provider",
+      };
     }
     // All other cancelled states (structural errors, non-transient failures): hard stop
     if (s.currentUnit) {
@@ -1940,7 +2110,12 @@ export async function runUnitPhase(
     );
     await deps.stopAuto(ctx, pi, `Session creation failed: ${unitResult.errorContext?.message ?? "unknown"}`);
     debugLog("autoLoop", { phase: "exit", reason: "session-failed" });
-    return { action: "break", reason: "session-failed" };
+    return {
+      action: "break",
+      reason: "session-failed",
+      signal: "stop-error",
+      breakpointClass: "safety-required",
+    };
   }
 
   // ── Immediate unit closeout (metrics, activity log, memory) ────────
@@ -2135,7 +2310,12 @@ export async function runFinalize(
       reason: dispatchedReason,
       gitError: s.lastGitActionFailure ?? undefined,
     });
-    return { action: "break", reason: dispatchedReason };
+    return {
+      action: "break",
+      reason: dispatchedReason,
+      signal: "pause-human",
+      breakpointClass: "human-required",
+    };
   }
   if (preResult === "retry") {
     if (sidecarItem) {
@@ -2170,7 +2350,12 @@ export async function runFinalize(
     );
     await deps.pauseAuto(ctx, pi);
     debugLog("autoLoop", { phase: "exit", reason: "uat-pause" });
-    return { action: "break", reason: "uat-pause" };
+    return {
+      action: "break",
+      reason: "uat-pause",
+      signal: "pause-human",
+      breakpointClass: "human-required",
+    };
   }
 
   // Verification gate
@@ -2193,7 +2378,12 @@ export async function runFinalize(
 
     if (verificationResult === "pause") {
       debugLog("autoLoop", { phase: "exit", reason: "verification-pause" });
-      return { action: "break", reason: "verification-pause" };
+      return {
+        action: "break",
+        reason: "verification-pause",
+        signal: "pause-human",
+        breakpointClass: "human-required",
+      };
     }
 
     if (verificationResult === "retry") {
@@ -2236,13 +2426,23 @@ export async function runFinalize(
       phase: "exit",
       reason: "post-verification-stopped",
     });
-    return { action: "break", reason: "post-verification-stopped" };
+    return {
+      action: "break",
+      reason: "post-verification-stopped",
+      signal: "stop-error",
+      breakpointClass: "safety-required",
+    };
   }
 
   if (postResult === "step-wizard") {
     // Step mode — exit the loop (caller handles wizard)
     debugLog("autoLoop", { phase: "exit", reason: "step-wizard" });
-    return { action: "break", reason: "step-wizard" };
+    return {
+      action: "break",
+      reason: "step-wizard",
+      signal: "pause-human",
+      breakpointClass: "human-required",
+    };
   }
 
   // Both pre and post verification completed without timeout — reset counter

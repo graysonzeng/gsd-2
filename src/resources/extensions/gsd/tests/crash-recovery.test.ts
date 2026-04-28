@@ -21,6 +21,7 @@ import {
 } from "../interrupted-session.ts";
 import { gsdRoot } from "../paths.ts";
 import type { GSDState } from "../types.ts";
+import type { ContinuityDecision } from "../auto/types.ts";
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-test-${randomUUID()}`);
@@ -103,12 +104,25 @@ function writePausedSession(
   worktreePath?: string,
   unitType?: string,
   unitId?: string,
+  lastContinuityDecision?: ContinuityDecision,
 ): void {
   const runtimeDir = join(base, ".gsd", "runtime");
   mkdirSync(runtimeDir, { recursive: true });
   writeFileSync(
     join(runtimeDir, "paused-session.json"),
-    JSON.stringify({ milestoneId, originalBasePath: base, stepMode, worktreePath, unitType, unitId }, null, 2),
+    JSON.stringify(
+      {
+        milestoneId,
+        originalBasePath: base,
+        stepMode,
+        worktreePath,
+        unitType,
+        unitId,
+        lastContinuityDecision,
+      },
+      null,
+      2,
+    ),
     "utf-8",
   );
 }
@@ -174,6 +188,41 @@ test("readPausedSessionMetadata preserves unitType and unitId through round-trip
     const meta = readPausedSessionMetadata(base);
     assert.equal(meta?.unitType, "execute-task");
     assert.equal(meta?.unitId, "M001/S01/T02");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("readPausedSessionMetadata preserves lastContinuityDecision through round-trip", () => {
+  const base = makeTmpBase();
+  try {
+    writePausedSession(
+      base,
+      "M001",
+      false,
+      undefined,
+      "execute-task",
+      "M001/S01/T02",
+      {
+        sourcePhase: "finalize",
+        signal: "pause-human",
+        breakpointClass: "human-required",
+        reason: "verification-pause",
+        unitType: "execute-task",
+        unitId: "M001/S01/T02",
+        autoContinued: false,
+      },
+    );
+    const meta = readPausedSessionMetadata(base);
+    assert.deepEqual(meta?.lastContinuityDecision, {
+      sourcePhase: "finalize",
+      signal: "pause-human",
+      breakpointClass: "human-required",
+      reason: "verification-pause",
+      unitType: "execute-task",
+      unitId: "M001/S01/T02",
+      autoContinued: false,
+    });
   } finally {
     cleanup(base);
   }

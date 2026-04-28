@@ -21,6 +21,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent
 import type { GitServiceImpl } from "../git-service.js";
 import type { CaptureEntry } from "../captures.js";
 import type { BudgetAlertLevel } from "../auto-budget.js";
+import type { ContinuityDecision } from "./types.js";
 
 // ─── Exported Types ──────────────────────────────────────────────────────────
 
@@ -142,6 +143,7 @@ export class AutoSession {
   pausedSessionFile: string | null = null;
   pausedUnitType: string | null = null;
   pausedUnitId: string | null = null;
+  lastContinuityDecision: ContinuityDecision | null = null;
   resourceVersionOnStart: string | null = null;
   lastStateRebuildAt = 0;
 
@@ -290,6 +292,7 @@ export class AutoSession {
     this.pausedSessionFile = null;
     this.pausedUnitType = null;
     this.pausedUnitId = null;
+    this.lastContinuityDecision = null;
     this.resourceVersionOnStart = null;
     this.lastStateRebuildAt = 0;
 
