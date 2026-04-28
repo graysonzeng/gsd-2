@@ -88,6 +88,19 @@ function applyFailOnIncompleteExitCode(
   return commandExitCode
 }
 
+function resolveHeadlessSummaryStatus(args: {
+  commandStatus: 'complete' | 'blocked' | 'cancelled' | 'error' | 'timeout' | 'needs-continue'
+  workflowStatus?: 'complete' | 'needs-continue' | 'unknown'
+}): 'complete' | 'blocked' | 'cancelled' | 'error' | 'timeout' | 'needs-continue' {
+  if (args.commandStatus !== 'complete') {
+    return args.commandStatus
+  }
+  if (args.workflowStatus === 'needs-continue') {
+    return 'needs-continue'
+  }
+  return 'complete'
+}
+
 function parseHeadlessArgs(argv: string[]): HeadlessOptions {
   const options: HeadlessOptions = {
     timeout: 300_000,
@@ -328,6 +341,58 @@ test('applyFailOnIncompleteExitCode upgrades exit 0 to 12 when requested', () =>
   })
 
   assert.equal(applyFailOnIncompleteExitCode(EXIT_SUCCESS, workflow, true), EXIT_INCOMPLETE)
+})
+
+test('resolveHeadlessSummaryStatus promotes text status for complete + needs-continue', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'complete', workflowStatus: 'needs-continue' }),
+    'needs-continue',
+  )
+})
+
+test('resolveHeadlessSummaryStatus keeps blocked command status over workflow continuation', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'blocked', workflowStatus: 'needs-continue' }),
+    'blocked',
+  )
+})
+
+test('resolveHeadlessSummaryStatus keeps cancelled command status over workflow continuation', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'cancelled', workflowStatus: 'needs-continue' }),
+    'cancelled',
+  )
+})
+
+test('resolveHeadlessSummaryStatus keeps error command status over workflow continuation', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'error', workflowStatus: 'needs-continue' }),
+    'error',
+  )
+})
+
+test('HeadlessJsonResult uses workflowStatus instead of top-level status for default incomplete workflow', () => {
+  const result: HeadlessJsonResult = {
+    status: 'success',
+    exitCode: 0,
+    commandStatus: 'complete',
+    workflowStatus: 'needs-continue',
+    workflow: {
+      status: 'needs-continue',
+      phase: 'validating-milestone',
+      activeMilestone: 'M007',
+      next: { action: 'dispatch', unitType: 'validate-milestone', unitId: 'M007' },
+    },
+    duration: 42,
+    cost: { total: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 },
+    toolCalls: 0,
+    events: 0,
+  }
+
+  assert.equal(result.status, 'success')
+  assert.equal(result.exitCode, 0)
+  assert.equal(result.workflowStatus, 'needs-continue')
+  assert.equal(result.workflow?.next?.action, 'dispatch')
 })
 
 // ─── HeadlessJsonResult type shape ─────────────────────────────────────────

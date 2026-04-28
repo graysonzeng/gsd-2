@@ -158,6 +158,7 @@ import {
   EXIT_CANCELLED,
   EXIT_INCOMPLETE,
   resolveHeadlessJsonStatus,
+  resolveHeadlessSummaryStatus,
   resolveHeadlessTextStatus,
   buildUnexpectedChildExitDiagnostic,
   isInteractiveHeadlessTool,
@@ -213,6 +214,55 @@ test('resolveHeadlessTextStatus: actual timeout reports timeout', () => {
 
 test('resolveHeadlessTextStatus: incomplete reports needs-continue', () => {
   assert.equal(resolveHeadlessTextStatus({ blocked: false, exitCode: EXIT_INCOMPLETE, timedOut: false }), 'needs-continue')
+})
+
+test('resolveHeadlessSummaryStatus: complete + workflow needs-continue promotes top-level status', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'complete', workflowStatus: 'needs-continue' }),
+    'needs-continue',
+  )
+})
+
+test('resolveHeadlessSummaryStatus: complete + workflow complete stays complete', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'complete', workflowStatus: 'complete' }),
+    'complete',
+  )
+})
+
+test('resolveHeadlessSummaryStatus: blocked is not masked by workflow continuation', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'blocked', workflowStatus: 'needs-continue' }),
+    'blocked',
+  )
+})
+
+test('resolveHeadlessSummaryStatus: timeout is not masked by workflow continuation', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'timeout', workflowStatus: 'needs-continue' }),
+    'timeout',
+  )
+})
+
+test('resolveHeadlessSummaryStatus: cancelled is not masked by workflow continuation', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'cancelled', workflowStatus: 'needs-continue' }),
+    'cancelled',
+  )
+})
+
+test('resolveHeadlessSummaryStatus: error is not masked by workflow continuation', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'error', workflowStatus: 'needs-continue' }),
+    'error',
+  )
+})
+
+test('resolveHeadlessSummaryStatus: unknown workflow falls back to command status', () => {
+  assert.equal(
+    resolveHeadlessSummaryStatus({ commandStatus: 'complete', workflowStatus: 'unknown' }),
+    'complete',
+  )
 })
 
 test('resolveHeadlessJsonStatus: provider/runtime errors stay error when not timed out', () => {

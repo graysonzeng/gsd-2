@@ -29,6 +29,7 @@ import {
   isQuickCommand,
   FIRE_AND_FORGET_METHODS,
   resolveHeadlessJsonStatus,
+  resolveHeadlessSummaryStatus,
   resolveHeadlessTextStatus,
   mapStatusToExitCode,
   shouldArmHeadlessIdleTimeout,
@@ -1022,7 +1023,10 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   // Summary
   const duration = ((Date.now() - startTime) / 1000).toFixed(1)
-  const status = commandStatus
+  const status = resolveHeadlessSummaryStatus({
+    commandStatus,
+    workflowStatus: workflowSnapshot?.status,
+  })
 
   process.stderr.write(`[headless] Status: ${status}\n`)
   if (workflowSnapshot) {

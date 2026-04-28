@@ -7,7 +7,11 @@
  * Also defines exit code constants and the status→exit-code mapping function.
  */
 
- import type { HeadlessJsonResult } from './headless-types.js'
+import type {
+  HeadlessCommandStatus,
+  HeadlessJsonResult,
+  HeadlessWorkflowStatus,
+} from './headless-types.js'
 
 // ---------------------------------------------------------------------------
 // Exit Code Constants
@@ -53,29 +57,42 @@ export function mapStatusToExitCode(status: string): number {
   }
 }
 
- export function resolveHeadlessTextStatus(args: {
+export function resolveHeadlessTextStatus(args: {
   blocked: boolean
   exitCode: number
   timedOut: boolean
- }): 'complete' | 'blocked' | 'cancelled' | 'error' | 'timeout' | 'needs-continue' {
+}): 'complete' | 'blocked' | 'cancelled' | 'error' | 'timeout' | 'needs-continue' {
   if (args.blocked) return 'blocked'
   if (args.exitCode === EXIT_CANCELLED) return 'cancelled'
   if (args.exitCode === EXIT_INCOMPLETE) return 'needs-continue'
   if (args.exitCode === EXIT_ERROR) return args.timedOut ? 'timeout' : 'error'
   return 'complete'
- }
+}
 
- export function resolveHeadlessJsonStatus(args: {
+export function resolveHeadlessSummaryStatus(args: {
+  commandStatus: HeadlessCommandStatus
+  workflowStatus?: HeadlessWorkflowStatus
+}): HeadlessCommandStatus {
+  if (args.commandStatus !== 'complete') {
+    return args.commandStatus
+  }
+  if (args.workflowStatus === 'needs-continue') {
+    return 'needs-continue'
+  }
+  return 'complete'
+}
+
+export function resolveHeadlessJsonStatus(args: {
   blocked: boolean
   exitCode: number
   timedOut: boolean
- }): HeadlessJsonResult['status'] {
+}): HeadlessJsonResult['status'] {
   if (args.blocked) return 'blocked'
   if (args.exitCode === EXIT_CANCELLED) return 'cancelled'
   if (args.exitCode === EXIT_INCOMPLETE) return 'incomplete'
   if (args.exitCode === EXIT_ERROR) return args.timedOut ? 'timeout' : 'error'
   return 'success'
- }
+}
 
 // ---------------------------------------------------------------------------
 // Completion Detection
