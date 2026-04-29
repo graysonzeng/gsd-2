@@ -1,7 +1,7 @@
 /**
  * auto/loop.ts — Main auto-mode execution loop.
  *
- * Iterates: derive → dispatch → guards → runUnit → finalize → repeat.
+ * Iterates: pre-dispatch → guards → dispatch → runUnit → finalize → repeat.
  * Exits when s.active becomes false or a terminal condition is reached.
  *
  * Imports from: auto/types, auto/resolve, auto/phases
@@ -14,16 +14,14 @@ import type { AutoSession, SidecarItem } from "./session.js";
 import type { LoopDeps } from "./loop-deps.js";
 import {
   MAX_LOOP_ITERATIONS,
-  deriveContinuityDecision,
   type PhaseResult,
   type LoopState,
   type IterationContext,
   type IterationData,
   type AutoLoopReport,
   type AutoLoopStopReason,
-  type ContinuityDecision,
-  type ContinuitySourcePhase,
 } from "./types.js";
+import { LoopContinuityCoordinator } from "./continuity-coordinator.js";
 import { _clearCurrentResolve } from "./resolve.js";
 import {
   runPreDispatch,
@@ -214,54 +212,30 @@ function stateProgressSignature(state: GSDState): string {
   });
 }
 
-function emitContinuityDecision(
-  deps: LoopDeps,
-  s: AutoSession,
-  flowId: string,
-  nextSeq: () => number,
-  decision: ContinuityDecision,
-): void {
-  s.lastContinuityDecision = decision;
-  deps.emitJournalEvent({
-    ts: new Date().toISOString(),
-    flowId,
-    seq: nextSeq(),
-    eventType: "continuity-decision",
-    data: {
-      sourcePhase: decision.sourcePhase,
-      continuitySignal: decision.signal,
-      breakpointClass: decision.breakpointClass,
-      reason: decision.reason,
-      unitType: decision.unitType,
-      unitId: decision.unitId,
-      autoContinued: decision.autoContinued,
-      workflowStatusBefore: decision.workflowStatusBefore,
-      workflowStatusAfter: decision.workflowStatusAfter,
-      nextAction: decision.nextAction,
-      nextUnitType: decision.nextUnitType,
-      nextUnitId: decision.nextUnitId,
-      continuationBudgetRemaining: decision.continuationBudgetRemaining,
-      sameUnitRepeatCount: decision.sameUnitRepeatCount,
-      noProgressEvidence: decision.noProgressEvidence,
-    },
-  });
-}
-
-function buildPhaseContinuityDecision(args: {
-  sourcePhase: ContinuitySourcePhase;
-  result: PhaseResult<unknown>;
-  unitType?: string;
-  unitId?: string;
-}): ContinuityDecision {
-  return deriveContinuityDecision({
-    sourcePhase: args.sourcePhase,
-    action: args.result.action,
-    reason: "reason" in args.result ? args.result.reason : undefined,
-    signal: "signal" in args.result ? args.result.signal : undefined,
-    breakpointClass: "breakpointClass" in args.result ? args.result.breakpointClass : undefined,
-    unitType: args.unitType,
-    unitId: args.unitId,
-  });
+function summarizeWorkflowState(state: GSDState): {
+  workflowStatus: string;
+  nextAction: string;
+  nextUnitType?: string;
+  nextUnitId?: string;
+} {
+  return {
+    workflowStatus: state.phase,
+    nextAction: state.nextAction,
+    nextUnitType: state.phase === "validating-milestone"
+      ? "validate-milestone"
+      : state.phase === "completing-milestone"
+        ? "complete-milestone"
+        : state.phase === "verifying"
+          ? "run-uat"
+          : state.phase === "executing" || state.phase === "summarizing"
+            ? "execute-task"
+            : undefined,
+    nextUnitId: state.activeTask?.id
+      ?? state.activeSlice?.id
+      ?? state.activeMilestone?.id
+      ?? state.lastCompletedMilestone?.id
+      ?? undefined,
+  };
 }
 
 function writeAutoLoopReport(basePath: string, deps: LoopDeps, report: AutoLoopReport): void {
@@ -405,6 +379,12 @@ export async function autoLoop(
   let consecutiveCooldowns = 0;
   const recentErrorMessages: string[] = [];
 
+  // ── Continuity coordinator ─────────────────────────────────────────────
+  // Stage A: emit-only owner. Each iteration calls beginIteration() before
+  // any phase emits to bind the (flowId, nextSeq) scope. See
+  // auto/continuity-coordinator.ts.
+  const coordinator = new LoopContinuityCoordinator(deps, s);
+
   while (s.active) {
     iteration++;
     debugLog("autoLoop", { phase: "loop-top", iteration });
@@ -416,6 +396,7 @@ export async function autoLoop(
     const turnId = randomUUID();
     s.currentTraceId = flowId;
     s.currentTurnId = turnId;
+    coordinator.beginIteration(flowId, nextSeq);
     const turnStartedAt = new Date().toISOString();
     let observedUnitType: string | undefined;
     let observedUnitId: string | undefined;
@@ -586,6 +567,12 @@ export async function autoLoop(
 
         const engineState = await engine.deriveState(s.basePath);
         if (engineState.isComplete) {
+          coordinator.emitCustomEngine({
+            signal: "stop-terminal",
+            breakpointClass: "terminal",
+            action: "break",
+            reason: "custom-engine-complete",
+          });
           markLoopStop("completed", "custom-engine-complete");
           await deps.stopAuto(ctx, pi, "Workflow complete");
           break;
@@ -595,6 +582,12 @@ export async function autoLoop(
         const dispatch = await engine.resolveDispatch(engineState, { basePath: s.basePath });
 
         if (dispatch.action === "stop") {
+          coordinator.emitCustomEngine({
+            signal: "stop-error",
+            breakpointClass: "safety-required",
+            action: "break",
+            reason: dispatch.reason ?? "custom-engine-stop",
+          });
           markLoopStop("stopped", "custom-engine-stop");
           await deps.stopAuto(ctx, pi, dispatch.reason ?? "Engine stopped");
           break;
@@ -658,6 +651,14 @@ export async function autoLoop(
         debugLog("autoLoop", { phase: "custom-engine-verify", iteration, unitId: iterData.unitId });
         const verifyResult = await policy.verify(iterData.unitType, iterData.unitId, { basePath: s.basePath });
         if (verifyResult === "pause") {
+          coordinator.emitCustomEngine({
+            signal: "pause-human",
+            breakpointClass: "human-required",
+            action: "break",
+            reason: "custom-engine-verify-pause",
+            unitType: iterData.unitType,
+            unitId: iterData.unitId,
+          });
           await deps.pauseAuto(ctx, pi);
           markLoopStop("paused", "custom-engine-verify-pause");
           deps.uokObserver?.onPhaseResult("custom-engine", "pause", {
@@ -682,12 +683,31 @@ export async function autoLoop(
           if (attempts > MAX_CUSTOM_ENGINE_VERIFY_RETRIES) {
             const recovery = await policy.recover(iterData.unitType, iterData.unitId, { basePath: s.basePath });
             if (recovery.outcome === "pause") {
+              coordinator.emitCustomEngine({
+                signal: "pause-human",
+                breakpointClass: "human-required",
+                action: "break",
+                reason: recovery.reason ?? "custom-engine-verify-retry-exhausted",
+                unitType: iterData.unitType,
+                unitId: iterData.unitId,
+              });
               await deps.pauseAuto(ctx, pi);
               markLoopStop("paused", "custom-engine-verify-retry-exhausted");
               finishTurn("paused", "manual-attention", recovery.reason ?? "custom-engine-verify-retry-exhausted");
               break;
             }
             if (recovery.outcome === "skip") {
+              // `skip` outcome means the policy asked the engine to step over
+              // a verification failure, but custom-engine cannot reconcile
+              // skipped steps — surface as safety-required stop.
+              coordinator.emitCustomEngine({
+                signal: "stop-error",
+                breakpointClass: "safety-required",
+                action: "break",
+                reason: recovery.reason ?? "custom-engine-verify-retry-exhausted-skip",
+                unitType: iterData.unitType,
+                unitId: iterData.unitId,
+              });
               markLoopStop("stopped", "custom-engine-verify-retry-exhausted");
               await deps.stopAuto(
                 ctx,
@@ -700,6 +720,14 @@ export async function autoLoop(
             }
             const exhaustedReason =
               `Custom workflow verification for ${iterData.unitId} requested retry ${attempts} times without passing.`;
+            coordinator.emitCustomEngine({
+              signal: "stop-error",
+              breakpointClass: "safety-required",
+              action: "break",
+              reason: recovery.outcome === "stop" && recovery.reason ? recovery.reason : exhaustedReason,
+              unitType: iterData.unitType,
+              unitId: iterData.unitId,
+            });
             await deps.stopAuto(
               ctx,
               pi,
@@ -733,6 +761,14 @@ export async function autoLoop(
         debugLog("autoLoop", { phase: "iteration-complete", iteration });
 
         if (reconcileResult.outcome === "milestone-complete") {
+          coordinator.emitCustomEngine({
+            signal: "stop-terminal",
+            breakpointClass: "terminal",
+            action: "break",
+            reason: "custom-engine-complete",
+            unitType: iterData.unitType,
+            unitId: iterData.unitId,
+          });
           markLoopStop("completed", "custom-engine-complete");
           await deps.stopAuto(ctx, pi, "Workflow complete");
           deps.uokObserver?.onPhaseResult("custom-engine", "milestone-complete", {
@@ -743,6 +779,14 @@ export async function autoLoop(
           break;
         }
         if (reconcileResult.outcome === "pause") {
+          coordinator.emitCustomEngine({
+            signal: "pause-human",
+            breakpointClass: "human-required",
+            action: "break",
+            reason: "custom-engine-reconcile-pause",
+            unitType: iterData.unitType,
+            unitId: iterData.unitId,
+          });
           await deps.pauseAuto(ctx, pi);
           markLoopStop("paused", "custom-engine-reconcile-pause");
           deps.uokObserver?.onPhaseResult("custom-engine", "pause", {
@@ -753,6 +797,14 @@ export async function autoLoop(
           break;
         }
         if (reconcileResult.outcome === "stop") {
+          coordinator.emitCustomEngine({
+            signal: "stop-error",
+            breakpointClass: "safety-required",
+            action: "break",
+            reason: reconcileResult.reason ?? "custom-engine-stop",
+            unitType: iterData.unitType,
+            unitId: iterData.unitId,
+          });
           markLoopStop("stopped", "custom-engine-stop");
           await deps.stopAuto(ctx, pi, reconcileResult.reason ?? "Engine stopped");
           deps.uokObserver?.onPhaseResult("custom-engine", "stop", {
@@ -774,11 +826,19 @@ export async function autoLoop(
       if (!sidecarItem) {
         // ── Phase 1: Pre-dispatch ─────────────────────────────────────────
         const preDispatchResult = await runPreDispatch(ic, loopState);
+        const preDispatchSummary = preDispatchResult.action === "next"
+          ? summarizeWorkflowState(preDispatchResult.data.state)
+          : undefined;
         deps.uokObserver?.onPhaseResult("pre-dispatch", preDispatchResult.action);
-        emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
-          sourcePhase: "pre-dispatch",
-          result: preDispatchResult,
-        }));
+        coordinator.emitPhase("pre-dispatch", preDispatchResult, preDispatchSummary
+          ? {
+              workflowStatusBefore: preDispatchSummary.workflowStatus,
+              workflowStatusAfter: preDispatchSummary.workflowStatus,
+              nextAction: preDispatchSummary.nextAction,
+              nextUnitType: preDispatchSummary.nextUnitType,
+              nextUnitId: preDispatchSummary.nextUnitId,
+            }
+          : undefined);
         if (preDispatchResult.action === "break") {
           markLoopStop("stopped", "pre-dispatch-break");
           finishTurn("stopped", "manual-attention", "pre-dispatch-break");
@@ -794,10 +854,7 @@ export async function autoLoop(
         // ── Phase 2: Guards ───────────────────────────────────────────────
         const guardsResult = await runGuards(ic, preData.mid);
         deps.uokObserver?.onPhaseResult("guard", guardsResult.action);
-        emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
-          sourcePhase: "guard",
-          result: guardsResult,
-        }));
+        coordinator.emitPhase("guard", guardsResult);
         if (guardsResult.action === "break") {
           markLoopStop("stopped", "guard-break");
           finishTurn("stopped", "manual-attention", "guard-break");
@@ -806,11 +863,15 @@ export async function autoLoop(
 
         // ── Phase 3: Dispatch ─────────────────────────────────────────────
         const dispatchResult = await runDispatch(ic, preData, loopState);
+        const dispatchSummary = summarizeWorkflowState(preData.state);
         deps.uokObserver?.onPhaseResult("dispatch", dispatchResult.action);
-        emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
-          sourcePhase: "dispatch",
-          result: dispatchResult,
-        }));
+        coordinator.emitPhase("dispatch", dispatchResult, {
+          workflowStatusBefore: dispatchSummary.workflowStatus,
+          workflowStatusAfter: dispatchSummary.workflowStatus,
+          nextAction: dispatchSummary.nextAction,
+          nextUnitType: dispatchResult.action === "next" ? dispatchResult.data.unitType : dispatchSummary.nextUnitType,
+          nextUnitId: dispatchResult.action === "next" ? dispatchResult.data.unitId : dispatchSummary.nextUnitId,
+        });
         if (dispatchResult.action === "break") {
           markLoopStop("stopped", "dispatch-break");
           finishTurn("stopped", "manual-attention", "dispatch-break");
@@ -855,16 +916,20 @@ export async function autoLoop(
         loopState,
         sidecarItem,
       );
+      const unitSummary = summarizeWorkflowState(iterData.state);
       deps.uokObserver?.onPhaseResult("unit", unitPhaseResult.action, {
         unitType: iterData.unitType,
         unitId: iterData.unitId,
       });
-      emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
-        sourcePhase: "unit",
-        result: unitPhaseResult,
+      coordinator.emitPhase("unit", unitPhaseResult, {
         unitType: iterData.unitType,
         unitId: iterData.unitId,
-      }));
+        workflowStatusBefore: unitSummary.workflowStatus,
+        workflowStatusAfter: unitSummary.workflowStatus,
+        nextAction: unitSummary.nextAction,
+        nextUnitType: unitSummary.nextUnitType,
+        nextUnitId: unitSummary.nextUnitId,
+      });
       if (unitPhaseResult.action === "break") {
         markLoopStop("stopped", "unit-break");
         finishTurn("stopped", "execution", "unit-break");
@@ -874,16 +939,34 @@ export async function autoLoop(
       // ── Phase 5: Finalize ───────────────────────────────────────────────
 
       const finalizeResult = await runFinalize(ic, iterData, loopState, sidecarItem);
+      const finalizeBeforeSummary = summarizeWorkflowState(iterData.state);
+      let finalizeAfterState: GSDState | undefined;
+      if (finalizeResult.action !== "break") {
+        try {
+          finalizeAfterState = await deps.deriveState(s.basePath);
+        } catch (error) {
+          logWarning(
+            "dispatch",
+            `finalize observability state derivation failed for ${iterData.unitType} ${iterData.unitId}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      const finalizeAfterSummary = finalizeAfterState
+        ? summarizeWorkflowState(finalizeAfterState)
+        : undefined;
       deps.uokObserver?.onPhaseResult("finalize", finalizeResult.action, {
         unitType: iterData.unitType,
         unitId: iterData.unitId,
       });
-      emitContinuityDecision(deps, s, flowId, nextSeq, buildPhaseContinuityDecision({
-        sourcePhase: "finalize",
-        result: finalizeResult,
+      coordinator.emitPhase("finalize", finalizeResult, {
         unitType: iterData.unitType,
         unitId: iterData.unitId,
-      }));
+        workflowStatusBefore: finalizeBeforeSummary.workflowStatus,
+        workflowStatusAfter: finalizeAfterSummary?.workflowStatus,
+        nextAction: finalizeAfterSummary?.nextAction ?? finalizeBeforeSummary.nextAction,
+        nextUnitType: finalizeAfterSummary?.nextUnitType,
+        nextUnitId: finalizeAfterSummary?.nextUnitId,
+      });
       if (finalizeResult.action === "break") {
         const finalizeFailureClass = finalizeResult.reason === "git-closeout-failure"
           ? "git"

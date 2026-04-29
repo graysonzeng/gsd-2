@@ -177,6 +177,17 @@ const TERMINAL_REASONS = new Set([
 ]);
 
 export function deriveContinuityDecision(input: ContinuityDecisionInput): ContinuityDecision {
+  // Pair-contract invariant: signal and breakpointClass must be both present
+  // or both absent. Half-supplied input is a programmer error — either the
+  // factory was misused, or a phase return-site partially migrated. The
+  // legacy reason-based fallback below intentionally only fires when *both*
+  // are missing.
+  if ((input.signal == null) !== (input.breakpointClass == null)) {
+    throw new Error(
+      `ContinuityDecisionInput requires signal and breakpointClass to be both present or both absent (sourcePhase=${input.sourcePhase}, action=${input.action}, reason=${input.reason ?? ""}, hasSignal=${input.signal != null}, hasBreakpointClass=${input.breakpointClass != null})`,
+    );
+  }
+
   if (input.signal && input.breakpointClass) {
     return {
       sourcePhase: input.sourcePhase,
@@ -339,3 +350,87 @@ export interface IterationData {
 }
 
 export type WindowEntry = { key: string; error?: string };
+
+// ─── PhaseResult helper factories ─────────────────────────────────────────
+//
+// Each factory binds (signal, breakpointClass) at the type level so callers
+// cannot construct mismatched pairs. Pause variants are split into three
+// distinct factories (human / provider / budget) so the (signal, class)
+// combination is fixed by the function name itself — see design §3.3.2 and
+// design-review HIGH-3.
+
+/** Construct a `break` PhaseResult signalling a human-required pause. */
+export function humanPauseBreak(reason: string): PhaseResult<never> {
+  return {
+    action: "break",
+    reason,
+    signal: "pause-human",
+    breakpointClass: "human-required",
+  };
+}
+
+/** Construct a `break` PhaseResult signalling a provider-side pause. */
+export function providerPauseBreak(reason: string): PhaseResult<never> {
+  return {
+    action: "break",
+    reason,
+    signal: "pause-provider",
+    breakpointClass: "provider",
+  };
+}
+
+/** Construct a `break` PhaseResult signalling a budget-imposed pause. */
+export function budgetPauseBreak(reason: string): PhaseResult<never> {
+  return {
+    action: "break",
+    reason,
+    signal: "pause-budget",
+    breakpointClass: "budget",
+  };
+}
+
+/** Construct a `break` PhaseResult signalling terminal completion
+ *  (e.g. `milestone-complete`, `no-active-milestone`,
+ *  `custom-engine-complete`). */
+export function terminalBreak(reason: string): PhaseResult<never> {
+  return {
+    action: "break",
+    reason,
+    signal: "stop-terminal",
+    breakpointClass: "terminal",
+  };
+}
+
+/** Construct a `break` PhaseResult signalling a no-progress stop
+ *  (e.g. `stuck-detected`, `state-unchanged`,
+ *  `complete-milestone-artifact-db-mismatch`). */
+export function noProgressBreak(reason: string): PhaseResult<never> {
+  return {
+    action: "break",
+    reason,
+    signal: "stop-no-progress",
+    breakpointClass: "no-progress",
+  };
+}
+
+/** Construct a `break` PhaseResult signalling a safety-required stop
+ *  (catch-all for `stop-error` / `safety-required`). */
+export function errorBreak(reason: string): PhaseResult<never> {
+  return {
+    action: "break",
+    reason,
+    signal: "stop-error",
+    breakpointClass: "safety-required",
+  };
+}
+
+/** Construct a `continue` PhaseResult signalling a bounded retry loop
+ *  (used by `artifact-verification-retry` / `verification-retry`). */
+export function retryLoopContinue(reason: string): PhaseResult<never> {
+  return {
+    action: "continue",
+    reason,
+    signal: "retry-loop",
+    breakpointClass: "auto-resumable",
+  };
+}

@@ -123,3 +123,28 @@ test("deriveContinuityDecision preserves explicit signal and breakpointClass", (
   assert.equal(decision.unitType, "run-uat");
   assert.equal(decision.unitId, "M001");
 });
+
+test("deriveContinuityDecision preserves workflow status and next action evidence", () => {
+  const decision = deriveContinuityDecision({
+    sourcePhase: "finalize",
+    action: "continue",
+    reason: "verification-retry",
+    signal: "retry-loop",
+    breakpointClass: "auto-resumable",
+    unitType: "execute-task",
+    unitId: "M001/S01/T01",
+    workflowStatusBefore: "executing",
+    workflowStatusAfter: "executing",
+    nextAction: "Retry verification for task T01",
+    nextUnitType: "execute-task",
+    nextUnitId: "M001/S01/T01",
+  });
+
+  assert.equal(decision.workflowStatusBefore, "executing");
+  assert.equal(decision.workflowStatusAfter, "executing");
+  assert.equal(decision.nextAction, "Retry verification for task T01");
+  assert.equal(decision.nextUnitType, "execute-task");
+  assert.equal(decision.nextUnitId, "M001/S01/T01");
+  assert.equal(decision.signal, "retry-loop");
+  assert.equal(decision.breakpointClass, "auto-resumable");
+});

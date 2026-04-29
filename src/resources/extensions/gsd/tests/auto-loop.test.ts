@@ -2759,3 +2759,65 @@ test("autoLoop warns but proceeds for greenfield project (no project files) (#18
     "should warn about greenfield project (no project files)",
   );
 });
+
+test("autoLoop continues when finalize observability deriveState fails", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+
+  const notifications: string[] = [];
+  ctx.ui.notify = (msg: string) => {
+    notifications.push(msg);
+  };
+
+  let deriveCallCount = 0;
+  const deps = makeMockDeps({
+    deriveState: async () => {
+      deriveCallCount++;
+      deps.callLog.push("deriveState");
+      if (deriveCallCount === 2) {
+        throw new Error("finalize-observability-failed");
+      }
+      if (deriveCallCount >= 3) {
+        return {
+          phase: "complete",
+          activeMilestone: { id: "M001", title: "Test Milestone", status: "complete" },
+          activeSlice: undefined,
+          activeTask: undefined,
+          registry: [{ id: "M001", status: "complete" }],
+          blockers: [],
+        } as any;
+      }
+      return {
+        phase: "executing",
+        activeMilestone: { id: "M001", title: "Test Milestone", status: "active" },
+        activeSlice: { id: "S01", title: "Test Slice" },
+        activeTask: { id: "T01" },
+        registry: [{ id: "M001", status: "active" }],
+        blockers: [],
+      } as any;
+    },
+  });
+
+  const loopPromise = autoLoop(ctx, pi, s, deps, { maxIterations: 2 });
+  await new Promise((r) => setTimeout(r, 50));
+  resolveAgentEnd(makeEvent());
+  await loopPromise;
+
+  assert.ok(
+    deriveCallCount >= 3,
+    `deriveState should continue being called after finalize observability failure (got ${deriveCallCount})`,
+  );
+  assert.ok(
+    deps.callLog.includes("stopAuto"),
+    "loop should still reach terminal completion instead of crashing on observability failure",
+  );
+  assert.ok(
+    !notifications.some((n) => n.includes("Iteration error: finalize-observability-failed")),
+    "observability-only deriveState failure should not surface as an iteration error",
+  );
+});
