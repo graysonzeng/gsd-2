@@ -64,3 +64,38 @@ describe("stuck detection persistence (#3704)", () => {
     );
   });
 });
+
+describe("stuck-state milestone cleanup resets recovery attempts", () => {
+  test("loadStuckState resets stuckRecoveryAttempts when all entries are removed by milestone cleanup", () => {
+    // After milestone cleanup removes ALL recentUnits, stuckRecoveryAttempts must
+    // be reset to 0 to prevent old milestone's recovery level from polluting new sessions.
+    assert.match(
+      loopSource,
+      /filteredUnits\.length\s*===\s*0/,
+      "loadStuckState must check whether all entries were removed by milestone cleanup",
+    );
+    // Verify that the reset is tied to the filtered result being empty
+    assert.match(
+      loopSource,
+      /effectiveAttempts|stuckRecoveryAttempts.*filteredUnits|filteredUnits.*stuckRecoveryAttempts.*0/s,
+      "stuckRecoveryAttempts must be conditionally reset when filteredUnits is empty",
+    );
+  });
+
+  test("parseMilestoneFromKey extracts milestone ID from unit key", () => {
+    assert.match(loopSource, /function parseMilestoneFromKey/);
+    assert.match(loopSource, /\[A-Z\]/);
+  });
+
+  test("isMilestoneClosed uses isClosedStatus guard", () => {
+    assert.match(loopSource, /function isMilestoneClosed/);
+    assert.match(loopSource, /isClosedStatus/);
+  });
+
+  test("72h TTL constant is defined", () => {
+    // Design specifies 72h TTL (was previously 24h)
+    assert.match(loopSource, /STUCK_STATE_TTL_MS/);
+    // Verify the value corresponds to roughly 72 hours
+    assert.match(loopSource, /72\s*\*\s*60\s*\*\s*60\s*\*\s*1000|72\s*\*\s*3600\s*\*\s*1000|259[_,]?200[_,]?000/);
+  });
+});

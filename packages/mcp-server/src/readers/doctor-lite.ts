@@ -1,6 +1,3 @@
-// GSD MCP Server — lightweight structural health checks
-// Copyright (c) 2026 Jeremy McSpadden <jeremy@fluxlabs.net>
-
 import { existsSync, readFileSync } from 'node:fs';
 import {
   resolveGsdRoot,
@@ -35,8 +32,46 @@ export interface DoctorResult {
 }
 
 // ---------------------------------------------------------------------------
-// Check implementations
+// Helpers
 // ---------------------------------------------------------------------------
+
+/** Execution-entry phases where missing CONTEXT.md blocks forward progress. */
+const EXECUTION_ENTRY_PHASES = new Set([
+  'executing',
+  'summarizing',
+  'validating-milestone',
+  'completing-milestone',
+]);
+
+/**
+ * Parse STATE.md to extract active milestone ID and current phase.
+ * Returns null if STATE.md doesn't exist or can't be parsed.
+ * Lightweight regex-based parsing — intentionally avoids importing the full
+ * state derivation from the main extension.
+ */
+function parseActivePhaseFromState(gsdRoot: string): { mid: string; phase: string } | null {
+  const statePath = resolveRootFile(gsdRoot, 'STATE.md');
+  if (!existsSync(statePath)) return null;
+  try {
+    const content = readFileSync(statePath, 'utf-8');
+    // STATE.md is rendered by workflow-projections.ts with formats like:
+    //   **Active Milestone:** M001: Some title
+    //   **Phase:** executing
+    // Also handle legacy/alternative formats:
+    //   active_milestone: M001
+    //   ## Active Milestone: M001
+    //   phase: executing
+    const midMatch = content.match(/\*\*Active Milestone:\*\*\s+([A-Z]\d{3})/)
+      ?? content.match(/active[_ ]milestone[:\s]+([A-Z]\d{3})/i)
+      ?? content.match(/^##\s+(?:Active\s+)?Milestone[:\s]+([A-Z]\d{3})/mi);
+    const phaseMatch = content.match(/\*\*Phase:\*\*\s+([\w-]+)/)
+      ?? content.match(/phase[:\s]+([\w-]+)/i);
+    if (!midMatch || !phaseMatch) return null;
+    return { mid: midMatch[1]!, phase: phaseMatch[1]! };
+  } catch {
+    return null;
+  }
+}
 
 function checkProjectLevel(gsdRoot: string, issues: DoctorIssue[]): void {
   // PROJECT.md should exist
@@ -69,7 +104,7 @@ function checkProjectLevel(gsdRoot: string, issues: DoctorIssue[]): void {
   }
 }
 
-function checkMilestoneLevel(gsdRoot: string, mid: string, issues: DoctorIssue[]): void {
+function checkMilestoneLevel(gsdRoot: string, mid: string, issues: DoctorIssue[], activeState: { mid: string; phase: string } | null): void {
   const mDir = resolveMilestoneDir(gsdRoot, mid);
   if (!mDir) {
     issues.push({
@@ -88,12 +123,20 @@ function checkMilestoneLevel(gsdRoot: string, mid: string, issues: DoctorIssue[]
     // Check for draft
     const draftPath = resolveMilestoneFile(gsdRoot, mid, 'CONTEXT-DRAFT');
     if (!draftPath || !existsSync(draftPath)) {
+      // Elevate severity to 'error' if this is the active milestone in an
+      // execution-entry phase — dispatch will regress to discuss-milestone
+      // which deadlocks in auto-mode (#4671 recovery still works, but the
+      // diagnostic should be loud).
+      const isActiveExecution = activeState?.mid === mid
+        && EXECUTION_ENTRY_PHASES.has(activeState.phase);
       issues.push({
-        severity: 'warning',
+        severity: isActiveExecution ? 'error' : 'warning',
         code: 'missing_context',
         scope: 'milestone',
         unitId: mid,
-        message: `${mid} has no CONTEXT.md — milestone lacks defined scope`,
+        message: isActiveExecution
+          ? `${mid} is in phase "${activeState!.phase}" but has no CONTEXT.md — dispatch will regress to discuss-milestone`
+          : `${mid} has no CONTEXT.md — milestone lacks defined scope`,
       });
     }
   }
@@ -201,13 +244,16 @@ export function runDoctorLite(projectDir: string, scope?: string): DoctorResult 
   // Project-level checks
   checkProjectLevel(gsdRoot, issues);
 
+  // Derive active milestone/phase for conditional severity
+  const activeState = parseActivePhaseFromState(gsdRoot);
+
   // Milestone + slice checks
   const milestoneIds = scope
     ? findMilestoneIds(gsdRoot).filter((id) => id === scope)
     : findMilestoneIds(gsdRoot);
 
   for (const mid of milestoneIds) {
-    checkMilestoneLevel(gsdRoot, mid, issues);
+    checkMilestoneLevel(gsdRoot, mid, issues, activeState);
 
     const sliceIds = findSliceIds(gsdRoot, mid);
     for (const sid of sliceIds) {

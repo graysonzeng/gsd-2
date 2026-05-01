@@ -180,6 +180,7 @@ import {
   formatPhaseDisciplinePreflightFailure,
   validatePhaseDisciplinePreflight,
 } from "./phase-discipline/preflight.js";
+import { createDefaultConnectivityProbe } from "./phase-discipline/connectivity-probe.js";
 import {
   type AutoDashboardData,
   updateProgressWidget as _updateProgressWidget,
@@ -274,10 +275,12 @@ export type {
 const s = new AutoSession();
 
 async function ensurePhaseDisciplinePreflight(ctx: ExtensionContext, pi: ExtensionAPI, basePath: string): Promise<boolean> {
-  const preflight = validatePhaseDisciplinePreflight({
+  const preflight = await validatePhaseDisciplinePreflight({
     preferences: loadEffectiveGSDPreferences(basePath)?.preferences,
     modelRegistry: ctx.modelRegistry,
     sessionProvider: s.autoModeStartModel?.provider ?? ctx.model?.provider,
+    connectivityCheck: true,
+    connectivityProbe: createDefaultConnectivityProbe(ctx.modelRegistry),
   });
   if (preflight.ok) {
     for (const warning of preflight.warnings) {

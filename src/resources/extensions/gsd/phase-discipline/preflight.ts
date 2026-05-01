@@ -31,9 +31,28 @@ export interface PhaseDisciplinePreflightIssue extends PhaseDisciplineCheckIssue
   source: string;
   provider: string;
   model: string;
-  reason: "provider_not_ready" | "model_not_available" | "fallback_used" | "provider_resolution_failed";
+  reason: "provider_not_ready" | "model_not_available" | "fallback_used" | "provider_resolution_failed" | "connectivity_failed";
   authMode?: string;
   detail: string;
+}
+
+/**
+ * Connectivity probe callback — injected by caller (auto-start.ts / auto.ts)
+ * to avoid coupling preflight.ts to any specific SDK or HTTP client.
+ *
+ * Returns { ok: true } if the provider/model is reachable, or { ok: false, error }
+ * with a human-readable error string.
+ */
+export type ConnectivityProbe = (
+  provider: string,
+  model: string,
+  timeoutMs: number,
+) => Promise<{ ok: boolean; error?: string }>;
+
+export interface ConnectivityPingTarget {
+  provider: string;
+  model: string;
+  role: string;
 }
 
 export interface PhaseDisciplinePreflightResult {
@@ -48,6 +67,12 @@ export interface PhaseDisciplinePreflightInput {
   preferences?: GSDPreferences | null;
   modelRegistry: PhaseDisciplinePreflightModelRegistry;
   sessionProvider?: string;
+  /** Whether to execute actual connectivity probes (default: false). */
+  connectivityCheck?: boolean;
+  /** Ping timeout in ms (default: 5000). */
+  connectivityTimeoutMs?: number;
+  /** Injected probe function — decoupled from SDK/HTTP specifics. */
+  connectivityProbe?: ConnectivityProbe;
 }
 
 const MAIN_MODEL_PHASES = [
@@ -308,7 +333,27 @@ function issueForRequirement(
   };
 }
 
-export function validatePhaseDisciplinePreflight(input: PhaseDisciplinePreflightInput): PhaseDisciplinePreflightResult {
+/**
+ * Collect unique provider+model pairs that need connectivity verification.
+ * Only non-optional requirements with a known provider are included.
+ */
+export function collectPingTargets(
+  checked: PhaseDisciplinePreflightRequirement[],
+): ConnectivityPingTarget[] {
+  const seen = new Set<string>();
+  const targets: ConnectivityPingTarget[] = [];
+
+  for (const req of checked) {
+    if (req.optional || req.provider === "unknown") continue;
+    const key = `${req.provider}/${req.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ provider: req.provider, model: req.model, role: req.role });
+  }
+  return targets;
+}
+
+export async function validatePhaseDisciplinePreflight(input: PhaseDisciplinePreflightInput): Promise<PhaseDisciplinePreflightResult> {
   const checked = collectPhaseDisciplinePreflightRequirements(input.preferences, input.sessionProvider);
   const failures: PhaseDisciplinePreflightIssue[] = [];
   const warnings: PhaseDisciplinePreflightIssue[] = [];
@@ -375,6 +420,39 @@ export function validatePhaseDisciplinePreflight(input: PhaseDisciplinePreflight
   }
 
   const issues = [...failures, ...warnings];
+
+  // ── Connectivity ping: only when explicitly enabled and registry checks passed ──
+  // Runs AFTER registry validation so config errors surface first without network delay.
+  if (input.connectivityCheck && input.connectivityProbe && failures.length === 0) {
+    const timeoutMs = input.connectivityTimeoutMs ?? 5000;
+    const targets = collectPingTargets(checked);
+    const results = await Promise.allSettled(
+      targets.map(t => input.connectivityProbe!(t.provider, t.model, timeoutMs)),
+    );
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]!;
+      const t = targets[i]!;
+      if (r.status === "rejected" || !r.value.ok) {
+        const error = r.status === "rejected"
+          ? String(r.reason)
+          : r.value.error ?? "unknown";
+        const issue: PhaseDisciplinePreflightIssue = {
+          code: "connectivity_failed",
+          level: "fatal",
+          stage: "bootstrap",
+          role: t.role,
+          source: "connectivity-ping",
+          provider: t.provider,
+          model: t.model,
+          reason: "connectivity_failed",
+          detail: `Ping to ${t.provider}/${t.model} failed: ${error}`,
+        };
+        failures.push(issue);
+        issues.push(issue);
+      }
+    }
+  }
+
   return {
     ok: failures.length === 0,
     checked,

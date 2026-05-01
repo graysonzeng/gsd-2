@@ -48,8 +48,39 @@ import type { GSDState } from "../types.js";
 // Persist stuck detection state to disk so it survives session restarts.
 // Without this, restarting auto-mode resets all counters, allowing the
 // same blocked unit to burn a full retry budget each session.
+
+/** Default stuck-state TTL: 72 hours (more conservative than original 24h). */
+const STUCK_STATE_TTL_MS = 72 * 60 * 60 * 1000;
+
 function stuckStatePath(basePath: string): string {
   return join(gsdRoot(basePath), "runtime", "stuck-state.json");
+}
+
+/**
+ * Parse a milestone ID from a unit key (e.g., "M001/S02/T03" → "M001").
+ */
+function parseMilestoneFromKey(key: string): string | null {
+  const match = key.match(/^([A-Z]\d{3})/);
+  return match ? match[1]! : null;
+}
+
+/**
+ * Check whether a milestone is closed (complete/done/skipped) using the DB.
+ * Falls back to false (keep the entry) if the DB is unavailable or the
+ * milestone doesn't exist.
+ */
+function isMilestoneClosed(milestoneId: string): boolean {
+  try {
+    // Lazy-import to avoid circular deps — gsd-db.ts is heavy.
+    const { isDbAvailable, getMilestone } = require("../gsd-db.js");
+    const { isClosedStatus } = require("../status-guards.js");
+    if (!isDbAvailable()) return false;
+    const row = getMilestone(milestoneId);
+    if (!row) return false;
+    return isClosedStatus(row.status);
+  } catch {
+    return false;
+  }
 }
 
 function loadStuckState(basePath: string): { recentUnits: Array<{ key: string }>; stuckRecoveryAttempts: number } {
@@ -62,9 +93,65 @@ function loadStuckState(basePath: string): { recentUnits: Array<{ key: string }>
     if (data.pid === process.pid) {
       return { recentUnits: [], stuckRecoveryAttempts: 0 };
     }
+
+    // ── Time-based expiry (72h TTL, gated by session semantics) ──
+    const updatedAt = data.updatedAt ? new Date(data.updatedAt).getTime() : 0;
+    const ageMs = Date.now() - updatedAt;
+
+    // Check if a paused-session.json exists and its pausedAt is LATER than
+    // the stuck-state updatedAt — this indicates a deliberate pause/resume,
+    // so the stuck-state is still semantically relevant.
+    let pausedSessionProtects = false;
+    try {
+      const pausedPath = join(gsdRoot(basePath), "runtime", "paused-session.json");
+      const pausedRaw = readFileSync(pausedPath, "utf-8");
+      const paused = JSON.parse(pausedRaw);
+      if (paused.pausedAt) {
+        const pausedAtMs = new Date(paused.pausedAt).getTime();
+        if (pausedAtMs >= updatedAt) {
+          pausedSessionProtects = true;
+        }
+      }
+    } catch {
+      // No paused-session or unreadable — no protection
+    }
+
+    // Expire if: no valid timestamp, OR beyond TTL and not protected by pause
+    if (updatedAt === 0 || (ageMs > STUCK_STATE_TTL_MS && !pausedSessionProtects)) {
+      debugLog("autoLoop", {
+        phase: "stuck-state-expired",
+        ageHours: Math.round(ageMs / 3600000),
+        updatedAt: data.updatedAt,
+        pausedSessionProtects,
+      });
+      try { unlinkSync(stuckStatePath(basePath)); } catch { /* ignore */ }
+      return { recentUnits: [], stuckRecoveryAttempts: 0 };
+    }
+
+    // ── Milestone-based cleanup: remove entries for completed milestones ──
+    const recentUnits: Array<{ key: string }> = Array.isArray(data.recentUnits) ? data.recentUnits : [];
+    const filteredUnits = recentUnits.filter((entry) => {
+      const mid = parseMilestoneFromKey(entry.key);
+      if (!mid) return true; // can't parse → keep (defensive)
+      return !isMilestoneClosed(mid);
+    });
+
+    if (filteredUnits.length < recentUnits.length) {
+      debugLog("autoLoop", {
+        phase: "stuck-state-milestone-cleanup",
+        removed: recentUnits.length - filteredUnits.length,
+        remaining: filteredUnits.length,
+      });
+    }
+
+    // Reset recovery attempts when milestone cleanup removed all entries —
+    // prevents old milestone's stuck recovery level from polluting new sessions.
+    const rawAttempts = typeof data.stuckRecoveryAttempts === "number" ? data.stuckRecoveryAttempts : 0;
+    const effectiveAttempts = filteredUnits.length === 0 && recentUnits.length > 0 ? 0 : rawAttempts;
+
     return {
-      recentUnits: Array.isArray(data.recentUnits) ? data.recentUnits : [],
-      stuckRecoveryAttempts: typeof data.stuckRecoveryAttempts === "number" ? data.stuckRecoveryAttempts : 0,
+      recentUnits: filteredUnits,
+      stuckRecoveryAttempts: effectiveAttempts,
     };
   } catch (err) {
     debugLog("autoLoop", { phase: "load-stuck-state-failed", error: err instanceof Error ? err.message : String(err) });

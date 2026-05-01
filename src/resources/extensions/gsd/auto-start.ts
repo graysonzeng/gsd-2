@@ -100,6 +100,7 @@ import {
   formatPhaseDisciplinePreflightFailure,
   validatePhaseDisciplinePreflight,
 } from "./phase-discipline/preflight.js";
+import { createDefaultConnectivityProbe } from "./phase-discipline/connectivity-probe.js";
 
 export interface BootstrapDeps {
   shouldUseWorktreeIsolation: (basePath?: string) => boolean;
@@ -718,10 +719,12 @@ export async function bootstrapAutoSession(
 
     {
       const preferences = loadEffectiveGSDPreferences(base)?.preferences;
-      const preflight = validatePhaseDisciplinePreflight({
+      const preflight = await validatePhaseDisciplinePreflight({
         preferences,
         modelRegistry: ctx.modelRegistry,
         sessionProvider: startModelSnapshot?.provider ?? ctx.model?.provider,
+        connectivityCheck: true,
+        connectivityProbe: createDefaultConnectivityProbe(ctx.modelRegistry),
       });
       if (!preflight.ok) {
         ctx.ui.notify(formatPhaseDisciplinePreflightFailure(preflight), "error");

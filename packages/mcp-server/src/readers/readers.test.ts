@@ -510,4 +510,55 @@ describe('runDoctorLite', () => {
     );
     rmSync(empty, { recursive: true, force: true });
   });
+
+  it('elevates missing_context severity to error when active milestone is in execution phase', () => {
+    // Create a project with STATE.md in the real workflow-projections format
+    const execProject = tmpProject();
+    writeFixture(execProject, '.gsd/PROJECT.md', '# Test Project');
+    writeFixture(execProject, '.gsd/STATE.md', `# GSD State
+
+**Active Milestone:** M001: Build Feature
+**Active Slice:** S01: First slice
+**Phase:** executing
+
+## Milestone Registry
+
+- 🔄 **M001:** Build Feature
+`);
+    // M001 has no CONTEXT.md — should trigger 'error' severity since it's in execution phase
+    mkdirSync(join(execProject, '.gsd/milestones/M001'), { recursive: true });
+
+    const result = runDoctorLite(execProject);
+    const issue = result.issues.find(
+      (i) => i.code === 'missing_context' && i.unitId === 'M001',
+    );
+    assert.ok(issue, 'Should detect M001 missing context');
+    assert.equal(issue.severity, 'error', 'Should elevate severity to error for active milestone in execution phase');
+    assert.match(issue.message, /dispatch will regress/);
+    rmSync(execProject, { recursive: true, force: true });
+  });
+
+  it('keeps missing_context as warning when active milestone is NOT in execution phase', () => {
+    const planProject = tmpProject();
+    writeFixture(planProject, '.gsd/PROJECT.md', '# Test Project');
+    writeFixture(planProject, '.gsd/STATE.md', `# GSD State
+
+**Active Milestone:** M001: Build Feature
+**Active Slice:** S01: First slice
+**Phase:** planning
+
+## Milestone Registry
+
+- 🔄 **M001:** Build Feature
+`);
+    mkdirSync(join(planProject, '.gsd/milestones/M001'), { recursive: true });
+
+    const result = runDoctorLite(planProject);
+    const issue = result.issues.find(
+      (i) => i.code === 'missing_context' && i.unitId === 'M001',
+    );
+    assert.ok(issue, 'Should detect M001 missing context');
+    assert.equal(issue.severity, 'warning', 'Should remain warning for non-execution phase');
+    rmSync(planProject, { recursive: true, force: true });
+  });
 });
