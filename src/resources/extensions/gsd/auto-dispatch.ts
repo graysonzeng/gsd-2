@@ -13,6 +13,7 @@ import type { GSDState } from "./types.js";
 import type { GSDPreferences } from "./preferences.js";
 import type { UatType } from "./files.js";
 import type { MinimalModelRegistry } from "./context-budget.js";
+import type { ContinuityDecision } from "./auto/types.js";
 import { loadFile, extractUatType, loadActiveOverrides } from "./files.js";
 import { isDbAvailable, getMilestoneSlices, getPendingGates, markAllGatesOmitted, getMilestone, updateMilestoneStatus, getAssessment } from "./gsd-db.js";
 import { isClosedStatus } from "./status-guards.js";
@@ -60,7 +61,7 @@ import {
 import { resolveModelWithFallbacksForUnit } from "./preferences-models.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { selectReactiveDispatchBatch } from "./uok/execution-graph.js";
-import { EXECUTION_ENTRY_PHASES, hasFinalizedMilestoneContext } from "./uok/plan-v2.js";
+import { EXECUTION_ENTRY_PHASES, resolveFinalizedMilestoneContextVisibility } from "./uok/plan-v2.js";
 import { VALIDATION_ERROR_CODES } from "./validation-error-codes.js";
 import { resolveCanonicalMilestoneArtifactPath, resolveCanonicalMilestoneFile, resolveCanonicalMilestonePath } from "./worktree-manager.js";
 
@@ -108,6 +109,41 @@ function missingSliceStop(mid: string, phase: string): DispatchAction {
     reason: `${mid}: phase "${phase}" has no active slice — run /gsd doctor.`,
     level: "error",
   };
+}
+
+const CONTINUATION_EXECUTION_TARGETS = new Set([
+  "execute-task",
+  "complete-slice",
+  "gate-evaluate",
+  "evaluate-gates",
+  "validate-milestone",
+  "complete-milestone",
+]);
+
+function isExecutionContinuationTarget(decision: ContinuityDecision | null | undefined): decision is ContinuityDecision {
+  if (!decision) return false;
+  if (!decision.autoContinued) return false;
+  if (decision.breakpointClass !== "auto-resumable") return false;
+  if (decision.signal !== "continue-loop" && decision.signal !== "retry-loop") return false;
+  return !!decision.nextUnitType && CONTINUATION_EXECUTION_TARGETS.has(decision.nextUnitType);
+}
+
+function formatContextVisibilityMismatchReason(
+  mid: string,
+  decision: ContinuityDecision,
+  visibility: ReturnType<typeof resolveFinalizedMilestoneContextVisibility>,
+): string {
+  const checkedBases = visibility.checkedBases.join(", ");
+  const conflict = visibility.status === "path-conflict"
+    ? `, conflictingPath=${visibility.conflictingPath}, conflictKind=${visibility.conflictKind}`
+    : "";
+  const missing = visibility.status === "missing" ? `, missingReason=${visibility.reason}` : "";
+  return [
+    `Internal inconsistency: continuation target expects finalized context for ${mid}, but artifact visibility is ${visibility.status}.`,
+    `Expected next unit: ${decision.nextUnitType}${decision.nextUnitId ? ` ${decision.nextUnitId}` : ""}.`,
+    `canonicalPath=${visibility.canonicalPath}${missing}${conflict}, checkedBases=${checkedBases}.`,
+    "Auto-mode stopped without redispatching discuss-milestone.",
+  ].join(" ");
 }
 
 function resolveExpectedMilestoneArtifactPath(
@@ -338,11 +374,20 @@ export const DISPATCH_RULES: DispatchRule[] = [
     // Fire BEFORE the execution-entry phase rules so we redispatch to
     // `discuss-milestone` instead of hitting the plan-v2 gate.
     name: "execution-entry phase (no context) → discuss-milestone",
-    match: async ({ state, mid, midTitle, basePath, structuredQuestionsAvailable }) => {
+    match: async ({ state, mid, midTitle, basePath, session, structuredQuestionsAvailable }) => {
       if (!EXECUTION_ENTRY_PHASES.has(state.phase)) return null;
       // Align with the plan-v2 gate's lookup semantics: whitespace-only counts
       // as missing, and an auto worktree may fall back to GSD_PROJECT_ROOT.
-      if (hasFinalizedMilestoneContext(basePath, mid)) return null;
+      const visibility = resolveFinalizedMilestoneContextVisibility(basePath, mid);
+      if (visibility.status === "present") return null;
+      const continuityDecision = session?.lastContinuityDecision;
+      if (isExecutionContinuationTarget(continuityDecision)) {
+        return {
+          action: "stop",
+          level: "error",
+          reason: formatContextVisibilityMismatchReason(mid, continuityDecision, visibility),
+        };
+      }
       return {
         action: "dispatch",
         unitType: "discuss-milestone",

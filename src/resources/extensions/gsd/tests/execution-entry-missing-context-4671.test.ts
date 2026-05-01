@@ -17,6 +17,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DISPATCH_RULES, type DispatchContext } from "../auto-dispatch.ts";
 import type { GSDState, Phase } from "../types.ts";
+import { AutoSession } from "../auto/session.ts";
+import { buildDiscussMilestonePrompt } from "../auto-prompts.ts";
+import { resolveFinalizedMilestoneContextVisibility } from "../uok/plan-v2.ts";
 
 const RULE_NAME_TOKEN = "execution-entry phase (no context)";
 
@@ -59,6 +62,29 @@ function buildCtx(basePath: string, state: GSDState): DispatchContext {
   };
 }
 
+function buildContinuationSession(nextUnitType = "execute-task", nextUnitId = "M001/S01/T01"): AutoSession {
+  const session = new AutoSession();
+  session.lastContinuityDecision = {
+    sourcePhase: "dispatch",
+    signal: "continue-loop",
+    breakpointClass: "auto-resumable",
+    autoContinued: true,
+    workflowStatusBefore: "executing",
+    workflowStatusAfter: "executing",
+    nextAction: `Run ${nextUnitType}`,
+    nextUnitType,
+    nextUnitId,
+  };
+  return session;
+}
+
+function makeLiveWorktree(basePath: string, milestoneId: string): string {
+  const worktreePath = join(basePath, ".gsd", "worktrees", milestoneId);
+  mkdirSync(worktreePath, { recursive: true });
+  writeFileSync(join(worktreePath, ".git"), `gitdir: ${join(basePath, ".git", "worktrees", milestoneId)}\n`);
+  return worktreePath;
+}
+
 describe("#4671 execution-entry phase missing-context recovery", () => {
   const executionEntryPhases: Phase[] = [
     "executing",
@@ -99,6 +125,75 @@ describe("#4671 execution-entry phase missing-context recovery", () => {
     }
   });
 
+  test("context visibility reports present for canonical milestone-scoped context", () => {
+    const basePath = makeBasePath("visibility-present");
+    try {
+      writeFileSync(
+        join(basePath, ".gsd", "milestones", "M001", "M001-CONTEXT.md"),
+        "# M001 Context\n\nSome real context.\n",
+      );
+      const visibility = resolveFinalizedMilestoneContextVisibility(basePath, "M001");
+      assert.equal(visibility.status, "present");
+      if (visibility.status === "present") {
+        assert.equal(visibility.path, join(basePath, ".gsd", "milestones", "M001", "M001-CONTEXT.md"));
+      }
+    } finally {
+      rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
+  test("context visibility reports missing for empty canonical context", () => {
+    const basePath = makeBasePath("visibility-empty");
+    try {
+      writeFileSync(
+        join(basePath, ".gsd", "milestones", "M001", "M001-CONTEXT.md"),
+        " \n\t\n",
+      );
+      const visibility = resolveFinalizedMilestoneContextVisibility(basePath, "M001");
+      assert.equal(visibility.status, "missing");
+      if (visibility.status === "missing") {
+        assert.equal(visibility.reason, "empty");
+      }
+    } finally {
+      rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
+  test("context visibility reports path-conflict for root-level legacy context", () => {
+    const basePath = makeBasePath("visibility-root-conflict");
+    try {
+      writeFileSync(join(basePath, ".gsd", "CONTEXT.md"), "# Legacy root context\n");
+      const visibility = resolveFinalizedMilestoneContextVisibility(basePath, "M001");
+      assert.equal(visibility.status, "path-conflict");
+      if (visibility.status === "path-conflict") {
+        assert.equal(visibility.conflictKind, "root-level-legacy");
+        assert.equal(visibility.conflictingPath, join(basePath, ".gsd", "CONTEXT.md"));
+      }
+    } finally {
+      rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
+  test("context visibility reports path-conflict when live worktree lacks context but project root has it", () => {
+    const basePath = makeBasePath("visibility-worktree-conflict");
+    try {
+      const worktreePath = makeLiveWorktree(basePath, "M001");
+      mkdirSync(join(worktreePath, ".gsd", "milestones", "M001"), { recursive: true });
+      writeFileSync(
+        join(basePath, ".gsd", "milestones", "M001", "M001-CONTEXT.md"),
+        "# M001 Context\n\nProject root context.\n",
+      );
+      const visibility = resolveFinalizedMilestoneContextVisibility(basePath, "M001");
+      assert.equal(visibility.status, "path-conflict");
+      if (visibility.status === "path-conflict") {
+        assert.equal(visibility.conflictKind, "lookup-base-mismatch");
+        assert.equal(visibility.conflictingPath, join(basePath, ".gsd", "milestones", "M001", "M001-CONTEXT.md"));
+      }
+    } finally {
+      rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
   test("phase=executing accepts finalized CONTEXT.md from GSD_PROJECT_ROOT fallback", async () => {
     const projectRoot = makeBasePath("project-root-context");
     const worktreeBase = makeBasePath("worktree-context");
@@ -124,6 +219,49 @@ describe("#4671 execution-entry phase missing-context recovery", () => {
       }
       rmSync(projectRoot, { recursive: true, force: true });
       rmSync(worktreeBase, { recursive: true, force: true });
+    }
+  });
+
+  test("phase=executing with continuation target and missing context → stops instead of discuss-milestone", async () => {
+    const basePath = makeBasePath("continuation-missing");
+    try {
+      const ctx = {
+        ...buildCtx(basePath, buildState("executing")),
+        session: buildContinuationSession(),
+      };
+      const action = await findRule().match(ctx);
+      assert.ok(action, "rule must return an action when continuation context is inconsistent");
+      assert.equal(action!.action, "stop");
+      if (action!.action === "stop") {
+        assert.equal(action.level, "error");
+        assert.match(action.reason, /Internal inconsistency/);
+        assert.match(action.reason, /Expected next unit: execute-task M001\/S01\/T01/);
+        assert.match(action.reason, /artifact visibility is missing/);
+        assert.doesNotMatch(action.reason, /ask_user_questions/);
+      }
+    } finally {
+      rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
+  test("phase=executing with continuation target and path conflict → stops instead of discuss-milestone", async () => {
+    const basePath = makeBasePath("continuation-conflict");
+    try {
+      writeFileSync(join(basePath, ".gsd", "CONTEXT.md"), "# Legacy root context\n");
+      const ctx = {
+        ...buildCtx(basePath, buildState("executing")),
+        session: buildContinuationSession(),
+      };
+      const action = await findRule().match(ctx);
+      assert.ok(action, "rule must return an action when continuation context has path conflict");
+      assert.equal(action!.action, "stop");
+      if (action!.action === "stop") {
+        assert.equal(action.level, "error");
+        assert.match(action.reason, /artifact visibility is path-conflict/);
+        assert.match(action.reason, /conflictKind=root-level-legacy/);
+      }
+    } finally {
+      rmSync(basePath, { recursive: true, force: true });
     }
   });
 
@@ -153,6 +291,23 @@ describe("#4671 execution-entry phase missing-context recovery", () => {
       if (action?.action === "dispatch") {
         assert.strictEqual(action.unitType, "discuss-milestone");
       }
+    } finally {
+      rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
+  test("buildDiscussMilestonePrompt includes milestone-scoped artifact paths", async () => {
+    const basePath = makeBasePath("discuss-prompt-paths");
+    try {
+      writeFileSync(
+        join(basePath, ".gsd", "milestones", "M001", "M001-ROADMAP.md"),
+        "# M001 Roadmap\n",
+      );
+      const prompt = await buildDiscussMilestonePrompt("M001", "Test milestone", basePath, "true");
+      assert.match(prompt, /## Milestone Artifact Paths/);
+      assert.match(prompt, /Context output: `\.gsd\/milestones\/M001\/M001-CONTEXT\.md`/);
+      assert.match(prompt, /Roadmap context: `\.gsd\/milestones\/M001\/M001-ROADMAP\.md`/);
+      assert.doesNotMatch(prompt, /Roadmap context: `\.gsd\/ROADMAP\.md`/);
     } finally {
       rmSync(basePath, { recursive: true, force: true });
     }

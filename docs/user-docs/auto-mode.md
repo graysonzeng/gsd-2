@@ -236,6 +236,89 @@ Auto mode reads disk state and picks up where it left off.
 
 Stops auto mode gracefully. Can be run from a different terminal.
 
+## Supervised Loop Operations
+
+When you want to actively supervise a live auto-mode run, use a second terminal as a **supervisor**. The worker session keeps running under `/gsd auto`; the supervisor only observes state, decides whether a pause is safe to resume, and captures evidence when the run stops.
+
+### Recommended Polling Cadence
+
+- **0–15s after start** — confirm the run actually entered an active unit
+- **Steady state** — poll every **30–60s**
+- **Pause, anomaly, or stop** — inspect immediately rather than waiting for the next cycle
+
+A typical supervision pass is:
+
+1. Run `/gsd status`
+2. Tail the current journal file
+3. Check `.gsd/runtime/auto-loop-report.json` if the run paused or exited
+4. Run `/gsd doctor` or `/gsd forensics` only when the health or stop reason is unclear
+
+### Real-Time Journal Inspection
+
+Watch the current day's journal in real time:
+
+```bash
+tail -f .gsd/journal/$(date +%F).jsonl
+```
+
+Filter to the key supervision events:
+
+```bash
+tail -f .gsd/journal/$(date +%F).jsonl \
+  | grep --line-buffered 'continuity-decision\|guard-block\|stuck-detected\|terminal\|auto-exit'
+```
+
+These event types are the most useful for supervised runs:
+
+- `unit-start` / `unit-end` — confirms real unit progress
+- `continuity-decision` — explains why auto-mode continued, paused, or stopped
+- `guard-block` — shows a precondition or readiness failure
+- `terminal` / `auto-exit` — indicates the loop has finished or bailed out
+
+### Pause and Resume Decision Flow
+
+Use `/gsd auto` to resume a paused single-milestone run. Do **not** hand-edit runtime state files.
+
+Safe cases to resume:
+
+- provider transient pause (`pause-provider`)
+- manual or remote pause with intact state
+- context-window pause where state and health are still good
+
+Cases that should stop for investigation instead of auto-resume:
+
+- `guard-block`
+- `stuck-detected`
+- `stop-no-progress`
+- `stop-error`
+- `pause-budget`
+- `doctor` reporting a fatal structural problem
+
+A simple operator flow:
+
+```text
+/gsd status says paused
+→ inspect latest continuity-decision in journal
+→ if safe-resumable, run /gsd auto
+→ if hard-stop or unclear, capture evidence and investigate instead of resuming
+```
+
+### Runtime Evidence Files
+
+When a run pauses or exits, inspect these files alongside `/gsd status`:
+
+- `.gsd/runtime/paused-session.json` — persisted pause metadata for resumable sessions
+- `.gsd/runtime/auto-loop-report.json` — stop reason, iteration history, and loop summary
+- `.gsd/STATE.md` — confirms whether workflow state actually advanced
+
+Use all three together when judging whether a run completed cleanly or merely stopped.
+
+### When to Use Doctor and Forensics
+
+Use `/gsd doctor` when you suspect a structural problem with the repo or `.gsd` state.
+
+Use `/gsd forensics` after a failed or stuck run when you need a post-mortem with anomaly detection, traces, and evidence pointers.
+
 ### Steer
 
 ```

@@ -1139,16 +1139,26 @@ export async function buildDiscussMilestonePrompt(
     commitInstruction: "Do not commit planning artifacts — .gsd/ is managed externally.",
     fastPathInstruction: "",
   });
+  const artifactPathBlock = [
+    "## Milestone Artifact Paths",
+    "",
+    `- Context output: \`${relMilestoneFile(base, mid, "CONTEXT")}\``,
+    `- Context draft: \`${relMilestoneFile(base, mid, "CONTEXT-DRAFT")}\``,
+    `- Roadmap context: \`${relMilestoneFile(base, mid, "ROADMAP")}\``,
+    "",
+    `Use milestone-scoped paths under \`${relMilestonePath(base, mid)}\`; do not use root-level \`.gsd/ROADMAP.md\` or \`.gsd/CONTEXT.md\` for milestone artifacts.`,
+  ].join("\n");
+  const promptWithArtifactPaths = `${basePrompt}\n\n${artifactPathBlock}`;
 
   // If a CONTEXT-DRAFT.md exists, append it as seed material
   const draftPath = resolveMilestoneFile(base, mid, "CONTEXT-DRAFT");
   const draftContent = draftPath ? await loadFile(draftPath) : null;
 
   if (draftContent) {
-    return `${basePrompt}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${draftContent}`;
+    return `${promptWithArtifactPaths}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${draftContent}`;
   }
 
-  return basePrompt;
+  return promptWithArtifactPaths;
 }
 
 export async function buildResearchMilestonePrompt(mid: string, midTitle: string, base: string): Promise<string> {
