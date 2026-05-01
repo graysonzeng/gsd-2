@@ -66,6 +66,8 @@ linked_design: docs/superpowers/specs/2026-04-29-phase-discipline-auto-mode-supe
 
 | Iteration# | Dispatch rule / phase | Unit | Phase outcome | Duration | Notes |
 |---|---|---|---|---|---|
+| 2026-04-29 / #1 | `planning → plan-slice` then bootstrap verification | `M005/S01` | completed | ~17m | S01 filled run-log metadata + pre-run checklist, and left M005 with 3 slices / 5 tasks ready for auto execution |
+| 2026-05-01 / #1 | `executing → execute-task` and post-unit closeout | `M005/S02` | completed | ~1 slice session | S02 shipped supervised-loop operator docs plus verification checklist, then completed slice closeout and reassessment without runtime mutations |
 | 2026-04-30 / #1 | `execution-entry phase (no context) → discuss-milestone` | `M005` | cancelled | ~93s | Expected `execute-task T01` for S02, but dispatch re-entered milestone discussion path |
 
 记录原则：
