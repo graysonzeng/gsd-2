@@ -399,3 +399,17 @@ reactive_execution: true    # disabled by default
 The graph derivation is pure and deterministic — it resolves a ready-set of tasks, detects conflicts, and guards against deadlocks. Verification results carry forward across parallel batches, so tasks that pass verification don't need to be re-verified when subsequent tasks in the same slice complete.
 
 The implementation lives in `reactive-graph.ts` (graph derivation, ready-set resolution, conflict/deadlock detection) with integration into `auto-dispatch.ts` and `auto-prompts.ts`.
+
+## Supervised Loop Verification Notes
+
+To verify the supervised-loop guidance end to end, run a real `/gsd auto` session in one terminal and use a second terminal as the supervisor described above.
+
+A reader following the documented flow should be able to:
+
+1. Start or attach to the worker with `/gsd auto`
+2. Confirm activity with `/gsd status`
+3. Tail `.gsd/journal/$(date +%F).jsonl` and observe the same supervision events referenced earlier in this guide, especially `unit-start`, `unit-end`, and `continuity-decision`
+4. If the run pauses or exits, inspect `.gsd/runtime/paused-session.json`, `.gsd/runtime/auto-loop-report.json`, and `.gsd/STATE.md`
+5. Resume only with `/gsd auto` when the latest continuity decision matches one of the safe-resumable cases documented in **Pause and Resume Decision Flow**
+
+If those checks line up with the live run, then the supervised-loop section is internally consistent: the commands are executable, the journal path matches the documented pattern, and the evidence files named in the guide are the ones an operator actually needs.
