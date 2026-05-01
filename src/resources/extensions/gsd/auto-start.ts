@@ -978,7 +978,13 @@ export async function bootstrapAutoSession(
       "starting",
       s.currentMilestoneId ?? "unknown",
     );
-    writeLock(lockBase(), "starting", s.currentMilestoneId ?? "unknown");
+    writeLock(
+      lockBase(),
+      "starting",
+      s.currentMilestoneId ?? "unknown",
+      undefined,
+      s.currentRunId ?? undefined,
+    );
 
     // Secrets collection gate
     const mid = state.activeMilestone!.id;

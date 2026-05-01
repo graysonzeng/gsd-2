@@ -206,45 +206,97 @@ function formatDuration(ms: number): string {
 // Extension UI Auto-Responder
 // ---------------------------------------------------------------------------
 
+/**
+ * Titles known to be safe for unsupervised headless auto-response.
+ * Any `select` whose title matches one of these patterns is classified as
+ * `safe-auto-response` and will be answered with the first option (or the
+ * appropriate option for that specific prompt).
+ *
+ * All other `select` requests default to `requires-supervision` — headless
+ * will NOT auto-answer them, preventing the orchestrator from accidentally
+ * being driven into interactive flows (e.g. "Create next milestone").
+ */
+const SAFE_SELECT_TITLES: ReadonlyArray<(title: string) => boolean> = [
+  // Lock-guard: "Auto-mode is running on this project" — needs Force start
+  (t) => t.includes('Auto-mode is running'),
+  // Lock-guard: "Step-mode is running on this project"
+  (t) => t.includes('Step-mode is running'),
+]
+
+export interface HandleUIRequestResult {
+  /** True if the request was handled (responded to). False if blocked. */
+  handled: boolean
+  /** When blocked, contains the structured blocked info. */
+  blockedInfo?: {
+    reason: 'needs-supervised-input'
+    command?: string
+    method: string
+    title: string
+    options?: string[]
+  }
+}
+
 export function handleExtensionUIRequest(
   event: ExtensionUIRequest,
   client: RpcClient,
-): void {
+  options?: { supervised?: boolean },
+): HandleUIRequestResult {
   const { id, method } = event
 
   switch (method) {
     case 'select': {
-      // Lock-guard prompts list "View status" first, but headless needs "Force start"
-      // to proceed. Detect by title and pick the force option.
       const title = String(event.title ?? '')
+
+      // Check if this select is on the safe whitelist
+      const isSafe = SAFE_SELECT_TITLES.some(check => check(title))
+
+      if (!isSafe) {
+        // Fail-closed: do NOT auto-answer this select.
+        // Return without sending a response — the caller must handle the blocked state.
+        return {
+          handled: false,
+          blockedInfo: {
+            reason: 'needs-supervised-input',
+            method: 'select',
+            title,
+            options: event.options,
+          },
+        }
+      }
+
+      // Safe select — auto-respond
       let selected = event.options?.[0] ?? ''
       if (title.includes('Auto-mode is running') && event.options) {
         const forceOption = event.options.find(o => o.toLowerCase().includes('force start'))
         if (forceOption) selected = forceOption
       }
+      if (title.includes('Step-mode is running') && event.options) {
+        const forceOption = event.options.find(o => o.toLowerCase().includes('force start'))
+        if (forceOption) selected = forceOption
+      }
       client.sendUIResponse(id, { value: selected })
-      break
+      return { handled: true }
     }
     case 'confirm':
       client.sendUIResponse(id, { confirmed: true })
-      break
+      return { handled: true }
     case 'input':
       client.sendUIResponse(id, { value: '' })
-      break
+      return { handled: true }
     case 'editor':
       client.sendUIResponse(id, { value: event.prefill ?? '' })
-      break
+      return { handled: true }
     case 'notify':
     case 'setStatus':
     case 'setWidget':
     case 'setTitle':
     case 'set_editor_text':
       client.sendUIResponse(id, { value: '' })
-      break
+      return { handled: true }
     default:
       process.stderr.write(`[headless] Warning: unknown extension_ui_request method "${method}", cancelling\n`)
       client.sendUIResponse(id, { cancelled: true })
-      break
+      return { handled: true }
   }
 }
 

@@ -1,6 +1,7 @@
 import {
   getCurrentScopeLabel,
   getLiveAutoDashboard,
+  getLiveAutoExecutionTimeline,
   getLiveWorkspaceIndex,
   getProjectDisplayName,
   getStatusPresentation,
@@ -15,6 +16,7 @@ import {
   type WorkspaceIndex,
   type WorkspaceStoreState,
 } from "./gsd-workspace-store"
+import type { AutoExecutionEvent } from "./auto-execution-types"
 
 export type PowerModeTone = "success" | "warning" | "danger" | "info" | "muted"
 
@@ -51,6 +53,7 @@ export type AutoModeTimelineItem =
   | { kind: "status"; id: string; label: string; content: string; tone: PowerModeTone }
   | { kind: "error"; id: string; content: string }
   | { kind: "waiting-tail"; id: string; content: string }
+  | { kind: "run-event"; id: string; label: string; content: string; tone: PowerModeTone }
   | {
       kind: "turn-divider"
       id: string
@@ -305,8 +308,100 @@ function countTurnStats(segments: TurnSegment[]): { toolCount: number; messageCo
   return { toolCount, messageCount, thinkingCount }
 }
 
+function mapExecutionEvent(event: AutoExecutionEvent): AutoModeTimelineItem | null {
+  switch (event.kind) {
+    case "thinking":
+      return event.body ? { kind: "thinking", id: event.id, content: event.body } : null
+    case "message":
+      return event.body ? { kind: "message", id: event.id, content: event.body } : null
+    case "tool-end":
+      return {
+        kind: event.kind === "tool-end" ? "status" : "status",
+        id: event.id,
+        label: event.tool?.name ?? "tool",
+        content: event.tool?.resultPreview ?? event.body ?? event.title,
+        tone: event.tool?.isError ? "danger" : "info",
+      }
+    case "error":
+      return { kind: "error", id: event.id, content: event.body ?? event.title }
+    case "continuity":
+      return {
+        kind: "run-event",
+        id: event.id,
+        label: event.title,
+        content: event.body ?? "Continuity decision made",
+        tone: event.body && /stop|pause|cancel/i.test(event.body) ? "warning" : "muted",
+      }
+    case "verification":
+      return {
+        kind: "run-event",
+        id: event.id,
+        label: event.title,
+        content: event.body ?? "Verification in progress",
+        tone: "warning",
+      }
+    case "guard":
+      return {
+        kind: "run-event",
+        id: event.id,
+        label: event.title,
+        content: event.body ?? "Guard condition triggered",
+        tone: "danger",
+      }
+    case "agent-span-start":
+    case "agent-span-end":
+      return {
+        kind: "run-event",
+        id: event.id,
+        label: event.title,
+        content: event.body ?? event.title,
+        tone: "info",
+      }
+    case "file-diff":
+      return {
+        kind: "status",
+        id: event.id,
+        label: "Files changed",
+        content: event.diff?.files?.join(", ") ?? event.body ?? event.title,
+        tone: "info",
+      }
+    case "tool-start":
+    case "tool-update":
+      return {
+        kind: "status",
+        id: event.id,
+        label: event.tool?.name ?? "tool",
+        content: event.body ?? event.title,
+        tone: "info",
+      }
+    case "run-start":
+    case "run-end":
+    case "unit-start":
+    case "unit-end":
+    case "model-selected":
+      return {
+        kind: "run-event",
+        id: event.id,
+        label: event.kind,
+        content: event.body ?? event.title,
+        tone: event.kind === "run-end" && /stop|error|cancel/i.test(event.body ?? event.title) ? "warning" : "muted",
+      }
+    default:
+      return null
+  }
+}
+
 export function deriveAutoModeTimeline(state: AutoModeState, now = Date.now()): AutoModeTimelineItem[] {
   const items: AutoModeTimelineItem[] = []
+  const historicalTimeline = getLiveAutoExecutionTimeline(state).map(mapExecutionEvent).filter(Boolean) as AutoModeTimelineItem[]
+
+  // Collect historical IDs for dedup
+  const historicalIds = new Set<string>()
+  historicalTimeline.forEach((item) => {
+    historicalIds.add(item.id)
+  })
+
+  items.push(...historicalTimeline)
 
   // Prepend structural errors (bridge / client) only when present.
   const bridgeError = state.lastBridgeError?.message
@@ -418,12 +513,13 @@ export function deriveAutoModeTimeline(state: AutoModeState, now = Date.now()): 
   } else {
     const auto = getLiveAutoDashboard(state)
     auto?.completedUnits?.forEach((unit) => {
+      const finishedAt = unit.finishedAt ?? Date.now()
       items.push({
         kind: "unit-done",
-        id: `unit-done-${unit.type}-${unit.id}-${unit.finishedAt}`,
+        id: `unit-done-${unit.type}-${unit.id}-${finishedAt}`,
         unitType: unit.type,
         unitId: unit.id,
-        durationMs: Math.max(0, unit.finishedAt - unit.startedAt),
+        durationMs: Math.max(0, finishedAt - unit.startedAt),
       })
     })
   }

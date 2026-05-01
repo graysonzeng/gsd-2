@@ -65,6 +65,7 @@ import type {
   SessionManageResponse,
 } from "./session-browser-contract"
 import { authFetch, appendAuthParam } from "./auth"
+import type { AutoExecutionEvent } from "./auto-execution-types"
 import { ContextualTips } from "../../packages/pi-coding-agent/src/core/contextual-tips.ts"
 import type {
   WorkspaceIndex,
@@ -151,14 +152,30 @@ export interface RtkSessionSavings {
   updatedAt: string
 }
 
+export interface AutoDashboardUnit {
+  type: string
+  id: string
+  startedAt: number
+  finishedAt?: number
+  runId?: string
+  unitRunId?: string
+  flowId?: string
+  sessionId?: string
+  sessionFile?: string | null
+  model?: string | null
+  status?: string | null
+  commitSha?: string | null
+  changedFiles?: string[]
+}
+
 export interface AutoDashboardData {
   active: boolean
   paused: boolean
   stepMode: boolean
   startTime: number
   elapsed: number
-  currentUnit: { type: string; id: string; startedAt: number } | null
-  completedUnits: { type: string; id: string; startedAt: number; finishedAt: number }[]
+  currentUnit: AutoDashboardUnit | null
+  completedUnits: AutoDashboardUnit[]
   basePath: string
   totalCost: number
   totalTokens: number
@@ -377,6 +394,7 @@ export interface WorkspaceLiveFreshnessState {
 
 export interface WorkspaceLiveState {
   auto: AutoDashboardData | null
+  autoExecutionTimeline: AutoExecutionEvent[]
   workspace: WorkspaceIndex | null
   resumableSessions: BootResumableSession[]
   recoverySummary: WorkspaceRecoverySummary
@@ -1677,6 +1695,7 @@ function createInitialWorkspaceLiveFreshnessState(): WorkspaceLiveFreshnessState
 function createInitialWorkspaceLiveState(): WorkspaceLiveState {
   return {
     auto: null,
+    autoExecutionTimeline: [],
     workspace: null,
     resumableSessions: [],
     recoverySummary: createInitialRecoverySummary(),
@@ -1742,6 +1761,12 @@ export function getLiveAutoDashboard(
   state: Pick<WorkspaceStoreState, "boot" | "live">,
 ): AutoDashboardData | null {
   return state.live.auto ?? state.boot?.auto ?? null
+}
+
+export function getLiveAutoExecutionTimeline(
+  state: Pick<WorkspaceStoreState, "live">,
+): AutoExecutionEvent[] {
+  return state.live.autoExecutionTimeline ?? []
 }
 
 export function getLiveResumableSessions(
@@ -1833,6 +1858,7 @@ function applyBootToLiveState(
   const next: WorkspaceLiveState = {
     ...current,
     auto: boot.auto,
+    autoExecutionTimeline: current.autoExecutionTimeline,
     workspace: boot.workspace,
     resumableSessions: boot.resumableSessions,
     freshness: {
@@ -4403,6 +4429,7 @@ export class GSDWorkspaceStore {
       })
       const payload = await response.json().catch(() => null) as {
         auto?: AutoDashboardData
+        autoExecutionTimeline?: AutoExecutionEvent[]
         workspace?: WorkspaceIndex
         resumableSessions?: BootResumableSession[]
         bridge: BridgeRuntimeSnapshot
@@ -4425,6 +4452,7 @@ export class GSDWorkspaceStore {
 
       if (requestedDomains.includes("auto") && payload.auto) {
         nextLive.auto = payload.auto
+        if (payload.autoExecutionTimeline) nextLive.autoExecutionTimeline = payload.autoExecutionTimeline
         nextLive.freshness.auto = withFreshnessSucceeded(nextLive.freshness.auto)
         nextBoot = nextBoot
           ? {

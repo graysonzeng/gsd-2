@@ -46,7 +46,7 @@ import {
   EXIT_INCOMPLETE,
 } from './headless-events.js'
 
-import type { OutputFormat, HeadlessJsonResult, HeadlessCommandStatus, HeadlessWorkflowSnapshot } from './headless-types.js'
+import type { OutputFormat, HeadlessJsonResult, HeadlessBlockedEvent, HeadlessCommandStatus, HeadlessWorkflowSnapshot } from './headless-types.js'
 import { VALID_OUTPUT_FORMATS } from './headless-types.js'
 
 import {
@@ -59,7 +59,7 @@ import {
   formatThinkingEnd,
   startSupervisedStdinReader,
 } from './headless-ui.js'
-import type { ExtensionUIRequest, ProgressContext } from './headless-ui.js'
+import type { ExtensionUIRequest, ProgressContext, HandleUIRequestResult } from './headless-ui.js'
 
 import {
   loadContext,
@@ -425,6 +425,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   let totalEvents = 0
   let toolCallCount = 0
   let blocked = false
+  let blockedReason: string | undefined
   let completed = false
   let exitCode = 0
   let timedOut = false
@@ -467,6 +468,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
       commandStatus,
       workflowStatus: workflowSnapshot?.status,
       workflow: workflowSnapshot,
+      ...(blockedReason ? { reason: blockedReason } : {}),
       sessionId: lastSessionId,
       duration,
       cost: {
@@ -480,6 +482,25 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
       events: totalEvents,
     }
     process.stdout.write(JSON.stringify(result) + '\n')
+  }
+
+  // Helper: emit headless_blocked event in supervised timeout fallback
+  function emitHeadlessBlocked(blockedInfo: NonNullable<HandleUIRequestResult['blockedInfo']>, opts: HeadlessOptions): void {
+    const blockedEvent: HeadlessBlockedEvent = {
+      type: 'headless_blocked',
+      reason: blockedInfo.reason,
+      command: opts.command,
+      method: blockedInfo.method,
+      title: blockedInfo.title,
+      options: blockedInfo.options,
+    }
+    if (opts.outputFormat === 'stream-json') {
+      process.stdout.write(JSON.stringify(blockedEvent) + '\n')
+    }
+    process.stderr.write(`[headless] Blocked: interactive request requires supervision\n`)
+    process.stderr.write(`[headless] Reason: ${blockedInfo.reason}\n`)
+    process.stderr.write(`[headless] Request: ${blockedInfo.method} "${blockedInfo.title}"\n`)
+    process.stderr.write(`[headless] Hint: rerun with --supervised, provide --answers, or create/unpark a milestone first\n`)
   }
 
   function trackEvent(event: Record<string, unknown>): void {
@@ -796,12 +817,55 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
         const eventId = String(eventObj.id ?? '')
         const timer = setTimeout(() => {
           pendingResponseTimers.delete(eventId)
-          handleExtensionUIRequest(eventObj as unknown as ExtensionUIRequest, client)
+          const result = handleExtensionUIRequest(eventObj as unknown as ExtensionUIRequest, client)
+          if (!result.handled && result.blockedInfo) {
+            // Supervised timeout + unhandled select: emit advisory timeout event only.
+            // Do NOT emit headless_blocked here — that event is reserved as a
+            // command-level terminal state for unsupervised fail-closed only.
+            // The orchestrator may still send a late response to unblock.
+            process.stderr.write(`[headless] Supervised timeout: interactive request not handled within deadline\n`)
+            process.stderr.write(`[headless] Request: ${result.blockedInfo.method} "${result.blockedInfo.title}"\n`)
+            process.stderr.write(`[headless] Hint: respond via stdin or rerun with --answers\n`)
+          }
           process.stdout.write(JSON.stringify({ type: 'supervised_timeout', id: eventId, method }) + '\n')
         }, responseTimeout)
         pendingResponseTimers.set(eventId, timer)
       } else {
-        handleExtensionUIRequest(eventObj as unknown as ExtensionUIRequest, client)
+        const result = handleExtensionUIRequest(eventObj as unknown as ExtensionUIRequest, client)
+        if (!result.handled && result.blockedInfo) {
+          // Fail-closed: unsupervised headless encountered a select that requires supervision
+          blocked = true
+          blockedReason = result.blockedInfo.reason
+          completed = true
+          exitCode = EXIT_BLOCKED
+
+          // Emit structured headless_blocked event
+          const blockedEvent: HeadlessBlockedEvent = {
+            type: 'headless_blocked',
+            reason: result.blockedInfo.reason,
+            command: options.command,
+            method: result.blockedInfo.method,
+            title: result.blockedInfo.title,
+            options: result.blockedInfo.options,
+          }
+
+          // Output in stream-json mode as independent event line
+          if (options.outputFormat === 'stream-json') {
+            process.stdout.write(JSON.stringify(blockedEvent) + '\n')
+          }
+
+          // Always emit to stderr for human/script consumption
+          process.stderr.write(`[headless] Blocked: interactive request requires supervision\n`)
+          process.stderr.write(`[headless] Reason: ${result.blockedInfo.reason}\n`)
+          process.stderr.write(`[headless] Request: ${result.blockedInfo.method} "${result.blockedInfo.title}"\n`)
+          process.stderr.write(`[headless] Hint: rerun with --supervised, provide --answers, or create/unpark a milestone first\n`)
+
+          // Cancel the UI request so the child session doesn't hang
+          client.sendUIResponse(String(eventObj.id ?? ''), { cancelled: true })
+
+          resolveCompletion()
+          return
+        }
       }
 
       // If we detected a terminal notification, resolve after responding

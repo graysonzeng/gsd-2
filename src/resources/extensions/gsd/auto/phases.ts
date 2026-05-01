@@ -230,6 +230,9 @@ async function emitCancelledUnitEnd(
       unitId,
       status: "cancelled",
       artifactVerified: false,
+      runId: ic.s.currentRunId ?? undefined,
+      unitRunId: ic.flowId,
+      flowId: ic.flowId,
       ...(errorContext ? { errorContext } : {}),
     },
     causedBy: { flowId: ic.flowId, seq: unitStartSeq },
@@ -267,6 +270,9 @@ async function failClosedOnFinalizeTimeout(
       unitId,
       status: "timed-out-finalize",
       artifactVerified: false,
+      runId: s.currentRunId ?? undefined,
+      unitRunId: ic.flowId,
+      flowId: ic.flowId,
       finalizeStage: stage,
     },
   });
@@ -1545,14 +1551,34 @@ export async function runUnitPhase(
   _resetLogs();
   const dispatchKey = `${unitType}/${unitId}`;
   s.unitDispatchCount.set(dispatchKey, (s.unitDispatchCount.get(dispatchKey) ?? 0) + 1);
-  s.currentUnit = { type: unitType, id: unitId, startedAt: Date.now() };
+  s.currentUnit = {
+    type: unitType,
+    id: unitId,
+    startedAt: Date.now(),
+    runId: s.currentRunId ?? undefined,
+    unitRunId: ic.flowId,
+    flowId: ic.flowId,
+    status: "running",
+  };
   s.lastGitActionFailure = null;
   s.lastGitActionStatus = null;
   setCurrentPhase(unitType);
   s.lastToolInvocationError = null; // #2883: clear stale error from previous unit
   s.lastVerificationErrorCode = null;
   const unitStartSeq = ic.nextSeq();
-  deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: unitStartSeq, eventType: "unit-start", data: { unitType, unitId } });
+  deps.emitJournalEvent({
+    ts: new Date().toISOString(),
+    flowId: ic.flowId,
+    seq: unitStartSeq,
+    eventType: "unit-start",
+    data: {
+      unitType,
+      unitId,
+      runId: s.currentRunId ?? undefined,
+      unitRunId: ic.flowId,
+      flowId: ic.flowId,
+    },
+  });
   deps.captureAvailableSkills();
   writeUnitRuntimeRecord(
     s.basePath,
@@ -1715,6 +1741,22 @@ export async function runUnitPhase(
   s.currentDispatchedModelId = s.currentUnitModel
     ? `${(s.currentUnitModel as any).provider ?? ""}/${(s.currentUnitModel as any).id ?? ""}`
     : null;
+  if (s.currentUnit) s.currentUnit.model = s.currentDispatchedModelId;
+  deps.emitJournalEvent({
+    ts: new Date().toISOString(),
+    flowId: ic.flowId,
+    seq: ic.nextSeq(),
+    eventType: "model-selected",
+    data: {
+      unitType,
+      unitId,
+      runId: s.currentRunId ?? undefined,
+      unitRunId: ic.flowId,
+      flowId: ic.flowId,
+      model: s.currentDispatchedModelId,
+      routing: s.currentUnitRouting ?? undefined,
+    },
+  });
 
   const compatibilityError = getWorkflowTransportSupportError(
     s.currentUnitModel?.provider ?? ctx.model?.provider,
@@ -1767,6 +1809,8 @@ export async function runUnitPhase(
     deps.lockBase(),
     unitType,
     unitId,
+    undefined,
+    s.currentRunId ?? undefined,
   );
 
   debugLog("autoLoop", {
@@ -1793,6 +1837,10 @@ export async function runUnitPhase(
 
   // Now that runUnit has called newSession(), the session file path is correct.
   const sessionFile = deps.getSessionFile(ctx);
+  if (s.currentUnit) {
+    s.currentUnit.sessionFile = sessionFile || null;
+    s.currentUnit.sessionId = ctx.sessionManager?.getSessionId?.() ?? undefined;
+  }
   deps.updateSessionLock(
     deps.lockBase(),
     unitType,
@@ -1804,6 +1852,7 @@ export async function runUnitPhase(
     unitType,
     unitId,
     sessionFile,
+    s.currentRunId ?? undefined,
   );
 
   // Tag the most recent window entry with error info for stuck detection
@@ -2017,6 +2066,7 @@ export async function runUnitPhase(
   if (artifactVerified) {
     s.unitDispatchCount.delete(dispatchKey);
     s.unitRecoveryCount.delete(`${unitType}/${unitId}`);
+    s.currentUnit?.status && deps.appendCompletedUnitRecord?.(s.currentUnit.status);
   }
 
   // Write phase handoff anchor after successful research/planning completion
@@ -2038,7 +2088,30 @@ export async function runUnitPhase(
     }
   }
 
-  deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "unit-end", data: { unitType, unitId, status: unitResult.status, artifactVerified, ...(unitResult.errorContext ? { errorContext: unitResult.errorContext } : {}) }, causedBy: { flowId: ic.flowId, seq: unitStartSeq } });
+  if (s.currentUnit) {
+    s.currentUnit.status = unitResult.status;
+  }
+  deps.emitJournalEvent({
+    ts: new Date().toISOString(),
+    flowId: ic.flowId,
+    seq: ic.nextSeq(),
+    eventType: "unit-end",
+    data: {
+      unitType,
+      unitId,
+      status: unitResult.status,
+      artifactVerified,
+      runId: s.currentRunId ?? undefined,
+      unitRunId: ic.flowId,
+      flowId: ic.flowId,
+      sessionFile: s.currentUnit?.sessionFile ?? undefined,
+      sessionId: s.currentUnit?.sessionId ?? undefined,
+      model: s.currentUnit?.model ?? undefined,
+      durationMs: s.currentUnit ? Math.max(0, Date.now() - s.currentUnit.startedAt) : undefined,
+      ...(unitResult.errorContext ? { errorContext: unitResult.errorContext } : {}),
+    },
+    causedBy: { flowId: ic.flowId, seq: unitStartSeq },
+  });
 
   // ── Safety harness: checkpoint cleanup or rollback ──
   if (s.checkpointSha) {

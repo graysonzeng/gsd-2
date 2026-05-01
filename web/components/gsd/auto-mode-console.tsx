@@ -86,6 +86,14 @@ function rail(kind: NonDividerKind, tone: PowerModeTone, streaming: boolean): Ra
         labelClass: "text-muted-foreground",
         textClass: "text-muted-foreground",
       }
+    case "run-event":
+      return {
+        glyph: "◇",
+        glyphClass: tone === "warning" ? "text-warning" : "text-muted-foreground/70",
+        label: "event",
+        labelClass: "text-muted-foreground",
+        textClass: "text-muted-foreground",
+      }
     case "prompt":
       return {
         glyph: "❯",
@@ -537,6 +545,14 @@ function TimelineRow({ item, lineNumber }: { item: AutoModeTimelineItem; lineNum
       return (
         <Row rail={r} lineNumber={lineNumber}>
           <span className="font-mono text-muted-foreground">{item.content}</span>
+        </Row>
+      )
+    }
+    case "run-event": {
+      const r = rail("run-event", item.tone, false)
+      return (
+        <Row rail={{ ...r, label: item.label }} lineNumber={lineNumber}>
+          <span className="whitespace-pre-wrap break-words font-mono">{item.content}</span>
         </Row>
       )
     }

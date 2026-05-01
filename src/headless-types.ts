@@ -34,12 +34,27 @@ export interface HeadlessWorkflowSnapshot {
 // Structured JSON Result
 // ---------------------------------------------------------------------------
 
+/**
+ * Structured event emitted when headless is blocked by an interactive request
+ * that requires supervision. Machine-readable for orchestrators and CI.
+ */
+export interface HeadlessBlockedEvent {
+  type: 'headless_blocked'
+  reason: 'needs-supervised-input'
+  command: string
+  method: string
+  title: string
+  options?: string[]
+}
+
 export interface HeadlessJsonResult {
   status: 'success' | 'error' | 'blocked' | 'cancelled' | 'timeout' | 'incomplete'
   exitCode: number
   commandStatus?: HeadlessCommandStatus
   workflowStatus?: HeadlessWorkflowStatus
   workflow?: HeadlessWorkflowSnapshot
+  /** When status is 'blocked', the reason for the block. */
+  reason?: string
   sessionId?: string
   duration: number
   cost: {

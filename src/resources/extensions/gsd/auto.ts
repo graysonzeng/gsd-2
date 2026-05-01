@@ -128,6 +128,7 @@ import {
 import { setLogBasePath, logWarning, logError } from "./workflow-logger.js";
 import { preflightCleanRoot, postflightPopStash } from "./clean-root-preflight.js";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
@@ -475,6 +476,36 @@ function hasCommandContext(
   return typeof (ctx as Partial<ExtensionCommandContext> | null | undefined)?.newSession === "function";
 }
 
+function ensureCurrentRunId(): string {
+  if (!s.currentRunId) s.currentRunId = randomUUID();
+  return s.currentRunId;
+}
+
+export function appendCompletedUnitRecord(status: string): void {
+  const current = s.currentUnit;
+  if (!current || !status || status === "running") return;
+  const finishedAt = Date.now();
+  const unitKey = `${current.runId ?? "no-run"}:${current.unitRunId ?? current.flowId ?? current.id}:${current.type}:${current.id}`;
+  const existing = s.completedUnits.find(
+    (unit) => `${unit.runId ?? "no-run"}:${unit.unitRunId ?? unit.flowId ?? unit.id}:${unit.type}:${unit.id}` === unitKey,
+  );
+  s.completedUnits = [
+    ...s.completedUnits.filter(
+      (unit) => `${unit.runId ?? "no-run"}:${unit.unitRunId ?? unit.flowId ?? unit.id}:${unit.type}:${unit.id}` !== unitKey,
+    ),
+    {
+      ...existing,
+      ...current,
+      status,
+      finishedAt,
+      commitSha: current.commitSha ?? existing?.commitSha ?? null,
+      changedFiles: Array.isArray(current.changedFiles)
+        ? [...current.changedFiles]
+        : (existing?.changedFiles ? [...existing.changedFiles] : current.changedFiles),
+    },
+  ].slice(-100);
+}
+
 export function getAutoDashboardData(): AutoDashboardData {
   const ledger = getLedger();
   const totals = ledger ? getProjectTotals(ledger.units) : null;
@@ -502,6 +533,10 @@ export function getAutoDashboardData(): AutoDashboardData {
       ? (s.autoStartTime > 0 ? Date.now() - s.autoStartTime : 0)
       : 0,
     currentUnit: s.currentUnit ? { ...s.currentUnit } : null,
+    completedUnits: s.completedUnits.map((unit) => ({
+      ...unit,
+      changedFiles: Array.isArray(unit.changedFiles) ? [...unit.changedFiles] : unit.changedFiles,
+    })),
     basePath: s.basePath,
     totalCost: totals?.cost ?? 0,
     totalTokens: totals?.tokens.total ?? 0,
@@ -783,6 +818,7 @@ function handleLostSessionLock(
  * the dashboard does not show an orphaned timer and the shell is usable.
  */
 function cleanupAfterLoopExit(ctx: ExtensionContext): void {
+  if (s.currentUnit && s.currentUnit.status) appendCompletedUnitRecord(s.currentUnit.status);
   s.currentUnit = null;
   s.active = false;
   deactivateGSD();
@@ -869,6 +905,25 @@ export async function stopAuto(
   }
 
   try {
+    if (s.currentRunId) {
+      _emitJournalEvent(s.originalBasePath || s.basePath, {
+        ts: new Date().toISOString(),
+        flowId: s.currentRunId ?? randomUUID(),
+        seq: 2,
+        eventType: "run-end",
+        data: {
+          runId: s.currentRunId ?? undefined,
+          reason: reason ?? "stop",
+          status: s.paused ? "paused" : "stopped",
+          milestoneId: s.currentMilestoneId ?? undefined,
+        },
+      });
+    }
+    if (s.currentUnit) {
+      s.currentUnit.status = reason?.startsWith("pause") ? "paused" : reason ? "stopped" : "completed";
+      appendCompletedUnitRecord(s.currentUnit.status);
+    }
+
     // ── Step 1: Timers and locks ──
     try {
       clearUnitTimeout();
@@ -1176,6 +1231,7 @@ export async function pauseAuto(
       activeEngineId: s.activeEngineId,
       activeRunDir: s.activeRunDir,
       autoStartTime: s.autoStartTime,
+      runId: s.currentRunId ?? undefined,
       milestoneLock: s.sessionMilestoneLock ?? undefined,
       lastContinuityDecision: s.lastContinuityDecision ?? undefined,
     };
@@ -1189,6 +1245,11 @@ export async function pauseAuto(
   } catch (err) {
     // Non-fatal — resume will still work via full bootstrap, just without worktree context
     logWarning("engine", `paused-session file write failed: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
+  }
+
+  if (s.currentUnit) {
+    s.currentUnit.status = _errorContext ? "cancelled" : "paused";
+    appendCompletedUnitRecord(s.currentUnit.status);
   }
 
   // Close out the current unit so its runtime record doesn't stay at "dispatched"
@@ -1351,6 +1412,7 @@ function buildLoopDeps(pi: ExtensionAPI): LoopDeps {
     autoCommitUnit,
     recordOutcome,
     writeLock,
+    appendCompletedUnitRecord,
     captureAvailableSkills,
     ensurePreconditions,
     updateSliceProgressCache,
@@ -1425,6 +1487,8 @@ export async function startAuto(
     return;
   }
 
+  const startedFreshInThisProcess = !s.paused && !s.currentRunId;
+
   const requestedStepMode = options?.step ?? false;
   const interruptedAssessment = options?.interrupted ?? null;
   if (options?.milestoneLock !== undefined) {
@@ -1471,6 +1535,7 @@ export async function startAuto(
         s.originalBasePath = meta.originalBasePath || base;
         s.stepMode = meta.stepMode ?? requestedStepMode;
         s.autoStartTime = meta.autoStartTime || Date.now();
+        s.currentRunId = meta.runId ?? null;
         s.sessionMilestoneLock = meta.milestoneLock ?? null;
         s.paused = true;
         try { unlinkSync(pausedPath); } catch (e) {
@@ -1520,6 +1585,7 @@ export async function startAuto(
             s.pausedUnitType = meta.unitType ?? null;
             s.pausedUnitId = meta.unitId ?? null;
             s.autoStartTime = meta.autoStartTime || Date.now();
+            s.currentRunId = meta.runId ?? null;
             s.sessionMilestoneLock = meta.milestoneLock ?? null;
             s.paused = true;
             try { unlinkSync(pausedPath); } catch (e) {
@@ -1565,6 +1631,7 @@ export async function startAuto(
   }
 
   if (!s.paused) {
+    if (freshStartAssessment.lock?.runId && !s.currentRunId) s.currentRunId = freshStartAssessment.lock.runId;
     s.pendingCrashRecovery =
       freshStartAssessment.classification === "recoverable"
         ? freshStartAssessment.recoveryPrompt
@@ -1604,6 +1671,21 @@ export async function startAuto(
     }
 
     // Lock acquired — now safe to delete the pause file
+    ensureCurrentRunId();
+    if (startedFreshInThisProcess) {
+      _emitJournalEvent(s.originalBasePath || s.basePath || base, {
+        ts: new Date().toISOString(),
+        flowId: s.currentRunId ?? randomUUID(),
+        seq: 1,
+        eventType: "run-start",
+        data: {
+          runId: s.currentRunId ?? undefined,
+          resumed: true,
+          milestoneId: s.currentMilestoneId ?? undefined,
+        },
+      });
+    }
+
     if (s.pausedSessionFile) {
       try { unlinkSync(s.pausedSessionFile); } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -1742,6 +1824,8 @@ export async function startAuto(
       lockBase(),
       "resuming",
       s.currentMilestoneId ?? "unknown",
+      undefined,
+      s.currentRunId ?? undefined,
     );
     pi.events.emit(CMUX_CHANNELS.LOG, { preferences: loadEffectiveGSDPreferences(s.basePath || undefined)?.preferences, message: s.stepMode ? "Step-mode resumed." : "Auto-mode resumed.", level: "progress" });
 
@@ -1779,6 +1863,20 @@ export async function startAuto(
   );
   if (!ready) return;
 
+  ensureCurrentRunId();
+  if (startedFreshInThisProcess) {
+    _emitJournalEvent(s.originalBasePath || s.basePath || base, {
+      ts: new Date().toISOString(),
+      flowId: s.currentRunId ?? randomUUID(),
+      seq: 1,
+      eventType: "run-start",
+      data: {
+        runId: s.currentRunId ?? undefined,
+        resumed: false,
+        milestoneId: s.currentMilestoneId ?? undefined,
+      },
+    });
+  }
   captureProjectRootEnv(s.originalBasePath || s.basePath);
   try {
     pi.events.emit(CMUX_CHANNELS.SIDEBAR, { action: "sync" as const, preferences: loadEffectiveGSDPreferences(s.basePath || undefined)?.preferences, state: await deriveState(s.basePath) });
@@ -1941,6 +2039,7 @@ export async function dispatchHookUnit(
     hookUnitType,
     triggerUnitId,
     sessionFile ?? undefined,
+    s.currentRunId ?? undefined,
   );
 
   clearUnitTimeout();

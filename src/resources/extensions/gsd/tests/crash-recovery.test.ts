@@ -47,6 +47,7 @@ function writeTestLock(
       unitType,
       unitId,
       unitStartedAt: new Date().toISOString(),
+      runId: "run-test",
       sessionFile,
     }, null, 2),
     "utf-8",
@@ -165,6 +166,7 @@ test("isBootstrapCrashLock detects starting/bootstrap special case", () => {
     unitType: "starting",
     unitId: "bootstrap",
     unitStartedAt: new Date().toISOString(),
+    runId: "run-test",
   };
   assert.equal(isBootstrapCrashLock(bootstrap), true);
   assert.equal(isBootstrapCrashLock({ ...bootstrap, unitType: "execute-task" }), false);

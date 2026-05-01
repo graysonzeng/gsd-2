@@ -203,7 +203,9 @@ export interface LoopDeps {
     unitType: string,
     unitId: string,
     sessionFile?: string,
+    runId?: string,
   ) => void;
+  appendCompletedUnitRecord?: (status: string) => void;
   captureAvailableSkills: () => void;
   ensurePreconditions: (
     unitType: string,

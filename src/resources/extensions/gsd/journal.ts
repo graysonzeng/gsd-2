@@ -32,6 +32,10 @@ import { isUnifiedAuditEnabled } from "./uok/audit-toggle.js";
 
 /** Event types emitted by the auto-mode loop and phases. */
 export type JournalEventType =
+  | "run-start"
+  | "run-end"
+  | "model-selected"
+  | "agent-span"
   | "iteration-start"
   | "dispatch-match"
   | "dispatch-readvised"

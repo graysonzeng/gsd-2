@@ -141,7 +141,17 @@ export function buildStateMarkdown(state: Awaited<ReturnType<typeof deriveState>
 async function updateStateFile(basePath: string, fixesApplied: string[]): Promise<void> {
   const state = await deriveState(basePath);
   const path = resolveGsdRootFile(basePath, "STATE");
-  await saveFile(path, buildStateMarkdown(state));
+  const content = buildStateMarkdown(state);
+  // Skip write if content is unchanged — avoids false mtime heartbeat
+  if (existsSync(path)) {
+    try {
+      const existing = readFileSync(path, "utf-8");
+      if (existing === content) return;
+    } catch {
+      // If read fails, proceed with write
+    }
+  }
+  await saveFile(path, content);
   fixesApplied.push(`updated ${path}`);
 }
 
@@ -150,7 +160,17 @@ export async function rebuildState(basePath: string): Promise<void> {
   invalidateAllCaches();
   const state = await deriveState(basePath);
   const path = resolveGsdRootFile(basePath, "STATE");
-  await saveFile(path, buildStateMarkdown(state));
+  const content = buildStateMarkdown(state);
+  // Skip write if content is unchanged — avoids false mtime heartbeat
+  if (existsSync(path)) {
+    try {
+      const existing = readFileSync(path, "utf-8");
+      if (existing === content) return;
+    } catch {
+      // If read fails, proceed with write
+    }
+  }
+  await saveFile(path, content);
 }
 
 function matchesScope(unitId: string, scope?: string): boolean {

@@ -964,7 +964,16 @@ export async function showDiscuss(
   // agent bootstraps from the wrong milestone.
   try {
     const { buildStateMarkdown } = await import("./doctor.js");
-    await saveFile(resolveGsdRootFile(basePath, "STATE"), buildStateMarkdown(state));
+    const stateContent = buildStateMarkdown(state);
+    const statePath = resolveGsdRootFile(basePath, "STATE");
+    // Skip write if content is unchanged — avoids false mtime heartbeat
+    let shouldWrite = true;
+    if (existsSync(statePath)) {
+      try {
+        if (readFileSync(statePath, "utf-8") === stateContent) shouldWrite = false;
+      } catch { /* proceed with write */ }
+    }
+    if (shouldWrite) await saveFile(statePath, stateContent);
   } catch (err) {
     logWarning("guided", `STATE.md rebuild failed: ${(err as Error).message}`);
   }
@@ -1578,7 +1587,16 @@ export async function showSmartEntry(
   // Rebuild STATE.md from derived state before any dispatch (#3475).
   try {
     const { buildStateMarkdown } = await import("./doctor.js");
-    await saveFile(resolveGsdRootFile(basePath, "STATE"), buildStateMarkdown(state));
+    const stateContent = buildStateMarkdown(state);
+    const statePath = resolveGsdRootFile(basePath, "STATE");
+    // Skip write if content is unchanged — avoids false mtime heartbeat
+    let shouldWrite = true;
+    if (existsSync(statePath)) {
+      try {
+        if (readFileSync(statePath, "utf-8") === stateContent) shouldWrite = false;
+      } catch { /* proceed with write */ }
+    }
+    if (shouldWrite) await saveFile(statePath, stateContent);
   } catch (err) {
     logWarning("guided", `STATE.md rebuild failed: ${(err as Error).message}`);
   }

@@ -35,6 +35,7 @@ export interface PausedSessionMetadata {
   activeEngineId?: string;
   activeRunDir?: string | null;
   autoStartTime?: number;
+  runId?: string;
   milestoneLock?: string | null;
   lastContinuityDecision?: ContinuityDecision | null;
 }

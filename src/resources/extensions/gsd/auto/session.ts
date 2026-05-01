@@ -29,6 +29,19 @@ export interface CurrentUnit {
   type: string;
   id: string;
   startedAt: number;
+  runId?: string;
+  unitRunId?: string;
+  flowId?: string;
+  sessionId?: string;
+  sessionFile?: string | null;
+  model?: string | null;
+  status?: string | null;
+  commitSha?: string | null;
+  changedFiles?: string[];
+}
+
+export interface CompletedUnitRecord extends CurrentUnit {
+  finishedAt: number;
 }
 
 export interface UnitRouting {
@@ -118,6 +131,8 @@ export class AutoSession {
 
   // ── Current unit ─────────────────────────────────────────────────────────
   currentUnit: CurrentUnit | null = null;
+  currentRunId: string | null = null;
+  completedUnits: CompletedUnitRecord[] = [];
   currentTraceId: string | null = null;
   currentTurnId: string | null = null;
   currentUnitRouting: UnitRouting | null = null;
@@ -269,6 +284,8 @@ export class AutoSession {
 
     // Unit
     this.currentUnit = null;
+    this.currentRunId = null;
+    this.completedUnits = [];
     this.currentTraceId = null;
     this.currentTurnId = null;
     this.currentUnitRouting = null;
@@ -332,7 +349,9 @@ export class AutoSession {
       activeEngineId: this.activeEngineId,
       activeRunDir: this.activeRunDir,
       currentMilestoneId: this.currentMilestoneId,
+      currentRunId: this.currentRunId,
       currentUnit: this.currentUnit,
+      completedUnits: this.completedUnits,
       unitDispatchCount: Object.fromEntries(this.unitDispatchCount),
     };
   }

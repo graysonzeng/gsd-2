@@ -23,6 +23,7 @@ export interface LockData {
   unitType: string;
   unitId: string;
   unitStartedAt: string;
+  runId?: string;
   /** Path to the pi session JSONL file that was active when this unit started. */
   sessionFile?: string;
 }
@@ -37,6 +38,7 @@ export function writeLock(
   unitType: string,
   unitId: string,
   sessionFile?: string,
+  runId?: string,
 ): void {
   try {
     const data: LockData = {
@@ -45,6 +47,7 @@ export function writeLock(
       unitType,
       unitId,
       unitStartedAt: new Date().toISOString(),
+      runId,
       sessionFile,
     };
     const lp = lockPath(basePath);

@@ -46,6 +46,8 @@ import {
   collectTestOnlyFallbackAutoDashboardData,
 } from "./auto-dashboard-service.ts";
 import type { AutoDashboardData, RtkSessionSavings } from "./auto-dashboard-types.ts";
+import { collectAutoExecutionTimeline } from "./auto-execution-service.ts";
+import type { AutoExecutionTimelineResponse } from "../../web/lib/auto-execution-types.ts";
 import { resolveGsdCliEntry } from "./cli-entry.ts";
 
 // The standalone Next.js bundle bakes import.meta.url at build time with the
@@ -649,6 +651,7 @@ interface BridgeServiceDeps {
   env?: NodeJS.ProcessEnv;
   indexWorkspace?: (basePath: string) => Promise<GSDWorkspaceIndex>;
   getAutoDashboardData?: () => AutoDashboardData | Promise<AutoDashboardData>;
+  getAutoExecutionTimeline?: (basePath: string) => AutoExecutionTimelineResponse | Promise<AutoExecutionTimelineResponse>;
   listSessions?: (projectSessionsDir: string) => Promise<LocalSessionInfo[]>;
   getOnboardingState?: () => OnboardingState | Promise<OnboardingState>;
   getOnboardingNeeded?: (authPath: string, env: NodeJS.ProcessEnv) => boolean | Promise<boolean>;
@@ -676,6 +679,7 @@ const defaultBridgeServiceDeps: BridgeServiceDeps = {
       existsSync: deps.existsSync ?? existsSync,
     });
   },
+  getAutoExecutionTimeline: (basePath: string) => collectAutoExecutionTimeline(basePath),
   listSessions: async (projectSessionsDir: string) => listProjectSessions(projectSessionsDir),
 };
 
@@ -2136,6 +2140,7 @@ export type BridgeSelectiveLiveStateDomain = "auto" | "workspace" | "resumable_s
 
 export interface BridgeSelectiveLiveStatePayload {
   auto?: AutoDashboardData;
+  autoExecutionTimeline?: AutoExecutionTimelineResponse["events"];
   workspace?: GSDWorkspaceIndex;
   resumableSessions?: BootResumableSession[];
   bridge: BridgeRuntimeSnapshot;
@@ -2173,6 +2178,8 @@ export async function collectSelectiveLiveStatePayload(
   if (uniqueDomains.includes("auto")) {
     const getAutoDashboardData = deps.getAutoDashboardData ?? (() => collectTestOnlyFallbackAutoDashboardData());
     payload.auto = await Promise.resolve(getAutoDashboardData());
+    const getAutoExecutionTimeline = deps.getAutoExecutionTimeline ?? ((basePath: string) => collectAutoExecutionTimeline(basePath));
+    payload.autoExecutionTimeline = (await Promise.resolve(getAutoExecutionTimeline(config.projectCwd))).events;
   }
 
   if (uniqueDomains.includes("resumable_sessions")) {

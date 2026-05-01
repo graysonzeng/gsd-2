@@ -60,6 +60,22 @@ export function extractUatSliceId(unitId: string): string | null {
 
 // ─── Dashboard Data ───────────────────────────────────────────────────────────
 
+export interface AutoDashboardUnit {
+  type: string;
+  id: string;
+  startedAt: number;
+  finishedAt?: number;
+  runId?: string;
+  unitRunId?: string;
+  flowId?: string;
+  sessionId?: string;
+  sessionFile?: string | null;
+  model?: string | null;
+  status?: string | null;
+  commitSha?: string | null;
+  changedFiles?: string[];
+}
+
 /** Dashboard data for the overlay */
 export interface AutoDashboardData {
   active: boolean;
@@ -67,7 +83,8 @@ export interface AutoDashboardData {
   stepMode: boolean;
   startTime: number;
   elapsed: number;
-  currentUnit: { type: string; id: string; startedAt: number } | null;
+  currentUnit: AutoDashboardUnit | null;
+  completedUnits: AutoDashboardUnit[];
   basePath: string;
   /** Running cost and token totals from metrics ledger */
   totalCost: number;

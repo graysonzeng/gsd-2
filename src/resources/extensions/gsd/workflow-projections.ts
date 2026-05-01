@@ -14,7 +14,7 @@ import {
 import type { MilestoneRow, SliceRow, TaskRow, VerificationEvidenceRow } from "./gsd-db.js";
 import { atomicWriteSync } from "./atomic-write.js";
 import { join } from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { logWarning } from "./workflow-logger.js";
 import { isClosedStatus } from "./status-guards.js";
 import { deriveState } from "./state.js";
@@ -362,8 +362,20 @@ export async function renderStateProjection(basePath: string): Promise<void> {
     const state = await deriveState(basePath);
     const content = renderStateContent(state);
     const dir = join(basePath, ".gsd");
+    const filePath = join(dir, "STATE.md");
+
+    // Skip write if content is unchanged — avoids false mtime heartbeat
+    if (existsSync(filePath)) {
+      try {
+        const existing = readFileSync(filePath, "utf-8");
+        if (existing === content) return;
+      } catch {
+        // If read fails, proceed with write
+      }
+    }
+
     mkdirSync(dir, { recursive: true });
-    atomicWriteSync(join(dir, "STATE.md"), content);
+    atomicWriteSync(filePath, content);
   } catch (err) {
     logWarning("projection", `renderStateProjection failed: ${(err as Error).message}`);
   }

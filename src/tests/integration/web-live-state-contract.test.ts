@@ -15,6 +15,7 @@ const commandRoute = await import("../../../web/app/api/session/command/route.ts
 const manageRoute = await import("../../../web/app/api/session/manage/route.ts");
 const eventsRoute = await import("../../../web/app/api/session/events/route.ts");
 const liveStateRoute = await import("../../../web/app/api/live-state/route.ts");
+const timelineRoute = await import("../../../web/app/api/auto-execution/timeline/route.ts");
 
 class FakeRpcChild extends EventEmitter {
   stdin = new PassThrough();
@@ -113,6 +114,65 @@ function createSessionFile(
     ].join("\n") + "\n",
   );
   return sessionPath;
+}
+
+function createTranscriptSessionFile(
+  projectCwd: string,
+  sessionsDir: string,
+  sessionId: string,
+): string {
+  const sessionPath = join(sessionsDir, `2026-03-16T09-00-00-000Z_${sessionId}.jsonl`)
+  writeFileSync(
+    sessionPath,
+    [
+      JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-03-16T09:00:00.000Z", cwd: projectCwd }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-03-16T09:00:01.000Z",
+        message: {
+          role: "assistant",
+          timestamp: Date.parse("2026-03-16T09:00:01.000Z"),
+          content: [
+            { type: "thinking", thinking: "Investigating the failure boundary" },
+            { type: "text", text: "Implemented the requested change." },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: "2026-03-16T09:00:02.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "tool-1",
+          toolName: "bash",
+          isError: false,
+          timestamp: Date.parse("2026-03-16T09:00:02.000Z"),
+          content: [{ type: "text", text: "npm test passed" }],
+          details: { args: { command: "npm test" } },
+        },
+      }),
+    ].join("\n") + "\n",
+  )
+  return sessionPath
+}
+
+function writeTimelineJournal(projectCwd: string, sessionPath: string): void {
+  const journalDir = join(projectCwd, ".gsd", "journal")
+  mkdirSync(journalDir, { recursive: true })
+  writeFileSync(
+    join(journalDir, "2026-03-16.jsonl"),
+    [
+      JSON.stringify({ ts: "2026-03-16T09:00:00.000Z", flowId: "run-1", seq: 1, eventType: "run-start", data: { runId: "run-1", resumed: false } }),
+      JSON.stringify({ ts: "2026-03-16T09:00:01.000Z", flowId: "flow-1", seq: 1, eventType: "unit-start", data: { runId: "run-1", unitRunId: "flow-1", unitType: "execute-task", unitId: "M001/S01/T01", sessionFile: sessionPath } }),
+      JSON.stringify({ ts: "2026-03-16T09:00:01.500Z", flowId: "flow-1", seq: 2, eventType: "model-selected", data: { runId: "run-1", unitRunId: "flow-1", unitType: "execute-task", unitId: "M001/S01/T01", model: "anthropic/claude-sonnet" } }),
+      JSON.stringify({ ts: "2026-03-16T09:00:03.000Z", flowId: "flow-1", seq: 3, eventType: "unit-end", data: { runId: "run-1", unitRunId: "flow-1", unitType: "execute-task", unitId: "M001/S01/T01", status: "completed", sessionFile: sessionPath } }),
+      JSON.stringify({ ts: "2026-03-16T09:00:04.000Z", flowId: "run-1", seq: 2, eventType: "run-end", data: { runId: "run-1", status: "completed" } }),
+    ].join("\n") + "\n",
+  )
 }
 
 function waitForMicrotasks(): Promise<void> {
@@ -588,6 +648,45 @@ test("workspace cache only busts on real boundaries and session mutations emit t
 
   unsubscribe();
 });
+
+test("live-state auto domain includes hydrated execution timeline and timeline route matches it", async (t) => {
+  const fixture = makeWorkspaceFixture()
+  const sessionPath = createTranscriptSessionFile(fixture.projectCwd, fixture.sessionsDir, "sess-timeline")
+  writeTimelineJournal(fixture.projectCwd, sessionPath)
+
+  setupBridge(createHarness((command, current) => {
+    if (command.type === "get_state") {
+      current.emit({
+        id: command.id,
+        type: "response",
+        command: "get_state",
+        success: true,
+        data: fakeSessionState("sess-timeline", sessionPath),
+      })
+      return
+    }
+    assert.fail(`unexpected command: ${command.type}`)
+  }), fixture)
+
+  t.after(async () => {
+    await bridge.resetBridgeServiceForTests()
+    onboarding.resetOnboardingServiceForTests()
+    fixture.cleanup()
+  })
+
+  const liveResponse = await liveStateRoute.GET(new Request("http://localhost/api/live-state?domain=auto"))
+  assert.equal(liveResponse.status, 200)
+  const livePayload = await liveResponse.json() as { autoExecutionTimeline?: Array<{ kind: string; title: string; body?: string }> }
+  assert.ok(Array.isArray(livePayload.autoExecutionTimeline), "live-state returns execution timeline array")
+  assert.ok(livePayload.autoExecutionTimeline!.some((event) => event.kind === "message" && event.body?.includes("Implemented the requested change")))
+  assert.ok(livePayload.autoExecutionTimeline!.some((event) => event.kind === "thinking" && event.body?.includes("Investigating the failure boundary")))
+
+  const timelineResponse = await timelineRoute.GET(new Request("http://localhost/api/auto-execution/timeline?runId=run-1"))
+  assert.equal(timelineResponse.status, 200)
+  const timelinePayload = await timelineResponse.json() as { events: Array<{ kind: string; title: string; body?: string }> }
+  assert.ok(timelinePayload.events.some((event) => event.kind === "model-selected" && event.title.includes("Model anthropic/claude-sonnet")))
+  assert.ok(timelinePayload.events.some((event) => event.kind === "tool-end" && event.body?.includes("npm test passed")))
+})
 
 test("turn_end events invalidate workspace so milestones list reflects current state (issue #2706)", async (t) => {
   const fixture = makeWorkspaceFixture();
